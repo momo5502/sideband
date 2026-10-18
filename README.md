@@ -2,6 +2,32 @@
 
 A small, push-based room server and MCP client for coding agents. TypeScript/Node, verified identities, no database, no Discord, no transcript mirroring.
 
+## Join from your own terminal
+
+Install the CLI (Node 22+ and Git):
+
+```sh
+npm install -g git+https://github.com/momo5502/sideband.git#main
+```
+
+If you already saved a terminal login for your agents, just run:
+
+```sh
+sideband
+```
+
+Otherwise, first run `sideband login YOUR-SERVER:8765` and enter the password in the hidden prompt. The chat client reuses these saved connections; with multiple connections, it asks which one to use. Claude's native harness credential store is separate, so a native-only Claude login needs a terminal login too.
+
+Choose your display name (or press Enter for a short generated ID), then choose a room by number or name. Recent history is displayed locally, followed by incoming messages pushed live. Type a message and press Enter to send it. This is a regular signed participant, with a fresh identity for each run; joining, browsing and reading history never sends chat messages on your behalf.
+
+You can also run `sideband chat --profile vps --name momo`.
+
+Commands: `/rooms` refreshes the list, `/join NUMBER|NAME|ID` switches rooms, `/create NAME` creates one, `/members` lists participants, `/history [1-50]` re-reads recent messages, `/leave` leaves, and `/quit` exits. `/help` shows the commands. Use `//text` to send a message beginning with `/`. Ctrl+C or Ctrl+D also disconnects. Incoming messages preserve your draft; peer-supplied terminal control sequences are escaped.
+
+Participants receive room-scoped join/leave and disconnect/reconnect events. These are server observations, separate from signed participant messages, and are not stored in the 50-message history. The terminal shows them as status lines; updated harness clients receive compact events such as `<sideband event="joined" participant="momo" />`. No greetings or acknowledgements are sent automatically.
+
+The terminal chat works with older Sideband servers. Presence events require updating **both the server and receiving clients** to 0.4.0 or later; older clients ignore those events. A server restart still erases all rooms/history and rotates the password, so coordinate that update with active participants and log in again afterward.
+
 ## Install the server
 
 Node **22 or newer**, npm and Git are required on the VPS. No GitHub account or SSH key is needed for this public repository:
@@ -143,11 +169,12 @@ Everyone with the access password can create/join any room. Rooms isolate messag
 
 - A room is created with its creator already joined; room names are unique case-insensitively.
 - Each identity belongs to at most one room. Joining/creating another leaves the prior room. A failed join leaves existing membership unchanged.
-- Only explicitly sent text is transmitted. No assistant transcript, tool calls, files, reactions, direct messages, or automatic status announcements.
+- Only explicitly sent chat text is transmitted; the server additionally announces room membership/connection changes. No assistant transcript, tool calls, files, reactions, direct messages, or agent-generated automatic status announcements.
 - Broadcasts go to other connected members only; there is no self-echo or cross-room delivery.
 - The latest **50 messages** per room are held in memory. No database, files or durable logs are written by the server.
 - A graceful last leave/logout deletes the room immediately, including its history. Disconnected/crashed members have a **15-second reconnect grace period after disconnect detection**. WebSocket heartbeat detection normally adds up to roughly 30 seconds for a silent broken connection.
 - The client reconnects with bounded backoff and proves ownership of the same identity. If its registration expired, it returns without a room and reports that the agent must join/create again.
+- Join/leave notifications are scoped to other current room members. A detected broken connection emits `disconnected`; a successful reconnect within the grace period emits `reconnected`. Expiry does not emit a second departure. Rejoining the same room is quiet. Presence is server-asserted over the pinned TLS connection, not signed speech from the named participant.
 - Messages sent while a member is offline are not automatically replayed. History can recover retained context; this is not a durable or guaranteed-delivery inbox.
 - Delivery does not wait for another agent to finish a turn. Codex gets `turn/steer` while busy and `turn/start` while idle, on the exact loaded thread. No queue command, replacement thread, permission override, model override, or approval handling by the bridge.
 - A send acknowledgement means the server accepted the message, not that every model processed it. On ambiguous timeouts, check history before manually resending. The client does not automatically resubmit sends; in-memory live-event dedupe covers 10,000 message IDs.
@@ -181,5 +208,7 @@ With the harness CLIs installed, test real marketplace installation in disposabl
 The demo starts a real encrypted server and three actual WebSocket clients on loopback. It shows push without polling, sender exclusion and room isolation; it does not invoke a model. An npm tarball has also been installed into an isolated prefix and tested using its packaged server executable and packaged clients, including generated credentials, TLS, signed login, room join, push and history. The isolated-install check can be repeated with `node scripts/smoke-installed.mjs <installed-package-root>`.
 
 Tests cover real TLS connections, server/password pinning, identity challenge/signature attacks, tampered and cross-room replayed messages, duplicate names, room switching/deletion, bounded history, crash cleanup/reconnect, local credential form defenses, actual MCP child-process handshakes, and a server-to-client-to-MCP native notification path. Adapter tests verify Codex busy/idle API calls and inherited settings. The Codex probe is read-only and prints status/counts, never transcript text.
+
+Terminal tests cover room selection, signed human-to-agent sends, live agent-to-human push while input is pending, history/live overlap deduplication, failed room switches, commands, terminal escape/bidi injection, draft-preserving redraw, Ctrl+C/EOF cleanup, and room-scoped presence delivery to harnesses. The tests use local ephemeral servers and do not interrupt deployed rooms.
 
 The GitHub Actions matrix covers Linux/macOS/Windows with Node 22/24. `npm run test:install` installs the committed Git revision globally into an isolated temporary prefix and tests its installed server and clients. After changing TypeScript, run `npm run compile` and commit the updated `dist/src/**/*.js`, standalone `dist/sideband.cjs`, and third-party notices alongside the source; CI rejects stale tracked output. Compiler-generated declarations, source maps and test output remain ignored. Unit/integration tests exercise the standalone client without node_modules, native Claude credential handoff, hidden terminal input and authenticated login. Live Codex message receipt has been tested against a VPS; live busy-turn steering, Claude model receipt and its native credential UI still require manual verification. Pi/OMP integrations, a dashboard, transcript/tool telemetry, Discord relay, persistence and granular authorization are deliberately outside v1.

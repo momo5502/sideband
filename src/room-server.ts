@@ -5,7 +5,7 @@ import { generate } from "selfsigned";
 import type { Duplex } from "node:stream";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
-  type AgentIdentity, type Room, type SignedMessage,
+  type AgentIdentity, type Room, type SignedMessage, type PresenceKind,
 } from "./room-protocol.js";
 
 type Member = { identity: AgentIdentity; roomId?: string; socket?: WebSocket; expiry?: NodeJS.Timeout };
@@ -87,6 +87,7 @@ export class RoomServer {
       if (!member || member.socket !== socket) return;
       member.socket = undefined;
       if (this.stopping) return;
+      this.presence(member, "disconnected");
       member.expiry = setTimeout(() => this.remove(member), this.options.graceMs ?? 15_000);
       member.expiry.unref();
     });
@@ -144,6 +145,7 @@ export class RoomServer {
       member.socket = socket; connection.member = member;
       prior?.close(4001, "Reconnected elsewhere");
       clearTimeout(connection.authTimer);
+      if (resumed && !prior) this.presence(member, "reconnected");
       return { identity: member.identity, room: member.roomId ? this.summary(this.rooms.get(member.roomId)!) : null, resumed };
     }
     const member = connection.member;
@@ -205,9 +207,22 @@ export class RoomServer {
   private join(member: Member, room: RoomState): void {
     if (member.roomId === room.id) return;
     this.leave(member); member.roomId = room.id; room.members.add(member.identity.id);
+    this.presence(member, "joined");
+  }
+  private presence(member: Member, kind: PresenceKind): void {
+    const room = member.roomId ? this.rooms.get(member.roomId) : undefined;
+    if (!room || this.stopping) return;
+    const data = { id: randomUUID(), roomId: room.id, kind, participant: member.identity, createdAt: Date.now() };
+    for (const id of room.members) {
+      if (id === member.identity.id) continue;
+      const peer = this.members.get(id);
+      if (peer?.socket) this.send(peer.socket, { event: "presence", data });
+    }
   }
   private leave(member: Member): void {
     if (!member.roomId) return;
+    // A crashed peer was already announced on disconnect; expiry is not a second departure.
+    if (member.socket) this.presence(member, "left");
     const room = this.rooms.get(member.roomId); room?.members.delete(member.identity.id);
     if (room?.members.size === 0) this.rooms.delete(room.id);
     member.roomId = undefined;

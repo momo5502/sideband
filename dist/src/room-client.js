@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import { AgentKeys, RoomError, VERSION, loginProof, messageProof, parsePassword, serverUrl, verifyMessage } from "./room-protocol.js";
+import { AgentKeys, RoomError, VERSION, loginProof, messageProof, parsePassword, serverUrl, verifyMessage, validPresence } from "./room-protocol.js";
 export class RoomClient {
     profile;
     options;
@@ -16,6 +16,7 @@ export class RoomClient {
     generation = 0;
     pending = new Map();
     listeners = new Set();
+    presenceListeners = new Set();
     seen = new Set();
     endpoint;
     constructor(profile, name, options = {}) {
@@ -27,6 +28,15 @@ export class RoomClient {
     }
     get identity() { return this.keys.identity; }
     onMessage(listener) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+    onPresence(listener) { this.presenceListeners.add(listener); return () => { this.presenceListeners.delete(listener); }; }
+    remember(key) {
+        if (this.seen.has(key))
+            return false;
+        this.seen.add(key);
+        if (this.seen.size > 10_000)
+            this.seen.delete(this.seen.values().next().value);
+        return true;
+    }
     error(error) {
         const normalized = error instanceof Error ? error : new Error("Connection failed.");
         this.lastError = normalized.message;
@@ -93,13 +103,19 @@ export class RoomClient {
                     if (!authenticated || !verifyMessage(packet.data))
                         throw new Error("Rejected a message with invalid identity/signature.");
                     const message = packet.data;
-                    if (message.roomId !== this.room?.id || message.sender.id === this.identity.id || this.seen.has(`${message.roomId}:${message.id}`))
+                    if (message.roomId !== this.room?.id || message.sender.id === this.identity.id || !this.remember(`${message.roomId}:${message.id}`))
                         return;
-                    this.seen.add(`${message.roomId}:${message.id}`);
-                    if (this.seen.size > 10_000)
-                        this.seen.delete(this.seen.values().next().value);
                     for (const listener of this.listeners)
                         listener(message);
+                }
+                if (packet.event === "presence") {
+                    if (!authenticated || !validPresence(packet.data))
+                        throw new Error("Rejected an invalid presence event.");
+                    const event = packet.data;
+                    if (event.roomId !== this.room?.id || event.participant.id === this.identity.id || !this.remember(`presence:${event.roomId}:${event.id}`))
+                        return;
+                    for (const listener of this.presenceListeners)
+                        listener(event);
                 }
             }
             catch (error) {

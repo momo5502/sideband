@@ -86,6 +86,20 @@ export function verifyMessage(value) {
         return false;
     }
 }
+export function validPresence(value) {
+    try {
+        const event = fields(value, ["id", "roomId", "kind", "participant", "createdAt"]);
+        text(event.id, "event ID", 64);
+        text(event.roomId, "room ID", 64);
+        if (!["joined", "left", "disconnected", "reconnected"].includes(event.kind) || !Number.isFinite(event.createdAt))
+            return false;
+        const participant = object(event.participant);
+        return identityFor(text(participant.publicKey, "public key", 100), agentName(participant.name)).id === participant.id;
+    }
+    catch {
+        return false;
+    }
+}
 export function parsePassword(value) {
     const match = /^sb1\.([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(value.trim());
     if (!match)

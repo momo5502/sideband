@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { TLSSocket } from "node:tls";
 import WebSocket from "ws";
 import { AgentKeys, RoomError, VERSION, loginProof, messageProof, parsePassword, serverUrl, verifyMessage,
-  type ConnectionProfile, type Login, type Room, type SignedMessage, type AgentIdentity } from "./room-protocol.js";
+  validPresence, type PresenceEvent, type ConnectionProfile, type Login, type Room, type SignedMessage, type AgentIdentity } from "./room-protocol.js";
 
 export class RoomClient {
   readonly keys: AgentKeys;
@@ -17,6 +17,7 @@ export class RoomClient {
   private generation = 0;
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private readonly listeners = new Set<(message: SignedMessage) => void>();
+  private readonly presenceListeners = new Set<(event: PresenceEvent) => void>();
   private readonly seen = new Set<string>();
   private readonly endpoint: string;
   constructor(private readonly profile: ConnectionProfile, name?: string, private readonly options: { reconnectMs?: number; onError?: (error: Error) => void } = {}) {
@@ -24,6 +25,13 @@ export class RoomClient {
   }
   get identity(): AgentIdentity { return this.keys.identity; }
   onMessage(listener: (message: SignedMessage) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  onPresence(listener: (event: PresenceEvent) => void): () => void { this.presenceListeners.add(listener); return () => { this.presenceListeners.delete(listener); }; }
+  private remember(key: string): boolean {
+    if (this.seen.has(key)) return false;
+    this.seen.add(key);
+    if (this.seen.size > 10_000) this.seen.delete(this.seen.values().next().value!);
+    return true;
+  }
   private error(error: unknown): void {
     const normalized = error instanceof Error ? error : new Error("Connection failed.");
     this.lastError = normalized.message; this.options.onError?.(normalized);
@@ -68,10 +76,14 @@ export class RoomClient {
         if (packet.event === "message") {
           if (!authenticated || !verifyMessage(packet.data)) throw new Error("Rejected a message with invalid identity/signature.");
           const message: SignedMessage = packet.data;
-          if (message.roomId !== this.room?.id || message.sender.id === this.identity.id || this.seen.has(`${message.roomId}:${message.id}`)) return;
-          this.seen.add(`${message.roomId}:${message.id}`);
-          if (this.seen.size > 10_000) this.seen.delete(this.seen.values().next().value!);
+          if (message.roomId !== this.room?.id || message.sender.id === this.identity.id || !this.remember(`${message.roomId}:${message.id}`)) return;
           for (const listener of this.listeners) listener(message);
+        }
+        if (packet.event === "presence") {
+          if (!authenticated || !validPresence(packet.data)) throw new Error("Rejected an invalid presence event.");
+          const event: PresenceEvent = packet.data;
+          if (event.roomId !== this.room?.id || event.participant.id === this.identity.id || !this.remember(`presence:${event.roomId}:${event.id}`)) return;
+          for (const listener of this.presenceListeners) listener(event);
         }
       } catch (error) { this.error(error); }
     });

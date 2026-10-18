@@ -5,6 +5,9 @@ export const MAX_TEXT_BYTES = 8192;
 export type AgentIdentity = { id: string; name?: string; publicKey: string };
 export type Room = { id: string; name: string; members: number };
 export type SignedMessage = { id: string; roomId: string; sender: AgentIdentity; text: string; signature: string; createdAt: number };
+export type PresenceKind = "joined" | "left" | "disconnected" | "reconnected";
+/** Server-observed membership, not a participant-authored or signed message. */
+export type PresenceEvent = { id: string; roomId: string; kind: PresenceKind; participant: AgentIdentity; createdAt: number };
 export type Login = { identity: AgentIdentity; room: Room | null; resumed: boolean };
 export type ConnectionProfile = { server: string; password: string };
 export class RoomError extends Error {
@@ -68,6 +71,15 @@ export function verifyMessage(value: unknown): value is SignedMessage {
     text(message.id, "message ID", 64); text(message.roomId, "room ID", 64);
     if (typeof message.text !== "string" || Buffer.byteLength(message.text) > MAX_TEXT_BYTES) return false;
     return validSignature(identity.publicKey, messageProof(message as SignedMessage), message.signature);
+  } catch { return false; }
+}
+export function validPresence(value: unknown): value is PresenceEvent {
+  try {
+    const event = fields(value, ["id", "roomId", "kind", "participant", "createdAt"]);
+    text(event.id, "event ID", 64); text(event.roomId, "room ID", 64);
+    if (!["joined", "left", "disconnected", "reconnected"].includes(event.kind as string) || !Number.isFinite(event.createdAt)) return false;
+    const participant = object(event.participant);
+    return identityFor(text(participant.publicKey, "public key", 100), agentName(participant.name)).id === participant.id;
   } catch { return false; }
 }
 export function parsePassword(value: string): { fingerprint: string; secret: string } {

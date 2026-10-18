@@ -1,5 +1,8 @@
+export function identityLabel(identity) { return identity.name || `#${identity.id.replace(/^agent-/, "").slice(0, 12)}`; }
 export function formatDelivery(delivery) {
-    const sender = delivery.sender.name || `#${delivery.sender.id.replace(/^agent-/, "").slice(0, 12)}`;
+    const sender = identityLabel(delivery.sender);
+    if (delivery.presence)
+        return `<sideband event="${escapeXml(delivery.presence, true)}" participant="${escapeXml(sender, true)}" />`;
     return `<sideband sender="${escapeXml(sender, true)}">\n${escapeXml(delivery.text)}\n</sideband>`;
 }
 // Keep message text from closing the envelope or introducing a forged sender tag.

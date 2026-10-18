@@ -92,6 +92,7 @@ export class RoomServer {
             member.socket = undefined;
             if (this.stopping)
                 return;
+            this.presence(member, "disconnected");
             member.expiry = setTimeout(() => this.remove(member), this.options.graceMs ?? 15_000);
             member.expiry.unref();
         });
@@ -162,6 +163,8 @@ export class RoomServer {
             connection.member = member;
             prior?.close(4001, "Reconnected elsewhere");
             clearTimeout(connection.authTimer);
+            if (resumed && !prior)
+                this.presence(member, "reconnected");
             return { identity: member.identity, room: member.roomId ? this.summary(this.rooms.get(member.roomId)) : null, resumed };
         }
         const member = connection.member;
@@ -255,10 +258,27 @@ export class RoomServer {
         this.leave(member);
         member.roomId = room.id;
         room.members.add(member.identity.id);
+        this.presence(member, "joined");
+    }
+    presence(member, kind) {
+        const room = member.roomId ? this.rooms.get(member.roomId) : undefined;
+        if (!room || this.stopping)
+            return;
+        const data = { id: randomUUID(), roomId: room.id, kind, participant: member.identity, createdAt: Date.now() };
+        for (const id of room.members) {
+            if (id === member.identity.id)
+                continue;
+            const peer = this.members.get(id);
+            if (peer?.socket)
+                this.send(peer.socket, { event: "presence", data });
+        }
     }
     leave(member) {
         if (!member.roomId)
             return;
+        // A crashed peer was already announced on disconnect; expiry is not a second departure.
+        if (member.socket)
+            this.presence(member, "left");
         const room = this.rooms.get(member.roomId);
         room?.members.delete(member.identity.id);
         if (room?.members.size === 0)

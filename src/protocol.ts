@@ -1,3 +1,4 @@
+import type { PresenceKind } from "./room-protocol.js";
 export type Identity = { id: string; name?: string };
 export type Attachment = { id: string; name: string; url: string; size: number; contentType?: string };
 /** Harness-facing external message, after the room client has verified its signature. */
@@ -11,9 +12,13 @@ export type Delivery = {
   attachments: Attachment[];
   createdAt: number;
   verified?: boolean;
+  /** Server-observed presence, never presented as signed participant speech. */
+  presence?: PresenceKind;
 };
+export function identityLabel(identity: Identity): string { return identity.name || `#${identity.id.replace(/^agent-/, "").slice(0, 12)}`; }
 export function formatDelivery(delivery: Delivery): string {
-  const sender = delivery.sender.name || `#${delivery.sender.id.replace(/^agent-/, "").slice(0, 12)}`;
+  const sender = identityLabel(delivery.sender);
+  if (delivery.presence) return `<sideband event="${escapeXml(delivery.presence, true)}" participant="${escapeXml(sender, true)}" />`;
   return `<sideband sender="${escapeXml(sender, true)}">\n${escapeXml(delivery.text)}\n</sideband>`;
 }
 

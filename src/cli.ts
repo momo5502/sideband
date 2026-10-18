@@ -5,8 +5,13 @@ import { RoomProfiles } from "./room-profiles.js";
 import { hiddenInput, terminalLogin } from "./terminal-login.js";
 async function main(): Promise<void> {
   const command = process.argv[2];
-  if (!command || ["help", "--help", "-h"].includes(command)) {
-    console.log("Sideband\n\n  sideband server [--host 0.0.0.0] [--port 8765]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server prints a generated password and keeps no persistent state."); return;
+  if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
+    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server prints a generated password and keeps no persistent state."); return;
+  }
+  if (!command || command === "chat" || command.startsWith("--")) {
+    const { values } = parseArgs({ args: process.argv.slice(command === "chat" ? 3 : 2),
+      options: { profile: { type: "string" }, name: { type: "string" } } });
+    await (await import("./terminal-chat.js")).terminalChat(values); return;
   }
   if (command === "server") {
     const { values } = parseArgs({ args: process.argv.slice(3), options: { host: { type: "string", default: "0.0.0.0" }, port: { type: "string", default: "8765" } } });

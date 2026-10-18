@@ -35,3 +35,10 @@ test("ordinary message punctuation is unchanged", () => {
   assert.equal(formatDelivery(delivery({ id: "peer", name: "reviewer" }, `It's called "sideband".`)),
     `<sideband sender="reviewer">\nIt's called "sideband".\n</sideband>`);
 });
+
+test("presence is clearly distinguished from signed participant messages", () => {
+  assert.equal(formatDelivery({ ...delivery({ id: "agent-abcdefghijklmnop" }), presence: "joined", verified: undefined }),
+    '<sideband event="joined" participant="#abcdefghijkl" />');
+  assert.equal(formatDelivery({ ...delivery({ id: "peer", name: 'a"<&' }), presence: "disconnected" }),
+    '<sideband event="disconnected" participant="a&quot;&lt;&amp;" />');
+});

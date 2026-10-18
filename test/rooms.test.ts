@@ -5,7 +5,7 @@ import { connect as connectTcp } from "node:net";
 import WebSocket from "ws";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
-import { AgentKeys, loginProof, messageProof, parsePassword, verifyMessage, type SignedMessage } from "../src/room-protocol.js";
+import { AgentKeys, loginProof, messageProof, parsePassword, verifyMessage, validPresence, type PresenceEvent, type SignedMessage } from "../src/room-protocol.js";
 import { RoomSession } from "../src/room-session.js";
 import { RoomRegistry, callerKey } from "../src/room-registry.js";
 import type { DeliveryAdapter } from "../src/adapters/codex.js";
@@ -185,4 +185,57 @@ test("MCP registry binds host-supplied caller only and keeps subagents off", asy
     await assert.rejects(registry.activate("main", f.profile), /already/);
     await registry.deactivate("main"); assert.deepEqual(registry.status("main"), { state: "off" });
   } finally { await registry.close(); await f.close(); }
+});
+
+test("server presence is scoped to the room, excludes self, cannot be client-forged and is not message history", async () => {
+  const f = await fixture({ graceMs: 1000 });
+  try {
+    const a = await f.client("observer"); const b = await f.client("visitor", 20); const c = await f.client("elsewhere");
+    const events: PresenceEvent[][] = [[], [], []];
+    [a, b, c].forEach((client, index) => client.onPresence(event => events[index]!.push(event)));
+    const room = await a.createRoom("presence"); await c.createRoom("isolated");
+    await b.joinRoom(room.id); await until(() => events[0]!.length === 1);
+    assert.equal(events[0]![0]!.kind, "joined"); assert.equal(events[0]![0]!.participant.id, b.identity.id);
+    assert.equal(validPresence(events[0]![0]), true);
+    assert.equal(validPresence({ ...events[0]![0], participant: { ...b.identity, id: a.identity.id } }), false);
+    assert.equal(events[1]!.length, 0); assert.equal(events[2]!.length, 0);
+    await b.joinRoom(room.id); assert.equal(events[0]!.length, 1, "idempotent join is quiet");
+    await assert.rejects(b.request("presence", { ...events[0]![0], kind: "left", participant: a.identity }), /Unknown method/);
+    b.dropConnection(); await until(() => events[0]!.length === 3 && b.state === "on");
+    assert.deepEqual(events[0]!.map(event => event.kind), ["joined", "disconnected", "reconnected"]);
+    assert.equal(b.room!.id, room.id);
+    await b.leaveRoom(); await until(() => events[0]!.length === 4);
+    assert.equal(events[0]![3]!.kind, "left"); assert.deepEqual(await a.history(), []);
+    assert.equal(events[1]!.length, 0); assert.equal(events[2]!.length, 0);
+    await b.joinRoom(room.id); await until(() => events[0]!.length === 5);
+    await b.createRoom("moved"); await until(() => events[0]!.length === 6);
+    assert.equal(events[0]![5]!.kind, "left");
+  } finally { await f.close(); }
+});
+
+test("disconnect expiry does not emit a duplicate departure, and graceful logout emits left", async () => {
+  const f = await fixture({ graceMs: 30 });
+  try {
+    const a = await f.client(); const b = await f.client(undefined, 100_000);
+    const room = await a.createRoom("expiry"); await b.joinRoom(room.id);
+    const events: PresenceEvent[] = []; a.onPresence(event => events.push(event));
+    b.dropConnection(); await until(async () => (await a.members()).length === 1);
+    assert.deepEqual(events.map(event => event.kind), ["disconnected"]);
+    const c = await f.client(); await c.joinRoom(room.id); await c.close();
+    await until(() => events.length === 3);
+    assert.deepEqual(events.map(event => event.kind), ["disconnected", "joined", "left"]);
+  } finally { await f.close(); }
+});
+
+test("server presence reaches harness delivery as an event, not verified participant speech", async () => {
+  const f = await fixture(); const deliveries: Delivery[] = [];
+  const adapter: DeliveryAdapter = { prepare: async () => {}, deliver: async message => { deliveries.push(message); }, close: async () => {} };
+  const session = new RoomSession(f.profile, adapter);
+  try {
+    await session.enable(); const room = await session.client.createRoom("presence-harness");
+    const peer = await f.client("peer"); await peer.joinRoom(room.id); await peer.close();
+    await until(() => deliveries.length === 2); await session.drain();
+    assert.deepEqual(deliveries.map(delivery => delivery.presence), ["joined", "left"]);
+    assert.ok(deliveries.every(delivery => delivery.verified === undefined && delivery.text === ""));
+  } finally { await session.disable(); await f.close(); }
 });

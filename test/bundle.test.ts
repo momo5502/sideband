@@ -25,6 +25,9 @@ test("standalone plugin runs without node_modules and uses native Claude credent
   try {
     const help = spawnSync(process.execPath, [entry, "--help"], { cwd: directory, env, encoding: "utf8", windowsHide: true });
     assert.equal(help.status, 0, help.stderr); assert.match(help.stdout, /sideband login IP:port/);
+    assert.match(help.stdout, /sideband \[chat\]/);
+    const chat = spawnSync(process.execPath, [entry, "chat"], { cwd: directory, env, encoding: "utf8", windowsHide: true });
+    assert.equal(chat.status, 1); assert.match(chat.stderr, /interactive terminal/);
     const rejected = spawnSync(process.execPath, [entry, "login", profile.server], { cwd: directory, env, encoding: "utf8", windowsHide: true });
     assert.equal(rejected.status, 1); assert.match(rejected.stderr, /interactive terminal/);
     await client.connect(new StdioClientTransport({ command: process.execPath, args: [entry, "mcp", "--harness", "claude"], cwd: directory, env }));

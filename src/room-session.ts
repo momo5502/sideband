@@ -1,6 +1,7 @@
 import { RoomClient } from "./room-client.js";
 import type { ConnectionProfile, SignedMessage } from "./room-protocol.js";
 import type { DeliveryAdapter } from "./adapters/codex.js";
+import type { Delivery } from "./protocol.js";
 
 export class RoomSession {
   readonly client: RoomClient;
@@ -9,6 +10,7 @@ export class RoomSession {
   private delivered = Promise.resolve();
   private queued = 0;
   private unsubscribe?: () => void;
+  private unsubscribePresence?: () => void;
   private lastDeliveryError?: string;
   constructor(profile: ConnectionProfile, readonly adapter: DeliveryAdapter, name?: string) { this.client = new RoomClient(profile, name); }
   async enable(): Promise<void> {
@@ -17,16 +19,22 @@ export class RoomSession {
       await this.client.connect(); this.active = true;
       const generation = ++this.generation;
       this.unsubscribe = this.client.onMessage((message) => this.receive(message, generation));
+      this.unsubscribePresence = this.client.onPresence((event) => this.enqueue({ messageId: event.id, channelId: event.roomId,
+        sender: event.participant, senderAccountId: event.participant.id, presence: event.kind,
+        text: "", attachments: [], createdAt: event.createdAt }, generation));
     } catch (error) { await this.disable(); throw error; }
   }
   private receive(message: SignedMessage, generation: number): void {
+    this.enqueue({ messageId: message.id, channelId: message.roomId,
+      sender: { id: message.sender.id, ...(message.sender.name ? { name: message.sender.name } : {}) },
+      senderAccountId: message.sender.id, text: message.text, attachments: [], createdAt: message.createdAt, verified: true }, generation);
+  }
+  private enqueue(delivery: Delivery, generation: number): void {
     if (this.queued >= 100) { this.lastDeliveryError = "Delivery backlog is full; use history for missed messages."; return; }
     this.queued++;
     this.delivered = this.delivered.then(async () => {
-      if (!this.active || generation !== this.generation || message.roomId !== this.client.room?.id) return;
-      await this.adapter.deliver({ messageId: message.id, channelId: message.roomId,
-        sender: { id: message.sender.id, ...(message.sender.name ? { name: message.sender.name } : {}) },
-        senderAccountId: message.sender.id, text: message.text, attachments: [], createdAt: message.createdAt, verified: true });
+      if (!this.active || generation !== this.generation || delivery.channelId !== this.client.room?.id) return;
+      await this.adapter.deliver(delivery);
     }).catch((error) => { this.lastDeliveryError = error instanceof Error ? error.message : "Harness delivery failed."; })
       .finally(() => { this.queued--; });
   }
@@ -37,7 +45,7 @@ export class RoomSession {
   }
   async drain(): Promise<void> { await this.delivered; }
   async disable(): Promise<void> {
-    this.active = false; ++this.generation; this.unsubscribe?.();
+    this.active = false; ++this.generation; this.unsubscribe?.(); this.unsubscribePresence?.();
     await Promise.allSettled([this.client.close(), this.adapter.close()]);
   }
 }
