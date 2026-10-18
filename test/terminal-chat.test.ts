@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { stripVTControlCharacters } from "node:util";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { RoomClient } from "../src/room-client.js";
 import { RoomServer } from "../src/room-server.js";
 import { RoomProfiles } from "../src/room-profiles.js";
-import { ReadlineTerminal, chatMessage, runChatSession, terminalText, type ChatTerminal } from "../src/terminal-chat.js";
+import { ReadlineTerminal, chatMessage, runChatSession, terminalText, terminalColors, type ChatTerminal } from "../src/terminal-chat.js";
 
 class Terminal extends PassThrough {
   isTTY = true; isRaw = false; columns = 80;
@@ -42,6 +43,38 @@ test("terminal redraw preserves a draft when messages arrive; Ctrl+C and EOF rel
 test("terminal text cannot inject control codes, bidi overrides or unprefixed multiline senders", () => {
   assert.equal(terminalText("safe\ntext\r\b\x1b[2J\u202e"), "safe\ntext\\u000d\\u0008\\u001b[2J\\u202e");
   assert.match(chatMessage({ sender: { id: "agent-abcdefghijklmnop", publicKey: "" }, text: "hi\nforged: no", createdAt: 0 }), /#abcdefghijkl: hi\n  \| forged: no\n$/);
+});
+
+test("timestamps and identities have separate colors, while peer text stays plain and escaped", () => {
+  const message = { sender: { id: "agent-abcdefghijklmnop", name: "alice", publicKey: "" }, text: "hi\x1b[31m\u202e\nnext", createdAt: 0 };
+  const plain = chatMessage(message); const colored = chatMessage(message, true);
+  assert.match(colored, /^\x1b\[90m\[[^\]]+\]\x1b\[0m \x1b\[1;\d+malice\x1b\[0m: /);
+  assert.equal(stripVTControlCharacters(colored), plain);
+  assert.ok(!colored.includes("\x1b[31m")); assert.ok(colored.includes("hi\\u001b[31m\\u202e\n  | next\n"));
+  const nameStyle = (value: string) => /\x1b\[1;\d+m/.exec(value)?.[0];
+  assert.equal(nameStyle(colored), nameStyle(chatMessage({ ...message, text: "different text", createdAt: 1 }, true)));
+  assert.ok(!plain.includes("\x1b"));
+});
+
+test("color detection respects non-color terminals and NO_COLOR", () => {
+  assert.equal(terminalColors({ isTTY: true, getColorDepth: () => 8 }, {}), true);
+  assert.equal(terminalColors({ isTTY: false, getColorDepth: () => 8 }, {}), false);
+  assert.equal(terminalColors({ isTTY: true, getColorDepth: () => 1 }, {}), false);
+  assert.equal(terminalColors({ isTTY: true }, { TERM: "dumb" }), false);
+  assert.equal(terminalColors({ isTTY: true }, { NO_COLOR: "1" }), false);
+});
+
+test("colored terminal redraw preserves the draft and never permits peer escape sequences", async () => {
+  const input = new Terminal(); const output = new Terminal(); let printed = "";
+  output.on("data", chunk => { printed += chunk; });
+  const ui = new ReadlineTerminal(input, output);
+  try {
+    const answer = ui.question("room> "); input.write("unfinished draft");
+    ui.message({ sender: { id: "peer", name: "alice", publicKey: "" }, text: "hello\x1b]52;c;secret\x07", createdAt: 0 });
+    input.write("\r"); assert.equal(await answer, "unfinished draft");
+    assert.ok(stripVTControlCharacters(printed).includes("alice: hello\\u001b]52;c;secret\\u0007\n\n"));
+    assert.ok(!printed.includes("\x1b]52;"));
+  } finally { ui.close(); input.destroy(); output.destroy(); }
 });
 
 test("human terminal browses rooms, sees history/live pushes, sends signed messages and leaves cleanly", async () => {
@@ -121,7 +154,7 @@ test("packaged CLI with no arguments selects a saved login, joins, receives, sen
     await new RoomProfiles(directory).save("vps", profile);
     await agent.connect(); await agent.createRoom("cli-room"); await agent.send("prior context");
     // A simulated TTY over pipes exercises the actual bundled CLI/readline without a platform PTY dependency.
-    const shim = "process.stdin.isTTY = true; process.stdout.isTTY = true; process.stdin.setRawMode = function(mode) { this.isRaw = mode; return this; };";
+    const shim = "process.stdin.isTTY = true; process.stdout.isTTY = true; process.stdout.getColorDepth = () => 4; delete process.env.NO_COLOR; process.env.TERM = 'xterm'; process.stdin.setRawMode = function(mode) { this.isRaw = mode; return this; };";
     child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(shim)}`, entry], {
       cwd: directory, env: { ...process.env, SIDEBAND_STATE_DIR: directory, NODE_PATH: "" }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
     });
@@ -130,7 +163,7 @@ test("packaged CLI with no arguments selects a saved login, joins, receives, sen
     child.stdout!.on("data", chunk => { output += chunk; }); child.stderr!.on("data", chunk => { errors += chunk; });
     const untilOutput = async (text: string) => {
       const deadline = Date.now() + 5000;
-      while (!output.includes(text)) {
+      while (!stripVTControlCharacters(output).includes(text)) {
         if (Date.now() > deadline || child!.exitCode !== null) throw new Error(`Missing CLI output: ${text}; stderr: ${errors}`);
         await new Promise(resolve => setTimeout(resolve, 10));
       }
@@ -143,6 +176,7 @@ test("packaged CLI with no arguments selects a saved login, joins, receives, sen
     child.stdin!.write("from the terminal\n"); await received; await untilOutput("human-console: from the terminal");
     child.stdin!.write("/quit\n");
     const [code] = await exited; assert.equal(code, 0, errors);
+    assert.ok(output.includes("\x1b[90m")); assert.match(output, /\x1b\[1;\d+m/);
     assert.equal((await agent.members()).length, 1);
     assert.ok(!output.includes(profile.password)); assert.equal(errors, "");
   } finally {

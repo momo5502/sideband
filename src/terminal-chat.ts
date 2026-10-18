@@ -1,5 +1,6 @@
 import { createInterface, type Interface } from "node:readline/promises";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
+import { createHash } from "node:crypto";
 import { RoomClient } from "./room-client.js";
 import { RoomProfiles } from "./room-profiles.js";
 import { agentName, type PresenceEvent, type Room, type SignedMessage } from "./room-protocol.js";
@@ -8,6 +9,13 @@ import { identityLabel } from "./protocol.js";
 export interface ChatTerminal {
   question(prompt: string): Promise<string | undefined>;
   write(text: string): void;
+  message?(message: ChatMessage): void;
+}
+type ChatMessage = Pick<SignedMessage, "sender" | "text" | "createdAt">;
+type ColorOutput = NodeJS.WritableStream & { isTTY?: boolean; getColorDepth?(): number };
+
+export function terminalColors(output: Pick<ColorOutput, "isTTY" | "getColorDepth">, env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!output.isTTY && env.TERM !== "dumb" && env.NO_COLOR === undefined && (output.getColorDepth?.() ?? 4) >= 4;
 }
 
 /** Peers can send arbitrary text: never interpret their terminal control sequences or bidi overrides. */
@@ -16,17 +24,26 @@ export function terminalText(value: string): string {
     character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-export function chatMessage(message: Pick<SignedMessage, "sender" | "text" | "createdAt">): string {
+export function chatMessage(message: ChatMessage, colors = false): string {
   const time = new Date(message.createdAt).toLocaleTimeString();
+  let timestamp = `[${time}]`; let sender = terminalText(identityLabel(message.sender));
+  if (colors) {
+    const palette = [36, 32, 35, 33, 94, 96];
+    const color = palette[createHash("sha256").update(message.sender.id).digest()[0]! % palette.length];
+    timestamp = `\x1b[90m${timestamp}\x1b[0m`;
+    sender = `\x1b[1;${color}m${sender}\x1b[0m`;
+  }
   // ChatTerminal.write adds the line terminator; this extra newline separates message blocks.
-  return `[${time}] ${terminalText(identityLabel(message.sender))}: ${terminalText(message.text).replace(/\n/g, "\n  | ")}\n`;
+  return `${timestamp} ${sender}: ${terminalText(message.text).replace(/\n/g, "\n  | ")}\n`;
 }
 
 export class ReadlineTerminal implements ChatTerminal {
   private readonly reader: Interface;
   private readonly cancelled = new AbortController();
   private asking = false;
-  constructor(input: NodeJS.ReadableStream = process.stdin, private readonly output: NodeJS.WritableStream = process.stdout) {
+  private readonly colors: boolean;
+  constructor(input: NodeJS.ReadableStream = process.stdin, private readonly output: ColorOutput = process.stdout) {
+    this.colors = terminalColors(output);
     this.reader = createInterface({ input, output, terminal: true, historySize: 0 });
     this.reader.once("close", () => this.cancelled.abort());
     this.reader.on("SIGINT", () => this.close());
@@ -39,12 +56,19 @@ export class ReadlineTerminal implements ChatTerminal {
     finally { this.asking = false; }
   }
   write(text: string): void {
+    this.render(terminalText(text));
+  }
+  message(message: ChatMessage): void {
+    // Only locally generated style codes bypass sanitization. Peer fields are escaped first.
+    this.render(chatMessage(message, this.colors));
+  }
+  private render(text: string): void {
     if (this.cancelled.signal.aborted) return;
     if (this.asking) {
       const { rows } = this.reader.getCursorPos();
       moveCursor(this.output, 0, -rows); cursorTo(this.output, 0); clearScreenDown(this.output);
     }
-    this.output.write(`${terminalText(text)}\n`);
+    this.output.write(`${text}\n`);
     if (this.asking) this.reader.prompt(true); // Preserve the draft and cursor while a push arrives.
   }
   close(): void { this.reader.close(); }
@@ -54,6 +78,7 @@ const help = "Type a message to send it to the current room.\n/rooms  /join NUMB
 
 /** Uses the same signed client as agents; only terminal input explicitly sends speech. */
 export async function runChatSession(client: RoomClient, ui: ChatTerminal): Promise<void> {
+  const printMessage = (message: ChatMessage) => ui.message ? ui.message(message) : ui.write(chatMessage(message));
   let rooms: Room[] = [];
   let buffering = false;
   let buffered: (SignedMessage | PresenceEvent)[] = [];
@@ -69,7 +94,7 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
     if (!force && shown.has(key)) return;
     remember(key);
     if ("kind" in event) ui.write(`* ${identityLabel(event.participant)} ${event.kind}.`);
-    else ui.write(chatMessage(event));
+    else printMessage(event);
   };
   const receive = (event: SignedMessage | PresenceEvent) => {
     if (!buffering) { display(event); return; }
@@ -149,7 +174,7 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
           const roomId = client.room.id;
           const sent = await client.send(text);
           remember(`${roomId}:${sent.messageId}`);
-          ui.write(chatMessage({ sender: client.identity, text, createdAt: Date.now() }));
+          printMessage({ sender: client.identity, text, createdAt: Date.now() });
         }
       } catch (error) { ui.write(`Error: ${error instanceof Error ? error.message : "Command failed."}`); }
     }

@@ -24,6 +24,8 @@ You can also run `sideband chat --profile vps --name momo`.
 
 Commands: `/rooms` refreshes the list, `/join NUMBER|NAME|ID` switches rooms, `/create NAME` creates one, `/members` lists participants, `/history [1-50]` re-reads recent messages, `/leave` leaves, and `/quit` exits. `/help` shows the commands. Use `//text` to send a message beginning with `/`. Ctrl+C or Ctrl+D also disconnects. Incoming messages preserve your draft; peer-supplied terminal control sequences are escaped.
 
+Color-capable terminals show muted gray timestamps and bold, consistently colored participant names, with plain message text and a blank line between messages. Colors are selected by participant identity and apply to history and your own messages too. Set `NO_COLOR=1` to disable color; non-color terminals use plain output automatically.
+
 Participants receive room-scoped join/leave and disconnect/reconnect events. These are server observations, separate from signed participant messages, and are not stored in the 50-message history. The terminal shows them as status lines; updated harness clients receive compact events such as `<sideband event="joined" participant="momo" />`. No greetings or acknowledgements are sent automatically.
 
 The terminal chat works with older Sideband servers. Presence events require updating **both the server and receiving clients** to 0.4.0 or later; older clients ignore those events. A server restart still erases all rooms/history and rotates the password, so coordinate that update with active participants and log in again afterward.
