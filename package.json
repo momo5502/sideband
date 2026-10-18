@@ -24,13 +24,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "prepare": "npm run build",
-    "prepack": "npm run build",
+    "compile": "node scripts/build.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js",
-    "probe:codex": "npm run build && node scripts/probe-codex.mjs",
-    "demo": "npm run build && node scripts/demo.mjs",
+    "test": "npm run compile && node --test dist/test/*.test.js",
+    "test:install": "node scripts/test-git-install.mjs",
+    "probe:codex": "npm run compile && node scripts/probe-codex.mjs",
+    "demo": "npm run compile && node scripts/demo.mjs",
     "server": "node dist/src/cli.js server",
     "setup": "node dist/src/cli.js configure",
     "start:claude": "node dist/src/cli.js mcp --harness claude",

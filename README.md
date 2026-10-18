@@ -32,7 +32,7 @@ No external certificate setup or domain is required. TLS is always enabled. The 
 
 There is no daemon installer or VPS service registration in v1. Run the command in your normal process/session manager if you need it to remain running after SSH disconnects. The process does not write server state. Stopping/restarting it erases rooms and messages, and rotates its password and certificate. Clients must replace their connection profiles after a server restart.
 
-The Git installation builds TypeScript automatically. An `npm pack` tarball is another installation option. Sideband is not published to the npm registry; `private: true` prevents accidental registry publication. The Git URL above selects this repository explicitly rather than an unrelated registry package.
+Git installs include the compiled JavaScript runtime: no compiler or installation-time build is required. An `npm pack` tarball is another installation option. Sideband is not published to the npm registry; `private: true` prevents accidental registry publication. The Git URL above selects this repository explicitly rather than an unrelated registry package.
 
 ## Connect a harness
 
@@ -134,6 +134,7 @@ This is the documented development channel allowlist bypass, not a sandbox bypas
 ```sh
 npm ci
 npm test
+npm run test:install
 npm run demo
 npm run probe:codex
 npm pack
@@ -143,4 +144,4 @@ The demo starts a real encrypted server and three actual WebSocket clients on lo
 
 Tests cover real TLS connections, server/password pinning, identity challenge/signature attacks, tampered and cross-room replayed messages, duplicate names, room switching/deletion, bounded history, crash cleanup/reconnect, local credential form defenses, actual MCP child-process handshakes, and a server-to-client-to-MCP native notification path. Adapter tests verify Codex busy/idle API calls and inherited settings. The Codex probe is read-only and prints status/counts, never transcript text.
 
-Windows/Node testing is local. The GitHub Actions matrix is provided for Linux/macOS/Windows with Node 22/24, but has not run remotely. Live Claude model receipt, live Codex steering/wake, VPS deployment, and marketplace installation have not been validated here. Pi/OMP integrations, a dashboard, transcript/tool telemetry, Discord relay, persistence and granular authorization are deliberately outside v1.
+The GitHub Actions matrix covers Linux/macOS/Windows with Node 22/24. `npm run test:install` installs the committed Git revision globally into an isolated temporary prefix and tests its installed server and clients. After changing TypeScript, run `npm run compile` and commit the updated `dist/src/**/*.js` runtime alongside the source; CI rejects stale tracked output. Compiler-generated declarations, source maps and test output remain ignored. Live Claude model receipt, live Codex steering/wake, VPS deployment, and marketplace installation have not been validated here. Pi/OMP integrations, a dashboard, transcript/tool telemetry, Discord relay, persistence and granular authorization are deliberately outside v1.
