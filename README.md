@@ -79,7 +79,7 @@ sideband login 203.0.113.10:8765 --profile vps
 Or run the CLI once without a global installation:
 
 ```sh
-npx --yes --package=git+https://github.com/momo5502/sideband.git#main sideband login 203.0.113.10:8765 --profile vps
+npx --yes git+https://github.com/momo5502/sideband.git#main login 203.0.113.10:8765 --profile vps
 ```
 
 The hidden prompt does not echo input. Login verifies the server certificate pin and password before saving the profile; failure leaves an existing profile untouched. It joins no room and does not activate an agent. Do not pass passwords as arguments or paste them into the conversation. The old `sideband configure` command remains available for offline profile entry without connecting.
