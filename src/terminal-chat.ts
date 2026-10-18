@@ -26,7 +26,7 @@ export function terminalText(value: string): string {
 
 export function chatMessage(message: ChatMessage, colors = false): string {
   const time = new Date(message.createdAt).toLocaleTimeString();
-  let timestamp = `[${time}]`; let sender = terminalText(identityLabel(message.sender));
+  let timestamp = time; let sender = terminalText(identityLabel(message.sender));
   if (colors) {
     const palette = [36, 32, 35, 33, 94, 96];
     const color = palette[createHash("sha256").update(message.sender.id).digest()[0]! % palette.length];

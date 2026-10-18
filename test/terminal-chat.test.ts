@@ -48,7 +48,8 @@ test("terminal text cannot inject control codes, bidi overrides or unprefixed mu
 test("timestamps and identities have separate colors, while peer text stays plain and escaped", () => {
   const message = { sender: { id: "agent-abcdefghijklmnop", name: "alice", publicKey: "" }, text: "hi\x1b[31m\u202e\nnext", createdAt: 0 };
   const plain = chatMessage(message); const colored = chatMessage(message, true);
-  assert.match(colored, /^\x1b\[90m\[[^\]]+\]\x1b\[0m \x1b\[1;\d+malice\x1b\[0m: /);
+  assert.match(colored, /^\x1b\[90m[^\x1b]+\x1b\[0m \x1b\[1;\d+malice\x1b\[0m: /);
+  assert.ok(plain.startsWith(`${new Date(message.createdAt).toLocaleTimeString()} alice: `), "timestamps have no surrounding brackets");
   assert.equal(stripVTControlCharacters(colored), plain);
   assert.ok(!colored.includes("\x1b[31m")); assert.ok(colored.includes("hi\\u001b[31m\\u202e\n  | next\n"));
   const nameStyle = (value: string) => /\x1b\[1;\d+m/.exec(value)?.[0];

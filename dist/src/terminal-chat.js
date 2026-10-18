@@ -14,7 +14,7 @@ export function terminalText(value) {
 }
 export function chatMessage(message, colors = false) {
     const time = new Date(message.createdAt).toLocaleTimeString();
-    let timestamp = `[${time}]`;
+    let timestamp = time;
     let sender = terminalText(identityLabel(message.sender));
     if (colors) {
         const palette = [36, 32, 35, 33, 94, 96];
