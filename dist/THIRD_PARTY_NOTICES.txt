@@ -27,7 +27,7 @@ SOFTWARE.
 @peculiar/asn1-cms@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -53,7 +53,7 @@ SOFTWARE.
 @peculiar/asn1-csr@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -71,7 +71,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.  
+SOFTWARE.
 
 
 ---
@@ -79,7 +79,7 @@ SOFTWARE.
 @peculiar/asn1-ecc@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -97,7 +97,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.  
+SOFTWARE.
 
 
 ---
@@ -105,7 +105,7 @@ SOFTWARE.
 @peculiar/asn1-pfx@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -123,7 +123,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.  
+SOFTWARE.
 
 
 ---
@@ -131,7 +131,7 @@ SOFTWARE.
 @peculiar/asn1-pkcs8@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -149,7 +149,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.  
+SOFTWARE.
 
 
 ---
@@ -183,7 +183,7 @@ SOFTWARE.
 @peculiar/asn1-rsa@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -201,7 +201,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.  
+SOFTWARE.
 
 
 ---
@@ -209,7 +209,7 @@ SOFTWARE.
 @peculiar/asn1-schema@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -235,7 +235,7 @@ SOFTWARE.
 @peculiar/asn1-x509@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -261,7 +261,7 @@ SOFTWARE.
 @peculiar/asn1-x509-attr@2.11.0 — LICENSE
 MIT License
 
-Copyright (c) 2020 
+Copyright (c) 2020
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -279,7 +279,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.  
+SOFTWARE.
 
 
 ---
@@ -570,7 +570,7 @@ Apache License
 
 Version 2.0, January 2004
 
-http://www.apache.org/licenses/ 
+http://www.apache.org/licenses/
 
 TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 

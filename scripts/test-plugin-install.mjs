@@ -37,7 +37,7 @@ try {
   const source = process.argv[4] ?? snapshot;
   run(["plugin", "marketplace", "add", source]);
   run(["plugin", harness === "codex" ? "add" : "install", "sideband@sideband"]);
-  const cached = await bundles(home);
+  const cached = await bundles(join(home, "plugins", "cache"));
   if (cached.length !== 1) throw new Error(`Expected one standalone runtime in isolated plugin cache; found ${cached.length}.`);
   let command = process.execPath; let args = [cached[0], "mcp", "--harness", harness]; let cwd = snapshot;
   if (harness === "codex") {

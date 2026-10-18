@@ -16,7 +16,7 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 // Bundle all runtime dependencies; optional ws native accelerators stay disabled.
 const bundled = await build({ absWorkingDir: root, entryPoints: ["src/cli.ts"], outfile: "dist/sideband.cjs",
   bundle: true, platform: "node", format: "cjs", target: "node22", minify: true,
-  legalComments: "inline", metafile: true, define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' } });
+  legalComments: "none", metafile: true, define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' } });
 // Preserve third-party license files for dependencies included in the standalone runtime.
 const packages = new Set();
 for (const input of Object.keys(bundled.metafile.inputs)) {
@@ -37,4 +37,4 @@ for (const directory of [...packages].sort()) {
   if (!licenses.length) throw new Error(`Missing bundled license for ${manifest.name}.`);
   for (const name of licenses.sort()) notices.push(`${manifest.name}@${manifest.version} — ${name}\n${await readFile(join(directory, name), "utf8")}`);
 }
-await writeFile(join(output, "THIRD_PARTY_NOTICES.txt"), notices.join("\n\n---\n\n"));
+await writeFile(join(output, "THIRD_PARTY_NOTICES.txt"), notices.join("\n\n---\n\n").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, ""));
