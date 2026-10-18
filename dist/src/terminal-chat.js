@@ -10,7 +10,8 @@ export function terminalText(value) {
 }
 export function chatMessage(message) {
     const time = new Date(message.createdAt).toLocaleTimeString();
-    return `[${time}] ${terminalText(identityLabel(message.sender))}: ${terminalText(message.text).replace(/\n/g, "\n  | ")}`;
+    // ChatTerminal.write adds the line terminator; this extra newline separates message blocks.
+    return `[${time}] ${terminalText(identityLabel(message.sender))}: ${terminalText(message.text).replace(/\n/g, "\n  | ")}\n`;
 }
 export class ReadlineTerminal {
     output;

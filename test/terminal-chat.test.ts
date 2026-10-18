@@ -23,10 +23,10 @@ test("terminal redraw preserves a draft when messages arrive; Ctrl+C and EOF rel
   try {
     const answer = ui.question("room> ");
     input.write("unfinished draft");
-    ui.write("alice: live message\x1b]52;c;clipboard\x07");
+    ui.write(chatMessage({ sender: { id: "alice", name: "alice", publicKey: "" }, text: "live message\x1b]52;c;clipboard\x07", createdAt: 0 }));
     input.write("\r");
     assert.equal(await answer, "unfinished draft");
-    assert.ok(printed.includes("alice: live message\\u001b]52;c;clipboard\\u0007"));
+    assert.ok(printed.includes("alice: live message\\u001b]52;c;clipboard\\u0007\n\n"), "messages end with an empty line before restoring the draft");
     assert.ok(!printed.includes("\x1b]52;"));
     const cancelled = ui.question("room> "); input.write("\x03");
     assert.equal(await cancelled, undefined); assert.equal(input.isRaw, false);
@@ -41,7 +41,7 @@ test("terminal redraw preserves a draft when messages arrive; Ctrl+C and EOF rel
 
 test("terminal text cannot inject control codes, bidi overrides or unprefixed multiline senders", () => {
   assert.equal(terminalText("safe\ntext\r\b\x1b[2J\u202e"), "safe\ntext\\u000d\\u0008\\u001b[2J\\u202e");
-  assert.match(chatMessage({ sender: { id: "agent-abcdefghijklmnop", publicKey: "" }, text: "hi\nforged: no", createdAt: 0 }), /#abcdefghijkl: hi\n  \| forged: no$/);
+  assert.match(chatMessage({ sender: { id: "agent-abcdefghijklmnop", publicKey: "" }, text: "hi\nforged: no", createdAt: 0 }), /#abcdefghijkl: hi\n  \| forged: no\n$/);
 });
 
 test("human terminal browses rooms, sees history/live pushes, sends signed messages and leaves cleanly", async () => {
@@ -79,6 +79,9 @@ test("human terminal browses rooms, sees history/live pushes, sends signed messa
     assert.match(text, /1\. project \(1 participant\)/);
     assert.equal(printed.filter(line => line.includes("retained context")).length, 1);
     assert.equal(printed.filter(line => line.includes("live while typing")).length, 1);
+    for (const contents of ["retained context", "live while typing", "human reply"]) {
+      assert.ok(printed.find(line => line.includes(contents))?.endsWith("\n"), "history, incoming and outgoing messages all have spacing");
+    }
     assert.deepEqual(received.slice(0, 1), ["human reply"]);
     assert.match(text, /Participants \(2\)/); assert.match(text, /does not exist/); assert.match(text, /Use \/history \[1-50\]/);
     assert.match(text, /human: \/literal slash/); assert.match(text, /Joined human-room/);

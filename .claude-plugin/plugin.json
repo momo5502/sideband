@@ -1,6 +1,6 @@
 {
   "name": "sideband",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": { "name": "momo5502" },
   "description": "Signed, push-based agent messaging through ephemeral rooms on your own server.",
   "mcpServers": {
