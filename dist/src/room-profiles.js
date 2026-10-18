@@ -6,8 +6,10 @@ import { parsePassword, serverUrl } from "./room-protocol.js";
 export const stateDirectory = process.env.SIDEBAND_STATE_DIR ?? join(homedir(), ".sideband");
 export class RoomProfiles {
     directory;
-    constructor(directory = stateDirectory) {
+    nativeProfile;
+    constructor(directory = stateDirectory, nativeProfile) {
         this.directory = directory;
+        this.nativeProfile = nativeProfile;
     }
     path(name) {
         if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name))
@@ -15,21 +17,27 @@ export class RoomProfiles {
         return join(this.directory, "connections", `${name}.json`);
     }
     async names() {
+        let names = [];
         try {
-            return (await readdir(join(this.directory, "connections"))).filter((name) => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\.json$/.test(name)).map((name) => name.slice(0, -5)).sort();
+            names = (await readdir(join(this.directory, "connections"))).filter((name) => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\.json$/.test(name)).map((name) => name.slice(0, -5));
         }
-        catch {
-            return [];
-        }
+        catch { /* No terminal profiles yet. */ }
+        if (this.nativeProfile)
+            names.push("claude");
+        return [...new Set(names)].sort();
     }
     async load(name) {
         const path = this.path(name);
+        if (name === "claude" && this.nativeProfile) {
+            parsePassword(this.nativeProfile.password);
+            return { server: serverUrl(this.nativeProfile.server), password: this.nativeProfile.password };
+        }
         let value;
         try {
             value = JSON.parse(await readFile(path, "utf8"));
         }
         catch {
-            throw new Error(`Connection profile '${name}' is unavailable. Run sideband_setup or sideband configure first.`);
+            throw new Error(`Connection profile '${name}' is unavailable. Use sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.`);
         }
         parsePassword(value.password);
         return { server: serverUrl(value.server), password: value.password };

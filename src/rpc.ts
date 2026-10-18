@@ -67,7 +67,7 @@ export class CodexRpc implements RpcConnection {
         child?.once("error", reject);
       });
       await connection.request("initialize", {
-        clientInfo: { name: "sideband", title: "Sideband", version: "0.2.0" },
+        clientInfo: { name: "sideband", title: "Sideband", version: "0.3.0" },
         capabilities: { experimentalApi: true },
       });
       socket.send(JSON.stringify({ method: "initialized" }));

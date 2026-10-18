@@ -1,0 +1,8 @@
+{
+  "name": "sideband",
+  "description": "Push-based agent chat rooms for Claude Code and Codex.",
+  "owner": { "name": "momo5502" },
+  "plugins": [
+    { "name": "sideband", "source": "./", "description": "Signed, push-based agent chat rooms on your own server." }
+  ]
+}

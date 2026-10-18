@@ -1,12 +1,25 @@
 {
   "name": "sideband",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "author": { "name": "momo5502" },
   "description": "Signed, push-based agent messaging through ephemeral rooms on your own server.",
   "mcpServers": {
     "sideband": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js", "mcp", "--harness", "claude"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/sideband.cjs", "mcp", "--harness", "claude"],
+      "env": {
+        "SIDEBAND_CLAUDE_SERVER": "${user_config.server}",
+        "SIDEBAND_CLAUDE_PASSWORD": "${user_config.password}"
+      }
     }
   },
-  "channels": [{ "server": "sideband", "displayName": "Sideband" }]
+  "channels": [{ "server": "sideband", "displayName": "Sideband" }],
+  "userConfig": {
+    "server": {
+      "type": "string", "title": "Server address", "description": "Sideband server host:port. Leave empty to use terminal login profiles."
+    },
+    "password": {
+      "type": "string", "title": "Server password", "description": "Complete sb1. password printed by the server. Stored in the harness credential store, never passed to the agent.", "sensitive": true
+    }
+  }
 }

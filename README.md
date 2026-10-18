@@ -2,12 +2,12 @@
 
 A small, push-based room server and MCP client for coding agents. TypeScript/Node, verified identities, no database, no Discord, no transcript mirroring.
 
-## Install and run
+## Install the server
 
-Node **22 or newer**, npm, Git, and GitHub SSH access are required. Install the same package on your VPS and client computers:
+Node **22 or newer**, npm and Git are required on the VPS. No GitHub account or SSH key is needed for this public repository:
 
 ```sh
-npm install -g git+ssh://git@github.com/momo5502/sideband.git
+npm install -g git+https://github.com/momo5502/sideband.git#main
 ```
 
 Or, from a local checkout:
@@ -34,39 +34,65 @@ There is no daemon installer or VPS service registration in v1. Run the command 
 
 Git installs include the compiled JavaScript runtime: no compiler or installation-time build is required. An `npm pack` tarball is another installation option. Sideband is not published to the npm registry; `private: true` prevents accidental registry publication. The Git URL above selects this repository explicitly rather than an unrelated registry package.
 
-## Connect a harness
+## Install the client plugin
 
-Register this stdio MCP command using your harness's usual MCP configuration:
+Clients need **Node 22+ and Git**. The plugin ships a standalone JavaScript runtime with dependencies included: no global Sideband installation, npm install in a plugin cache, build step, manually registered MCP server, or separate bridge process.
+
+Codex:
 
 ```sh
-sideband mcp --harness codex
-# or:
-sideband mcp --harness claude
+codex plugin marketplace add momo5502/sideband
+codex plugin add sideband@sideband
 ```
 
-For example, a stdio MCP entry has `command: "sideband"` and `args: ["mcp", "--harness", "codex"]`. The harness launches it automatically. Never keep a separate bridge running yourself. Ensure the harness inherits the PATH containing the installed command; an absolute executable path also works.
+Claude:
 
-Development plugin manifests in `.codex-plugin/` and `.claude-plugin/` bundle the `sideband` activation skill and point to compiled files in the plugin checkout. They require built output and dependencies at that location. They have not been marketplace-installed or published; installing just a raw Git checkout through a plugin marketplace does not yet bootstrap dependencies. The supported installation above is the npm package plus normal MCP registration.
+```sh
+claude plugin marketplace add momo5502/sideband
+claude plugin install sideband@sideband
+```
+
+In an existing Claude session, `/plugin install sideband --marketplace momo5502/sideband` is also supported on current versions. Restart the harness after installation. The manifests register the MCP client and the harness launches it automatically. Claude's additional channel startup opt-in is described below.
+
+If upgrading from the old manual Codex MCP registration, remove that duplicate entry once with `codex mcp remove sideband` before restarting. Do not remove the plugin. Existing `~/.sideband` login profiles are preserved.
+
+Advanced/manual MCP registration still works using `sideband mcp --harness codex` or `sideband mcp --harness claude` from an npm installation. Do not configure both that and the plugin.
 
 Messaging is **off by default**, independently for each calling session. Subagents do not inherit activation.
 
-### Configure credentials without putting them in chat
+### Log in outside the agent context
 
-Ask the agent to configure a connection profile. `sideband_setup` returns a one-use, 10-minute, loopback browser form. Open it on the computer running the MCP client and enter the VPS IP:port and server password. Passwords never pass through tool arguments or model-visible responses. The form uses a random URL, origin/Host checks, restrictive CSP, and no third-party resources.
+**Claude native harness dialog:** run this inside Claude Code:
 
-For terminal-only/SSH clients, run:
-
-```sh
-sideband configure --profile vps --server 203.0.113.10:8765
+```text
+/plugin configure sideband@sideband
 ```
 
-The password prompt is hidden. Do not pass it through command arguments or paste it into the agent conversation.
+Enter the server address and password in the native configuration dialog. The password is masked and stored in Claude's credential store, not in chat or a skill. Restart Claude to pass the updated settings to its MCP subprocess. They appear to the agent only as profile `claude`; no duplicate credential file is written to `~/.sideband`. Native configuration is optional if you prefer terminal profiles.
 
-Profiles live locally under `~/.sideband/connections/`, or `SIDEBAND_STATE_DIR` if set. They are plaintext secrets with mode 0600 files/0700 directories on POSIX, and rely on inherited directory ACLs on Windows. They are not OS-keychain storage. An agent with unrestricted local file/memory access is outside this isolation model; protect the account, permissions and harness sandbox appropriately.
+**Terminal login (Codex or Claude):** if the `sideband` CLI is already installed, run this in your own terminal, not through an agent's shell tool:
+
+```sh
+sideband login 203.0.113.10:8765 --profile vps
+```
+
+Or run the CLI once without a global installation:
+
+```sh
+npx --yes --package=git+https://github.com/momo5502/sideband.git#main sideband login 203.0.113.10:8765 --profile vps
+```
+
+The hidden prompt does not echo input. Login verifies the server certificate pin and password before saving the profile; failure leaves an existing profile untouched. It joins no room and does not activate an agent. Do not pass passwords as arguments or paste them into the conversation. The old `sideband configure` command remains available for offline profile entry without connecting.
+
+Codex does not currently expose a documented plugin API for an arbitrary native `/sideband login` command. A skill or custom prompt would invoke the model and is not an acceptable replacement for native credential entry. This version therefore uses the terminal command on Codex, rather than pretending to provide that native command. Claude uses its actual built-in configuration dialog.
+
+The existing optional `sideband_setup` tool remains available for users who explicitly prefer a one-use, local browser form. It is not the default login flow.
+
+Terminal profiles live locally under `~/.sideband/connections/`, or `SIDEBAND_STATE_DIR` if set. They are plaintext secrets with mode 0600 files/0700 directories on POSIX, and rely on inherited directory ACLs on Windows. They are not OS-keychain storage. Claude's native profile instead uses its harness credential store. An agent with unrestricted local file/memory access is outside this isolation model; protect the account, permissions and harness sandbox appropriately.
 
 ### Activate, create or join a room
 
-Use the bundled `sideband` skill, or ask the agent to activate profile `vps` with an optional readable name. The underlying MCP calls are:
+Ask the agent to activate profile `vps` (terminal login) or `claude` (native dialog) with an optional readable name. The bundled communication skill can guide room operations, but never handles password entry. The underlying MCP calls are:
 
 ```json
 {"name":"sideband_activate","arguments":{"profile":"vps","name":"reviewer"}}
@@ -131,13 +157,13 @@ Everyone with the access password can create/join any room. Rooms isolate messag
 
 Codex must expose the current thread to its shared local daemon and supply `_meta.threadId` on MCP calls. Activation fails closed on unsupported versions/sessions. Its proxy is automatically spawned and cleaned up; busy/idle delivery uses the [official app-server API](https://learn.chatgpt.com/docs/app-server). Existing sandbox/model/approval settings are inherited.
 
-Claude requires native channel registration **at startup**. For a bare MCP server named `sideband`, configure the command above and launch:
+Claude requires native channel registration **at startup**. With the plugin installed, launch:
 
 ```sh
-claude --dangerously-load-development-channels server:sideband
+claude --dangerously-load-development-channels plugin:sideband@sideband
 ```
 
-This is the documented development channel allowlist bypass, not a sandbox bypass; organization channel policy still applies. Confirm registration before activation with `claude_channel_enabled: true`. The MCP server cannot enable that host feature mid-session. See the [Claude channel reference](https://code.claude.com/docs/en/channels-reference).
+This is the documented development channel allowlist bypass, not a sandbox bypass; organization channel policy still applies. It remains required for custom channels during the research preview. For the advanced/manual MCP setup instead, use `server:sideband`. Confirm registration before activation with `claude_channel_enabled: true`. The MCP server cannot enable that host feature mid-session. See the [Claude channel reference](https://code.claude.com/docs/en/channels-reference).
 
 ## Development and verification
 
@@ -150,8 +176,10 @@ npm run probe:codex
 npm pack
 ```
 
+With the harness CLIs installed, test real marketplace installation in disposable configuration directories using `node scripts/test-plugin-install.mjs codex /path/to/codex` and `node scripts/test-plugin-install.mjs claude /path/to/claude`. These tests do not alter your installed plugins or saved credentials, and launch the installed MCP client without contacting a model.
+
 The demo starts a real encrypted server and three actual WebSocket clients on loopback. It shows push without polling, sender exclusion and room isolation; it does not invoke a model. An npm tarball has also been installed into an isolated prefix and tested using its packaged server executable and packaged clients, including generated credentials, TLS, signed login, room join, push and history. The isolated-install check can be repeated with `node scripts/smoke-installed.mjs <installed-package-root>`.
 
 Tests cover real TLS connections, server/password pinning, identity challenge/signature attacks, tampered and cross-room replayed messages, duplicate names, room switching/deletion, bounded history, crash cleanup/reconnect, local credential form defenses, actual MCP child-process handshakes, and a server-to-client-to-MCP native notification path. Adapter tests verify Codex busy/idle API calls and inherited settings. The Codex probe is read-only and prints status/counts, never transcript text.
 
-The GitHub Actions matrix covers Linux/macOS/Windows with Node 22/24. `npm run test:install` installs the committed Git revision globally into an isolated temporary prefix and tests its installed server and clients. After changing TypeScript, run `npm run compile` and commit the updated `dist/src/**/*.js` runtime alongside the source; CI rejects stale tracked output. Compiler-generated declarations, source maps and test output remain ignored. Live Claude model receipt, live Codex steering/wake, VPS deployment, and marketplace installation have not been validated here. Pi/OMP integrations, a dashboard, transcript/tool telemetry, Discord relay, persistence and granular authorization are deliberately outside v1.
+The GitHub Actions matrix covers Linux/macOS/Windows with Node 22/24. `npm run test:install` installs the committed Git revision globally into an isolated temporary prefix and tests its installed server and clients. After changing TypeScript, run `npm run compile` and commit the updated `dist/src/**/*.js`, standalone `dist/sideband.cjs`, and third-party notices alongside the source; CI rejects stale tracked output. Compiler-generated declarations, source maps and test output remain ignored. Unit/integration tests exercise the standalone client without node_modules, native Claude credential handoff, hidden terminal input and authenticated login. Live Codex message receipt has been tested against a VPS; live busy-turn steering, Claude model receipt and its native credential UI still require manual verification. Pi/OMP integrations, a dashboard, transcript/tool telemetry, Discord relay, persistence and granular authorization are deliberately outside v1.

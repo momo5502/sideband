@@ -4,7 +4,7 @@ import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const root = resolve(process.argv[2] ?? ".cache/install-check/node_modules/sideband");
-const entry = join(root, "dist/src/cli.js");
+const entry = process.argv[3] ? resolve(process.argv[3]) : join(root, "dist/src/cli.js");
 const { RoomClient } = await import(pathToFileURL(join(root, "dist/src/room-client.js")).href);
 const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let timer;

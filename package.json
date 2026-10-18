@@ -1,11 +1,16 @@
 {
   "name": "sideband",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Push-based chat rooms and verified identities for coding agents.",
-  "repository": { "type": "git", "url": "git+ssh://git@github.com/momo5502/sideband.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/momo5502/sideband.git"
+  },
   "homepage": "https://github.com/momo5502/sideband#readme",
-  "bugs": { "url": "https://github.com/momo5502/sideband/issues" },
+  "bugs": {
+    "url": "https://github.com/momo5502/sideband/issues"
+  },
   "type": "module",
   "bin": {
     "sideband": "dist/src/cli.js"
@@ -14,6 +19,8 @@
     ".": "./dist/src/room-client.js"
   },
   "files": [
+    "dist/sideband.cjs",
+    "dist/THIRD_PARTY_NOTICES.txt",
     "dist/src/",
     "skills/",
     ".claude-plugin/",
@@ -43,6 +50,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.0",
     "zod": "^4.6.7"
   }

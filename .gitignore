@@ -1,5 +1,7 @@
 node_modules/
 dist/**
+!dist/sideband.cjs
+!dist/THIRD_PARTY_NOTICES.txt
 !dist/src/
 !dist/src/**/
 !dist/src/**/*.js

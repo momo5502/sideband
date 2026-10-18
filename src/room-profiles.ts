@@ -6,20 +6,27 @@ import { parsePassword, serverUrl, type ConnectionProfile } from "./room-protoco
 
 export const stateDirectory = process.env.SIDEBAND_STATE_DIR ?? join(homedir(), ".sideband");
 export class RoomProfiles {
-  constructor(readonly directory = stateDirectory) {}
+  constructor(readonly directory = stateDirectory, private readonly nativeProfile?: ConnectionProfile) {}
   private path(name: string): string {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) throw new Error("Invalid connection profile name.");
     return join(this.directory, "connections", `${name}.json`);
   }
   async names(): Promise<string[]> {
-    try { return (await readdir(join(this.directory, "connections"))).filter((name) => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\.json$/.test(name)).map((name) => name.slice(0, -5)).sort(); }
-    catch { return []; }
+    let names: string[] = [];
+    try { names = (await readdir(join(this.directory, "connections"))).filter((name) => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\.json$/.test(name)).map((name) => name.slice(0, -5)); }
+    catch { /* No terminal profiles yet. */ }
+    if (this.nativeProfile) names.push("claude");
+    return [...new Set(names)].sort();
   }
   async load(name: string): Promise<ConnectionProfile> {
     const path = this.path(name);
+    if (name === "claude" && this.nativeProfile) {
+      parsePassword(this.nativeProfile.password);
+      return { server: serverUrl(this.nativeProfile.server), password: this.nativeProfile.password };
+    }
     let value;
     try { value = JSON.parse(await readFile(path, "utf8")); }
-    catch { throw new Error(`Connection profile '${name}' is unavailable. Run sideband_setup or sideband configure first.`); }
+    catch { throw new Error(`Connection profile '${name}' is unavailable. Use sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.`); }
     parsePassword(value.password);
     return { server: serverUrl(value.server), password: value.password };
   }

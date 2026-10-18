@@ -1,48 +1,12 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
-import { emitKeypressEvents } from "node:readline";
 import { RoomProfiles } from "./room-profiles.js";
-export async function hiddenInput(prompt) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY)
-        throw new Error("Use an interactive terminal, or the sideband_setup browser form. Never put passwords in chat or command arguments.");
-    process.stdout.write(prompt);
-    emitKeypressEvents(process.stdin);
-    const wasRaw = process.stdin.isRaw;
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    return new Promise((resolve, reject) => {
-        let secret = "";
-        const finish = (error) => {
-            process.stdin.off("keypress", handler);
-            process.stdin.setRawMode(wasRaw);
-            process.stdin.pause();
-            process.stdout.write("\n");
-            if (error)
-                reject(error);
-            else
-                resolve(secret);
-            secret = "";
-        };
-        const handler = (value, key) => {
-            if (key.ctrl && key.name === "c")
-                return finish(new Error("Cancelled."));
-            if (key.name === "return" || key.name === "enter")
-                return finish();
-            if (key.name === "backspace") {
-                secret = secret.slice(0, -1);
-                return;
-            }
-            if (!key.ctrl && value && !/[\x00-\x1f\x7f]/.test(value))
-                secret += value;
-        };
-        process.stdin.on("keypress", handler);
-    });
-}
+import { hiddenInput, terminalLogin } from "./terminal-login.js";
 async function main() {
     const command = process.argv[2];
     if (!command || ["help", "--help", "-h"].includes(command)) {
-        console.log("Sideband\n\n  sideband server [--host 0.0.0.0] [--port 8765]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nThe server prints a generated password and keeps no persistent state.\nClients can also configure a profile through the sideband_setup MCP browser form.");
+        console.log("Sideband\n\n  sideband server [--host 0.0.0.0] [--port 8765]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server prints a generated password and keeps no persistent state.");
         return;
     }
     if (command === "server") {
@@ -65,6 +29,14 @@ async function main() {
         if (values.harness !== "codex" && values.harness !== "claude")
             throw new Error("Use --harness codex or --harness claude.");
         await (await import("./room-mcp.js")).runMcp(values.harness);
+        return;
+    }
+    if (command === "login") {
+        const { values, positionals } = parseArgs({ args: process.argv.slice(3), allowPositionals: true,
+            options: { profile: { type: "string", default: "default" } } });
+        if (positionals.length !== 1)
+            throw new Error("Use sideband login IP:port [--profile NAME]. Do not supply a password as an argument.");
+        await terminalLogin(positionals[0], values.profile);
         return;
     }
     if (command === "configure") {
