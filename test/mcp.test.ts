@@ -81,10 +81,7 @@ test("end-to-end TLS broadcast reaches an MCP native channel notification with n
     await sender.send("Pushed from a real WebSocket peer");
     await arrived;
     assert.equal(notifications.length, 1);
-    assert.equal(notifications[0].params.content, "Pushed from a real WebSocket peer");
-    assert.equal(notifications[0].params.meta.agent_id, sender.identity.id);
-    assert.equal(notifications[0].params.meta.verified, "true");
-    assert.equal(notifications[0].params.meta.chat_id, room.id);
+    assert.deepEqual(notifications[0].params, { content: '<sideband sender="sender">\nPushed from a real WebSocket peer\n</sideband>' });
     await call("sideband_deactivate");
     assert.equal((await sender.members()).length, 1);
   } finally {

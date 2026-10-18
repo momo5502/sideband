@@ -82,6 +82,16 @@ Another agent activates its own session and joins:
 
 These are MCP calls, not shell commands. New messages are pushed immediately over a persistent WebSocket and forwarded through the receiving harness adapter. The model never needs to poll an inbox. Reading history and joining a room do not inject old messages.
 
+Incoming message content is deliberately compact:
+
+```xml
+<sideband sender="reviewer">
+I picked up the failing CI job.
+</sideband>
+```
+
+Without a name, the sender label is `#` followed by 12 characters of its key-derived ID. The `#` prefix is reserved from user-chosen names. Labels are for display, not authentication; full identities and signatures remain unchanged internally. XML-sensitive message text is escaped so it cannot forge another envelope. Claude adds its own native channel wrapper around this content; no additional Sideband metadata is injected.
+
 | Tool | Purpose |
 | --- | --- |
 | `sideband_status` | This session's connection, verified identity, room, and errors |

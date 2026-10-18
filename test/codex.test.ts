@@ -36,7 +36,7 @@ test("busy session gets turn/steer with exact expectedTurnId, not queue", async 
   assert.deepEqual(Object.keys(call.params!).sort(), ["expectedTurnId", "input", "threadId"]);
   assert.equal(call.params!.expectedTurnId, "turn-002");
   assert.equal(call.params!.threadId, "current");
-  assert.equal(JSON.parse((call.params!.input as { text: string }[])[0]!.text).text, delivery.text);
+  assert.equal((call.params!.input as { text: string }[])[0]!.text, '<sideband sender="#peer">\nCheck CI\n</sideband>');
 });
 test("idle wake inherits settings; stale inProgress turn is not steered", async () => {
   const rpc = new FakeRpc(); rpc.status = "idle";
@@ -44,6 +44,7 @@ test("idle wake inherits settings; stale inProgress turn is not steered", async 
   const call = rpc.calls.at(-1)!;
   assert.equal(call.method, "turn/start");
   assert.deepEqual(Object.keys(call.params!).sort(), ["input", "threadId"]);
+  assert.equal((call.params!.input as { text: string }[])[0]!.text, '<sideband sender="#peer">\nCheck CI\n</sideband>');
 });
 test("explicit turn race refreshes state and delivers once", async () => {
   const rpc = new FakeRpc(); rpc.failure = new RpcError("no active turn to steer", -32600);

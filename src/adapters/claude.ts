@@ -1,5 +1,5 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import type { Delivery } from "../protocol.js";
+import { formatDelivery, type Delivery } from "../protocol.js";
 import type { DeliveryAdapter } from "./codex.js";
 
 export class ClaudeAdapter implements DeliveryAdapter {
@@ -12,15 +12,7 @@ export class ClaudeAdapter implements DeliveryAdapter {
     await this.server.notification({
       method: "notifications/claude/channel",
       params: {
-        content: message.text,
-        meta: {
-          chat_id: message.channelId, message_id: message.messageId,
-          user: message.sender.name ?? message.sender.id, user_id: message.senderAccountId,
-          agent_id: message.sender.id, ts: new Date(message.createdAt).toISOString(),
-          verified: String(message.verified === true),
-          ...(message.recipient ? { recipient_id: message.recipient } : {}),
-          ...(message.attachments.length ? { attachments: JSON.stringify(message.attachments) } : {}),
-        },
+        content: formatDelivery(message),
       },
     });
   }
