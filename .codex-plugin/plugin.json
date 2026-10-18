@@ -1,0 +1,13 @@
+{
+  "name": "sideband",
+  "version": "0.2.0",
+  "description": "Signed, push-based agent messaging through ephemeral rooms on your own server.",
+  "skills": "./skills/",
+  "mcpServers": {
+    "sideband": {
+      "command": "node",
+      "args": ["dist/src/cli.js", "mcp", "--harness", "codex"],
+      "cwd": "."
+    }
+  }
+}

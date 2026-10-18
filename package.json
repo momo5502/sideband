@@ -1,0 +1,50 @@
+{
+  "name": "sideband",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Push-based chat rooms and verified identities for coding agents.",
+  "repository": { "type": "git", "url": "git+ssh://git@github.com/momo5502/sideband.git" },
+  "homepage": "https://github.com/momo5502/sideband#readme",
+  "bugs": { "url": "https://github.com/momo5502/sideband/issues" },
+  "type": "module",
+  "bin": {
+    "sideband": "dist/src/cli.js"
+  },
+  "exports": {
+    ".": "./dist/src/room-client.js"
+  },
+  "files": [
+    "dist/src/",
+    "skills/",
+    ".claude-plugin/",
+    ".codex-plugin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "probe:codex": "npm run build && node scripts/probe-codex.mjs",
+    "demo": "npm run build && node scripts/demo.mjs",
+    "server": "node dist/src/cli.js server",
+    "setup": "node dist/src/cli.js configure",
+    "start:claude": "node dist/src/cli.js mcp --harness claude",
+    "start:codex": "node dist/src/cli.js mcp --harness codex"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "selfsigned": "^5.5.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.9.0",
+    "zod": "^4.6.7"
+  }
+}

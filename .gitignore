@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.cache/
+.env
+.env.*
+!.env.example
+.sideband/
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+resources-do-not-commit/
