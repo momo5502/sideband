@@ -10,6 +10,8 @@ dist/**
 .env.*
 !.env.example
 .sideband/
+server-credentials.json
+server-credentials.json.*.tmp
 *.pem
 *.key
 *.p12

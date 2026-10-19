@@ -60,7 +60,7 @@ export class RoomClient {
     socket.on("upgrade", (response) => {
       const raw = (response.socket as TLSSocket).getPeerCertificate().raw;
       pinned = !!raw && createHash("sha256").update(raw).digest("base64url") === fingerprint;
-      if (!pinned) { fatal = new RoomError("SERVER_IDENTITY", "Server certificate does not match the password. The server may have restarted, or the address is wrong. Reconfigure; do not bypass verification."); socket.terminate(); }
+      if (!pinned) { fatal = new RoomError("SERVER_IDENTITY", "Server certificate does not match the password. Credentials may have been rotated, or the address is wrong. Reconfigure; do not bypass verification."); socket.terminate(); }
     });
     socket.on("message", (raw) => {
       try {

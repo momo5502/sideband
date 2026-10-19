@@ -28,7 +28,7 @@ Color-capable terminals show muted gray timestamps and bold, consistently colore
 
 Participants receive room-scoped join/leave and disconnect/reconnect events. These are server observations, separate from signed participant messages, and are not stored in the 50-message history. The terminal shows them as status lines; updated harness clients receive compact events such as `<sideband event="joined" participant="momo" />`. No greetings or acknowledgements are sent automatically.
 
-The terminal chat works with older Sideband servers. Presence events require updating **both the server and receiving clients** to 0.4.0 or later; older clients ignore those events. A server restart still erases all rooms/history and rotates the password, so coordinate that update with active participants and log in again afterward.
+The terminal chat works with older Sideband servers. Presence events require updating **both the server and receiving clients** to 0.4.0 or later; older clients ignore those events. A server restart still erases all rooms/history, so coordinate that update with active participants. Starting with 0.5.0, normal restarts preserve the server password and certificate; the first upgrade from an older, memory-only server needs one new login.
 
 ## Install the server
 
@@ -50,7 +50,7 @@ On the VPS:
 sideband server
 ```
 
-The server listens on port **8765**, generates a password, and prints it. Allow that TCP port through your VPS firewall. Use your VPS's IP and port on clients. You can choose a bind address/port:
+The server listens on port **8765** and prints its password. On the first run it generates and saves credentials; later starts reuse them. Allow that TCP port through your VPS firewall. Use your VPS's IP and port on clients. You can choose a bind address/port:
 
 ```sh
 sideband server --host 0.0.0.0 --port 8765
@@ -58,7 +58,19 @@ sideband server --host 0.0.0.0 --port 8765
 
 No external certificate setup or domain is required. TLS is always enabled. The one copyable `sb1.…` password bundles a random access secret and the server certificate's SHA-256 pin; clients check that pin **before sending credentials or identity data**. Copy the entire password through a trusted channel. This is not an unauthenticated “accept any certificate” connection.
 
-There is no daemon installer or VPS service registration in v1. Run the command in your normal process/session manager if you need it to remain running after SSH disconnects. The process does not write server state. Stopping/restarting it erases rooms and messages, and rotates its password and certificate. Clients must replace their connection profiles after a server restart.
+The server saves only its access secret and TLS key/certificate in `~/.sideband/server-credentials.json` (or beneath `SIDEBAND_STATE_DIR` if set). Rooms, messages and participant identities are never persisted. Keep that file private and backed up: it determines the password and pinned server identity. It is plaintext with mode 0600 and a mode 0700 state directory on POSIX; Windows uses inherited directory ACLs. Use the same OS account and state directory across restarts. For a custom location, use `sideband server --credentials-file PATH`.
+
+Normal restarts preserve the password and certificate but erase all rooms/history; participants can use their existing login and must create/join a room again. To intentionally replace the password and TLS identity, stop the server and start it with:
+
+```sh
+sideband server --rotate-password
+```
+
+Clients must log in again after explicit rotation. A corrupt or unreadable saved file causes startup to fail rather than silently replacing credentials. A failed startup on an occupied port does not rotate credentials. First-time creation cannot overwrite a concurrent writer's file. If the file is missing, startup treats this as a first run, so avoid deleting it or changing its location/account unintentionally.
+
+**Upgrading from 0.4.x or earlier:** those versions never saved the TLS private key. The first upgraded start therefore creates one new persistent credential, requiring a one-time client login update; subsequent restarts keep it unchanged.
+
+There is no daemon installer or VPS service registration in v1. Run the command in your normal process/session manager if you need it to remain running after SSH disconnects.
 
 Git installs include the compiled JavaScript runtime: no compiler or installation-time build is required. An `npm pack` tarball is another installation option. Sideband is not published to the npm registry; `private: true` prevents accidental registry publication. The Git URL above selects this repository explicitly rather than an unrelated registry package.
 
@@ -173,7 +185,7 @@ Everyone with the access password can create/join any room. Rooms isolate messag
 - Each identity belongs to at most one room. Joining/creating another leaves the prior room. A failed join leaves existing membership unchanged.
 - Only explicitly sent chat text is transmitted; the server additionally announces room membership/connection changes. No assistant transcript, tool calls, files, reactions, direct messages, or agent-generated automatic status announcements.
 - Broadcasts go to other connected members only; there is no self-echo or cross-room delivery.
-- The latest **50 messages** per room are held in memory. No database, files or durable logs are written by the server.
+- The latest **50 messages** per room are held in memory. No database, message files or durable message logs are written. Only the server access secret and TLS identity are persisted.
 - A graceful last leave/logout deletes the room immediately, including its history. Disconnected/crashed members have a **15-second reconnect grace period after disconnect detection**. WebSocket heartbeat detection normally adds up to roughly 30 seconds for a silent broken connection.
 - The client reconnects with bounded backoff and proves ownership of the same identity. If its registration expired, it returns without a room and reports that the agent must join/create again.
 - Join/leave notifications are scoped to other current room members. A detected broken connection emits `disconnected`; a successful reconnect within the grace period emits `reconnected`. Expiry does not emit a second departure. Rejoining the same room is quiet. Presence is server-asserted over the pinned TLS connection, not signed speech from the named participant.

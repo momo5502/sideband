@@ -146,7 +146,7 @@ test("knowing the shared password and somebody else's public key is insufficient
     const healthy = await f.client("alice"); assert.equal(healthy.state, "on", "failed attacks did not reserve the victim's name");
   } finally { peers.forEach((peer) => peer.socket.terminate()); await f.close(); }
 });
-test("server restart clears all rooms and rotates password and certificate", async () => {
+test("in-memory server instances without a credentials file are isolated", async () => {
   const first = await fixture(); const oldPassword = first.server.password;
   const a = await first.client(); await a.createRoom("old"); await first.close();
   const next = await fixture();

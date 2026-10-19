@@ -1,8 +1,8 @@
 import { createServer, type Server as HttpsServer } from "node:https";
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import { generate } from "selfsigned";
 import type { Duplex } from "node:stream";
+import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
   type AgentIdentity, type Room, type SignedMessage, type PresenceKind,
@@ -11,9 +11,10 @@ import {
 type Member = { identity: AgentIdentity; roomId?: string; socket?: WebSocket; expiry?: NodeJS.Timeout };
 type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
 type Connection = { alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
-export type RoomServerOptions = { host?: string; port?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number };
+export type RoomServerOptions = { host?: string; port?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
+  credentialsFile?: string; rotatePassword?: boolean };
 
-/** Entire server state, including its TLS key and access password, is ephemeral. */
+/** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
   readonly password: string;
   readonly fingerprint: string;
@@ -27,13 +28,12 @@ export class RoomServer {
   private readonly tcpSockets = new Set<Duplex>();
   private heartbeat?: NodeJS.Timeout;
   private stopping = false;
-  private constructor(credentials: { private: string; cert: string }, private readonly options: RoomServerOptions) {
-    this.fingerprint = createHash("sha256").update(new X509Certificate(credentials.cert).raw).digest("base64url");
-    const secret = randomBytes(32).toString("base64url");
-    this.secret = createHash("sha256").update(secret).digest();
+  private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions) {
+    this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
+    this.secret = createHash("sha256").update(identity.secret).digest();
     // The one copyable password includes the certificate pin. No domain/CA setup or TOFU is needed.
-    this.password = `sb1.${this.fingerprint}.${secret}`;
-    this.http = createServer({ key: credentials.private, cert: credentials.cert, minVersion: "TLSv1.2" }, (_req, res) => {
+    this.password = `sb1.${this.fingerprint}.${identity.secret}`;
+    this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (_req, res) => {
       res.writeHead(404, { "Content-Type": "text/plain", "Cache-Control": "no-store" }); res.end("Sideband server. Connect using the agent client.\n");
     });
     this.http.headersTimeout = 10_000;
@@ -50,12 +50,19 @@ export class RoomServer {
     });
   }
   static async start(options: RoomServerOptions = {}): Promise<RoomServer> {
-    const credentials = await generate([{ name: "commonName", value: "sideband" }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
-    const server = new RoomServer(credentials, options);
+    if (options.rotatePassword && !options.credentialsFile) throw new Error("Password rotation requires a credentials file.");
+    const existing = options.credentialsFile && !options.rotatePassword ? await loadServerIdentity(options.credentialsFile) : undefined;
+    const identity = existing ?? await createServerIdentity();
+    const server = new RoomServer(identity, options);
     await new Promise<void>((resolve, reject) => {
       server.http.once("error", reject);
       server.http.listen(options.port ?? 8765, options.host ?? "0.0.0.0", () => { server.http.off("error", reject); resolve(); });
     });
+    // Bind first: a failed second startup must not rotate the credentials of a running server.
+    if (options.credentialsFile && !existing) {
+      try { await saveServerIdentity(options.credentialsFile, identity, !!options.rotatePassword); }
+      catch (error) { await server.close(); throw error; }
+    }
     server.heartbeat = setInterval(() => {
       for (const [socket, connection] of server.connections) {
         if (!connection.alive) { socket.terminate(); continue; }

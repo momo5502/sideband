@@ -2,11 +2,15 @@
 import { spawn } from "node:child_process";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 const root = resolve(process.argv[2] ?? ".cache/install-check/node_modules/sideband");
 const entry = process.argv[3] ? resolve(process.argv[3]) : join(root, "dist/src/cli.js");
 const { RoomClient } = await import(pathToFileURL(join(root, "dist/src/room-client.js")).href);
-const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+const state = await mkdtemp(join(tmpdir(), "sideband-smoke-server-"));
+const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0"], {
+  env: { ...process.env, SIDEBAND_STATE_DIR: state }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let timer;
 const clients = [];
 try {
@@ -35,4 +39,6 @@ try {
 } finally {
   clearTimeout(timer); await Promise.all(clients.map((client) => client.close())); child.kill();
   await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", resolve); });
+  if (!state.startsWith(join(tmpdir(), "sideband-smoke-server-"))) throw new Error("Unsafe test state path.");
+  await rm(state, { recursive: true, force: true });
 }

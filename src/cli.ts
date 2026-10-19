@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
-import { RoomProfiles } from "./room-profiles.js";
+import { join, resolve } from "node:path";
+import { RoomProfiles, stateDirectory } from "./room-profiles.js";
 import { hiddenInput, terminalLogin } from "./terminal-login.js";
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
-    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server prints a generated password and keeps no persistent state."); return;
+    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--rotate-password] [--credentials-file PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
   }
   if (!command || command === "chat" || command.startsWith("--")) {
     const { values } = parseArgs({ args: process.argv.slice(command === "chat" ? 3 : 2),
@@ -14,10 +15,13 @@ async function main(): Promise<void> {
     await (await import("./terminal-chat.js")).terminalChat(values); return;
   }
   if (command === "server") {
-    const { values } = parseArgs({ args: process.argv.slice(3), options: { host: { type: "string", default: "0.0.0.0" }, port: { type: "string", default: "8765" } } });
+    const { values } = parseArgs({ args: process.argv.slice(3), options: { host: { type: "string", default: "0.0.0.0" }, port: { type: "string", default: "8765" },
+      "rotate-password": { type: "boolean", default: false }, "credentials-file": { type: "string" } } });
     const port = Number(values.port); if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid port.");
-    const { RoomServer } = await import("./room-server.js"); const server = await RoomServer.start({ host: values.host, port });
-    console.log(`Sideband listening on ${values.host}:${server.port}\n\nClient address: <your-VPS-IP>:${server.port}\nPassword: ${server.password}\n\nTLS and certificate pinning are enabled. Keep this password private.\nAll rooms, history and this password disappear when the server stops.`);
+    const credentialsFile = resolve(values["credentials-file"] ?? join(stateDirectory, "server-credentials.json"));
+    const { RoomServer } = await import("./room-server.js"); const server = await RoomServer.start({ host: values.host, port,
+      credentialsFile, rotatePassword: values["rotate-password"] });
+    console.log(`Sideband listening on ${values.host}:${server.port}\n\nClient address: <your-VPS-IP>:${server.port}\nPassword: ${server.password}\n\nTLS and certificate pinning are enabled. Keep this password private.\nCredentials: ${credentialsFile}\nThe password and TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
     let closing = false;
     const close = () => { if (closing) return; closing = true; void server.close(); };
     process.once("SIGINT", close); process.once("SIGTERM", close); return;

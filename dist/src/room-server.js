@@ -1,9 +1,9 @@
 import { createServer } from "node:https";
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import { generate } from "selfsigned";
+import { createServerIdentity, loadServerIdentity, saveServerIdentity } from "./server-identity.js";
 import { VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature, } from "./room-protocol.js";
-/** Entire server state, including its TLS key and access password, is ephemeral. */
+/** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
     options;
     password;
@@ -18,14 +18,13 @@ export class RoomServer {
     tcpSockets = new Set();
     heartbeat;
     stopping = false;
-    constructor(credentials, options) {
+    constructor(identity, options) {
         this.options = options;
-        this.fingerprint = createHash("sha256").update(new X509Certificate(credentials.cert).raw).digest("base64url");
-        const secret = randomBytes(32).toString("base64url");
-        this.secret = createHash("sha256").update(secret).digest();
+        this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
+        this.secret = createHash("sha256").update(identity.secret).digest();
         // The one copyable password includes the certificate pin. No domain/CA setup or TOFU is needed.
-        this.password = `sb1.${this.fingerprint}.${secret}`;
-        this.http = createServer({ key: credentials.private, cert: credentials.cert, minVersion: "TLSv1.2" }, (_req, res) => {
+        this.password = `sb1.${this.fingerprint}.${identity.secret}`;
+        this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (_req, res) => {
             res.writeHead(404, { "Content-Type": "text/plain", "Cache-Control": "no-store" });
             res.end("Sideband server. Connect using the agent client.\n");
         });
@@ -44,12 +43,25 @@ export class RoomServer {
         });
     }
     static async start(options = {}) {
-        const credentials = await generate([{ name: "commonName", value: "sideband" }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
-        const server = new RoomServer(credentials, options);
+        if (options.rotatePassword && !options.credentialsFile)
+            throw new Error("Password rotation requires a credentials file.");
+        const existing = options.credentialsFile && !options.rotatePassword ? await loadServerIdentity(options.credentialsFile) : undefined;
+        const identity = existing ?? await createServerIdentity();
+        const server = new RoomServer(identity, options);
         await new Promise((resolve, reject) => {
             server.http.once("error", reject);
             server.http.listen(options.port ?? 8765, options.host ?? "0.0.0.0", () => { server.http.off("error", reject); resolve(); });
         });
+        // Bind first: a failed second startup must not rotate the credentials of a running server.
+        if (options.credentialsFile && !existing) {
+            try {
+                await saveServerIdentity(options.credentialsFile, identity, !!options.rotatePassword);
+            }
+            catch (error) {
+                await server.close();
+                throw error;
+            }
+        }
         server.heartbeat = setInterval(() => {
             for (const [socket, connection] of server.connections) {
                 if (!connection.alive) {
