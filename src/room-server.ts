@@ -2,8 +2,11 @@ import { createServer, type Server as HttpsServer } from "node:https";
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "node:stream";
+import type { TLSSocket } from "node:tls";
 import { createServer as createHttpServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { statusPage, type PublicStatus } from "./status-page.js";
+import { webPage } from "./web-page.js";
+import { browserScript } from "./browser-bundle.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
@@ -39,8 +42,7 @@ export class RoomServer {
     this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (req, res) => this.httpRequest(req, res));
     if (options.statusPort !== undefined) {
       this.plainHttp = createHttpServer((req, res) => this.httpRequest(req, res));
-      // Plain HTTP is public status only. Never accept agent authentication or chat without TLS.
-      this.plainHttp.on("upgrade", (_req, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
+      this.plainHttp.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, false));
     }
     for (const listener of [this.http, this.plainHttp]) if (listener) {
       listener.headersTimeout = 10_000;
@@ -49,13 +51,16 @@ export class RoomServer {
       listener.on("connection", socket => { this.tcpSockets.add(socket); socket.once("close", () => this.tcpSockets.delete(socket)); });
     }
     this.ws = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024, perMessageDeflate: false });
-    this.http.on("upgrade", (req, socket, head) => {
-      // The public status page does not enable browser chat. Reject browser WebSocket use.
-      if (req.url !== "/ws" || req.headers.origin || this.stopping || this.connections.size >= (options.maxClients ?? 1024)) {
-        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
-      }
-      this.ws.handleUpgrade(req, socket, head, (client) => this.accept(client));
-    });
+    this.http.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, true));
+  }
+  private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, encrypted: boolean): void {
+    // Browser chat is a separate, same-origin endpoint. Native agents still require pinned TLS.
+    const browser = req.url === "/browser-ws" && req.headers.origin === `${encrypted ? "https" : "http"}://${req.headers.host}`;
+    const native = encrypted && req.url === "/ws" && !req.headers.origin;
+    if ((!browser && !native) || this.stopping || this.connections.size >= (this.options.maxClients ?? 1024)) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
+    }
+    this.ws.handleUpgrade(req, socket, head, client => this.accept(client));
   }
   static async start(options: RoomServerOptions = {}): Promise<RoomServer> {
     if (options.rotatePassword && !options.credentialsFile) throw new Error("Password rotation requires a credentials file.");
@@ -97,11 +102,20 @@ export class RoomServer {
     let path: string;
     try { path = new URL(req.url ?? "/", "https://sideband.invalid").pathname; }
     catch { res.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }); res.end("Bad request.\n"); return; }
-    const known = path === "/" || path === "/status.json";
+    const chat = path === "/chat" || path === "/chat.js";
+    const known = path === "/" || path === "/status.json" || chat;
+    if (chat) {
+      // Spell out the same-origin WebSocket URL for browsers that don't map CSP 'self' to ws/wss.
+      const host = req.headers.host ?? "";
+      const socketSource = /^(?:[a-zA-Z0-9_.-]+|\[[a-fA-F0-9:]+\])(?::[0-9]+)?$/.test(host) ? ` ${ (req.socket as TLSSocket).encrypted ? "wss" : "ws" }://${host}` : "";
+      headers["Content-Security-Policy"] = `default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'${socketSource}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+    }
     const methodAllowed = req.method === "GET" || req.method === "HEAD";
     let code = 200; let body: string; let contentType = "text/plain; charset=utf-8";
     if (!known) { code = 404; body = "Not found.\n"; }
     else if (!methodAllowed) { code = 405; headers.Allow = "GET, HEAD"; body = "Method not allowed.\n"; }
+    else if (path === "/chat") { contentType = "text/html; charset=utf-8"; body = webPage(); }
+    else if (path === "/chat.js") { contentType = "text/javascript; charset=utf-8"; body = browserScript; }
     else if (path === "/status.json") { contentType = "application/json; charset=utf-8"; body = `${JSON.stringify(this.publicStatus())}\n`; }
     else { contentType = "text/html; charset=utf-8"; body = statusPage(this.publicStatus()); }
     res.writeHead(code, { ...headers, "Content-Type": contentType, "Content-Length": String(Buffer.byteLength(body)) });
@@ -161,7 +175,7 @@ export class RoomServer {
       if (connection.member || connection.candidate) throw new RoomError("AUTH_STATE", "Handshake already started.");
       const args = fields(params, ["publicKey", "name"]);
       connection.candidate = identityFor(text(args.publicKey, "public key", 100), agentName(args.name));
-      return { challenge: connection.challenge };
+      return { challenge: connection.challenge, fingerprint: this.fingerprint };
     }
     if (method === "authenticate") {
       const args = fields(params, ["secret", "signature"]);

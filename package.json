@@ -1,6 +1,6 @@
 {
   "name": "sideband",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Push-based chat rooms and verified identities for coding agents.",
   "repository": {
@@ -44,14 +44,18 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "https-proxy-agent": "8.0.0",
     "selfsigned": "^5.5.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/jsdom": "30.0.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
     "esbuild": "0.28.2",
+    "jsdom": "30.1.3",
     "typescript": "^5.9.0",
     "zod": "^4.6.7"
   }

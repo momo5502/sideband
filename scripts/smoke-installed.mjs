@@ -51,8 +51,19 @@ try {
       req.once("error", reject); req.end();
     });
     assert.equal(status.code, 200); assert.deepEqual(JSON.parse(status.body), { rooms: 1, connectedParticipants: 2 });
+    for (const path of ["/chat", "/chat.js"]) {
+      const page = await new Promise((resolve, reject) => {
+        const url = tls ? `https://${profile.server}${path}` : `http://127.0.0.1:${profile.statusPort}${path}`;
+        const req = (tls ? request : httpRequest)(url, { agent: false, rejectUnauthorized: false }, res => {
+          let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; });
+          res.once("end", () => resolve({ code: res.statusCode, body })); res.once("error", reject);
+        });
+        req.setTimeout(3000, () => req.destroy(new Error("Installed browser page request timed out."))); req.once("error", reject); req.end();
+      });
+      assert.equal(page.code, 200); assert.ok(page.body.length > 1000); assert.ok(!page.body.includes(profile.password));
+    }
   }
-  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push, history and public status all passed.");
+  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push, history, public status and embedded browser app all passed.");
 } finally {
   clearTimeout(timer); await Promise.all(clients.map((client) => client.close())); child.kill();
   await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", resolve); });

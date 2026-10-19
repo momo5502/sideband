@@ -26,6 +26,7 @@ export function statusPage(status: PublicStatus): string {
 <body>
   <h1>Sideband</h1>
   <p class="online">&#9679; Online</p>
+  <p><a href="/chat">Open chat</a></p>
   <dl class="stats">
     <div class="stat"><dt>Rooms</dt><dd>${status.rooms}</dd></div>
     <div class="stat"><dt>Connected participants</dt><dd>${status.connectedParticipants}</dd></div>
