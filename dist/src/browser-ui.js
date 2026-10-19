@@ -4,6 +4,32 @@ const user = $("username"), password = $("password"), message = $("message");
 const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1";
 let client, joining = false, loadingHistory = false;
 let backlog = [], seen = new Set();
+const mobile = window.matchMedia?.("(max-width:650px)");
+function setMenu(open, restoreFocus = false) {
+    const expanded = !!mobile?.matches && !!client && open;
+    document.body.classList.toggle("menu-open", expanded);
+    $("menu-toggle").setAttribute("aria-expanded", String(expanded));
+    const drawer = $("room-menu");
+    drawer.inert = !!mobile?.matches && !expanded;
+    document.querySelector("main").inert = expanded;
+    if (expanded) {
+        drawer.setAttribute("role", "dialog");
+        drawer.setAttribute("aria-modal", "true");
+        $("menu-close").focus();
+    }
+    else {
+        drawer.removeAttribute("role");
+        drawer.removeAttribute("aria-modal");
+        if (restoreFocus && mobile?.matches && client)
+            $("menu-toggle").focus();
+    }
+    if (mobile?.matches && !expanded)
+        drawer.setAttribute("aria-hidden", "true");
+    else
+        drawer.removeAttribute("aria-hidden");
+}
+function connection(text) { $("connection").textContent = text; $("menu-connection").textContent = text; }
+function notice(text) { $("notice").textContent = text; $("menu-notice").textContent = text; }
 const label = (identity) => identity.name || `#${identity.id.slice(6, 18)}`;
 const storage = (kind, action, key, value) => {
     try {
@@ -21,12 +47,16 @@ const storage = (kind, action, key, value) => {
     }
     return null;
 };
-function error(value, login = false) { $(login ? "login-error" : "notice").textContent = value instanceof Error ? value.message : "Something went wrong."; }
+function error(value, login = false) { const text = value instanceof Error ? value.message : "Something went wrong."; if (login)
+    $("login-error").textContent = text;
+else
+    notice(text); }
 function setRoom() {
     $("room-title").textContent = client?.room?.name || "Choose a room";
     $("leave").hidden = !client?.room;
     message.disabled = !client?.room || joining;
     $("send").disabled = !client?.room || joining;
+    $("menu-leave").hidden = !client?.room;
     message.placeholder = client?.room ? "Write a message…" : "Join a room to send messages";
 }
 function render(item) {
@@ -113,7 +143,7 @@ async function join(room, create = false) {
         return;
     joining = true;
     setRoom();
-    $("notice").textContent = "";
+    notice("");
     try {
         // Queue live events across the join/history boundary; history can overlap pushed messages.
         loadingHistory = true;
@@ -125,7 +155,7 @@ async function join(room, create = false) {
         for (const item of pushed)
             render(item);
         await rooms();
-        message.focus();
+        setMenu(false, true);
     }
     catch (value) {
         error(value);
@@ -137,7 +167,7 @@ async function join(room, create = false) {
         backlog = [];
         joining = false;
         setRoom();
-        if (client?.room)
+        if (client?.room && !mobile?.matches)
             message.focus();
     }
 }
@@ -167,14 +197,18 @@ async function login() {
         $("app").hidden = false;
         $("login-panel").hidden = true;
         $("identity").textContent = `You: ${label(client.identity)}`;
-        $("connection").textContent = location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)";
+        document.body.classList.add("chatting");
+        setMenu(!client.room);
+        connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
         candidate.onClose = () => {
             if (client !== candidate)
                 return;
             client = undefined;
             $("app").hidden = true;
             $("login-panel").hidden = false;
-            $("connection").textContent = "Disconnected";
+            document.body.classList.remove("chatting");
+            setMenu(false);
+            connection("Disconnected");
             $("login-error").textContent = "Connection closed. Connect again to rejoin.";
         };
         setRoom();
@@ -188,7 +222,9 @@ async function login() {
         candidate?.disconnect();
         $("app").hidden = true;
         $("login-panel").hidden = false;
-        $("connection").textContent = "Disconnected";
+        document.body.classList.remove("chatting");
+        setMenu(false);
+        connection("Disconnected");
         error(value, true);
     }
     finally {
@@ -200,8 +236,9 @@ $("forget").addEventListener("click", () => { storage("localStorage", "remove", 
 $("refresh").addEventListener("click", () => { void rooms().catch(error); });
 $("create-form").addEventListener("submit", event => { event.preventDefault(); const input = $("room-name"); const name = input.value.trim(); if (name)
     void join(name, true).then(() => { input.value = ""; }); });
-$("leave").addEventListener("click", () => { if (joining || !client)
-    return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); }).catch(error); });
+for (const id of ["leave", "menu-leave"])
+    $(id).addEventListener("click", () => { if (joining || !client)
+        return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error); });
 $("logout").addEventListener("click", () => {
     const previous = client;
     client = undefined;
@@ -209,7 +246,9 @@ $("logout").addEventListener("click", () => {
     storage("sessionStorage", "remove", tabKey);
     $("app").hidden = true;
     $("login-panel").hidden = false;
-    $("connection").textContent = "Disconnected";
+    document.body.classList.remove("chatting");
+    setMenu(false);
+    connection("Disconnected");
 });
 $("compose").addEventListener("submit", event => {
     event.preventDefault();
@@ -219,7 +258,7 @@ $("compose").addEventListener("submit", event => {
     $("send").disabled = true;
     void current.send(text).then(sent => { if (client !== current)
         return; render(sent); if (message.value === text)
-        message.value = ""; $("notice").textContent = ""; }).catch(error)
+        message.value = ""; notice(""); }).catch(error)
         .finally(() => { $("send").disabled = !client?.room; message.focus(); });
 });
 message.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -235,4 +274,30 @@ try {
     }
 }
 catch { /* Ignore corrupt browser state. */ }
+$("menu-toggle").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open"), true));
+for (const id of ["menu-close", "menu-backdrop"])
+    $(id).addEventListener("click", () => setMenu(false, true));
+document.addEventListener("keydown", event => {
+    if (!document.body.classList.contains("menu-open"))
+        return;
+    if (event.key === "Escape") {
+        event.preventDefault();
+        setMenu(false, true);
+    }
+    if (event.key === "Tab") {
+        const drawer = $("room-menu");
+        const controls = [...drawer.querySelectorAll("button:not([hidden]):not(:disabled),input:not(:disabled),a[href]")];
+        const first = controls[0], last = controls[controls.length - 1], active = document.activeElement;
+        if (event.shiftKey && (active === first || !drawer.contains(active))) {
+            event.preventDefault();
+            last?.focus();
+        }
+        else if (!event.shiftKey && (active === last || !drawer.contains(active))) {
+            event.preventDefault();
+            first?.focus();
+        }
+    }
+});
+mobile?.addEventListener("change", () => setMenu(!client?.room));
+setMenu(false);
 //# sourceMappingURL=browser-ui.js.map

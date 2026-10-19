@@ -86,6 +86,8 @@ Adding the page to an existing deployment requires updating and restarting the s
 
 ### Browser chat
 
+On phones, the conversation fills the viewport with a compact room bar and composer. The hamburger menu contains room selection, connection status, Leave room, Disconnect and the server-status link. It opens when no room is selected and closes after joining/creating a room. Close it with its close button, the backdrop or Escape. Desktop keeps the regular sidebar layout.
+
 Open `http://YOUR-VPS:8766/chat` or `https://YOUR-VPS:8765/chat` (also linked from the status page). Enter the full server password, choose a username or leave it blank for a short ID, and connect. Select a room or create one. The browser is a regular signed participant: one current room, live pushed messages and presence, and the latest 50 messages on joining. Enter sends; Shift+Enter inserts a newline. The UI sends no automatic greetings and never renders messages or room names as HTML.
 
 The password and username are saved in **this browser's localStorage**, in plaintext, separately for each origin (scheme/host/port). They prefill on the next visit; they are not stored in a server-side browser account, cookie, URL or log. “Disconnect” keeps the saved login; “Forget saved login” removes Sideband's saved password/name and tab key. Browser password-manager entries, if any, are separate. If browser storage is unavailable, the current connection can still work, but remembering the login cannot.
