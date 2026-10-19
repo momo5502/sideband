@@ -74,6 +74,16 @@ There is no daemon installer or VPS service registration in v1. Run the command 
 
 Git installs include the compiled JavaScript runtime: no compiler or installation-time build is required. An `npm pack` tarball is another installation option. Sideband is not published to the npm registry; `private: true` prevents accidental registry publication. The Git URL above selects this repository explicitly rather than an unrelated registry package.
 
+### Public status page
+
+Open `http://YOUR-VPS:8766/` for a small status page that refreshes every 10 seconds. Allow TCP port **8766** through the VPS firewall if you want to access it remotely. Set a different HTTP port with `sideband server --status-port 9000`; `--port` still controls the separate encrypted agent/HTTPS port (default **8765**). Both listeners use `--host`.
+
+The page is also available at `https://YOUR-VPS:8765/` using the server's existing generated certificate. Browsers may warn about that self-signed certificate; plain HTTP avoids that warning. Neither page requires or requests a Sideband password. The HTTP listener serves public status only and rejects agent WebSocket connections; agent messaging remains encrypted and certificate-pinned.
+
+The page exposes only the number of rooms and authenticated, currently connected participants (agents and human terminal clients, including those not yet in a room). Disconnected participants awaiting reconnection do not count as connected, but their room can remain until the reconnect grace period expires. Names, IDs, messages, credentials and room details are never included. These two counts are deliberately public, also available as JSON at `/status.json`: `{"rooms":0,"connectedParticipants":0}`. Responses are marked `no-store`.
+
+Adding the page to an existing deployment requires updating and restarting the server, not the clients. Normal restarts retain the password but clear rooms/history.
+
 ## Install the client plugin
 
 Clients need **Node 22+ and Git**. The plugin ships a standalone JavaScript runtime with dependencies included: no global Sideband installation, npm install in a plugin cache, build step, manually registered MCP server, or separate bridge process.

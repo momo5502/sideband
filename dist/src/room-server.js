@@ -1,6 +1,8 @@
 import { createServer } from "node:https";
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import { createServer as createHttpServer } from "node:http";
+import { statusPage } from "./status-page.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity } from "./server-identity.js";
 import { VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature, } from "./room-protocol.js";
 /** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
@@ -10,6 +12,7 @@ export class RoomServer {
     fingerprint;
     secret;
     http;
+    plainHttp;
     ws;
     members = new Map();
     names = new Map();
@@ -24,17 +27,22 @@ export class RoomServer {
         this.secret = createHash("sha256").update(identity.secret).digest();
         // The one copyable password includes the certificate pin. No domain/CA setup or TOFU is needed.
         this.password = `sb1.${this.fingerprint}.${identity.secret}`;
-        this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (_req, res) => {
-            res.writeHead(404, { "Content-Type": "text/plain", "Cache-Control": "no-store" });
-            res.end("Sideband server. Connect using the agent client.\n");
-        });
-        this.http.headersTimeout = 10_000;
-        this.http.requestTimeout = 10_000;
-        this.http.maxConnections = (options.maxClients ?? 1024) * 2;
-        this.http.on("connection", (socket) => { this.tcpSockets.add(socket); socket.once("close", () => this.tcpSockets.delete(socket)); });
+        this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (req, res) => this.httpRequest(req, res));
+        if (options.statusPort !== undefined) {
+            this.plainHttp = createHttpServer((req, res) => this.httpRequest(req, res));
+            // Plain HTTP is public status only. Never accept agent authentication or chat without TLS.
+            this.plainHttp.on("upgrade", (_req, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
+        }
+        for (const listener of [this.http, this.plainHttp])
+            if (listener) {
+                listener.headersTimeout = 10_000;
+                listener.requestTimeout = 10_000;
+                listener.maxConnections = (options.maxClients ?? 1024) * 2;
+                listener.on("connection", socket => { this.tcpSockets.add(socket); socket.once("close", () => this.tcpSockets.delete(socket)); });
+            }
         this.ws = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024, perMessageDeflate: false });
         this.http.on("upgrade", (req, socket, head) => {
-            // Browser access is deliberately not a v1 feature. Reject cross-origin WebSocket use.
+            // The public status page does not enable browser chat. Reject browser WebSocket use.
             if (req.url !== "/ws" || req.headers.origin || this.stopping || this.connections.size >= (options.maxClients ?? 1024)) {
                 socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
                 return;
@@ -48,10 +56,19 @@ export class RoomServer {
         const existing = options.credentialsFile && !options.rotatePassword ? await loadServerIdentity(options.credentialsFile) : undefined;
         const identity = existing ?? await createServerIdentity();
         const server = new RoomServer(identity, options);
-        await new Promise((resolve, reject) => {
-            server.http.once("error", reject);
-            server.http.listen(options.port ?? 8765, options.host ?? "0.0.0.0", () => { server.http.off("error", reject); resolve(); });
-        });
+        try {
+            for (const [listener, port] of [[server.http, options.port ?? 8765], [server.plainHttp, options.statusPort]])
+                if (listener) {
+                    await new Promise((resolve, reject) => {
+                        listener.once("error", reject);
+                        listener.listen(port, options.host ?? "0.0.0.0", () => { listener.off("error", reject); resolve(); });
+                    });
+                }
+        }
+        catch (error) {
+            await server.close();
+            throw error;
+        }
         // Bind first: a failed second startup must not rotate the credentials of a running server.
         if (options.credentialsFile && !existing) {
             try {
@@ -77,6 +94,51 @@ export class RoomServer {
     }
     get port() { const address = this.http.address(); if (!address || typeof address === "string")
         throw new Error("Server is not listening."); return address.port; }
+    get statusPort() { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
+    publicStatus() {
+        let connectedParticipants = 0;
+        for (const member of this.members.values())
+            if (member.socket?.readyState === WebSocket.OPEN)
+                connectedParticipants++;
+        return { rooms: this.rooms.size, connectedParticipants };
+    }
+    httpRequest(req, res) {
+        const headers = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" };
+        let path;
+        try {
+            path = new URL(req.url ?? "/", "https://sideband.invalid").pathname;
+        }
+        catch {
+            res.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
+            res.end("Bad request.\n");
+            return;
+        }
+        const known = path === "/" || path === "/status.json";
+        const methodAllowed = req.method === "GET" || req.method === "HEAD";
+        let code = 200;
+        let body;
+        let contentType = "text/plain; charset=utf-8";
+        if (!known) {
+            code = 404;
+            body = "Not found.\n";
+        }
+        else if (!methodAllowed) {
+            code = 405;
+            headers.Allow = "GET, HEAD";
+            body = "Method not allowed.\n";
+        }
+        else if (path === "/status.json") {
+            contentType = "application/json; charset=utf-8";
+            body = `${JSON.stringify(this.publicStatus())}\n`;
+        }
+        else {
+            contentType = "text/html; charset=utf-8";
+            body = statusPage(this.publicStatus());
+        }
+        res.writeHead(code, { ...headers, "Content-Type": contentType, "Content-Length": String(Buffer.byteLength(body)) });
+        res.end(req.method === "HEAD" ? undefined : body);
+    }
     send(socket, packet) {
         if (socket.readyState !== WebSocket.OPEN)
             return;
@@ -319,6 +381,8 @@ export class RoomServer {
             socket.destroy();
         await new Promise((resolve) => this.ws.close(() => resolve()));
         await new Promise((resolve) => this.http.close(() => resolve()));
+        if (this.plainHttp)
+            await new Promise(resolve => this.plainHttp.close(() => resolve()));
         this.members.clear();
         this.names.clear();
         this.rooms.clear();

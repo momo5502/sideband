@@ -93,10 +93,25 @@ test("racing first writes cannot overwrite a complete identity and clean up priv
   } finally { await f.close(); }
 });
 
+test("occupied HTTP status port fails startup without rotating credentials or leaving the HTTPS port bound", async () => {
+  const f = await fixture();
+  const blocker = await RoomServer.start({ host: "127.0.0.1", port: 0 });
+  const available = await RoomServer.start({ host: "127.0.0.1", port: 0 });
+  const port = available.port; await available.close();
+  try {
+    const original = await f.start(); const password = original.password; await f.stop(original);
+    const bytes = await readFile(f.credentialsFile, "utf8");
+    await assert.rejects(RoomServer.start({ host: "127.0.0.1", port, statusPort: blocker.port,
+      credentialsFile: f.credentialsFile, rotatePassword: true }), { code: "EADDRINUSE" });
+    assert.ok(await readFile(f.credentialsFile, "utf8") === bytes);
+    const retry = await f.start(false, port); assert.ok(retry.password === password);
+  } finally { await blocker.close(); await f.close(); }
+});
+
 test("packaged server CLI reuses its default state file and rotates only with --rotate-password", { timeout: 20_000 }, async () => {
   const f = await fixture(); const children = new Set<ChildProcess>();
   const start = async (rotate = false) => {
-    const child = spawn(process.execPath, [resolve("dist/sideband.cjs"), "server", "--host", "127.0.0.1", "--port", "0", ...(rotate ? ["--rotate-password"] : [])],
+    const child = spawn(process.execPath, [resolve("dist/sideband.cjs"), "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0", ...(rotate ? ["--rotate-password"] : [])],
       { env: { ...process.env, SIDEBAND_STATE_DIR: f.directory }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     children.add(child);
     let timer: NodeJS.Timeout;

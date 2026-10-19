@@ -4,12 +4,15 @@ import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { request } from "node:https";
+import { request as httpRequest } from "node:http";
+import assert from "node:assert/strict";
 
 const root = resolve(process.argv[2] ?? ".cache/install-check/node_modules/sideband");
 const entry = process.argv[3] ? resolve(process.argv[3]) : join(root, "dist/src/cli.js");
 const { RoomClient } = await import(pathToFileURL(join(root, "dist/src/room-client.js")).href);
 const state = await mkdtemp(join(tmpdir(), "sideband-smoke-server-"));
-const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0"], {
+const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0"], {
   env: { ...process.env, SIDEBAND_STATE_DIR: state }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let timer;
 const clients = [];
@@ -23,7 +26,8 @@ try {
       stdout += chunk;
       const port = /listening on 127\.0\.0\.1:(\d+)/.exec(stdout);
       const password = /Password: (sb1\.[A-Za-z0-9_.-]+)/.exec(stdout);
-      if (port && password) { stdout = ""; resolve({ server: `127.0.0.1:${port[1]}`, password: password[1] }); }
+      const status = /Public status: http:\/\/<your-VPS-IP>:(\d+)\//.exec(stdout);
+      if (port && password && status) { stdout = ""; resolve({ server: `127.0.0.1:${port[1]}`, password: password[1], statusPort: Number(status[1]) }); }
     });
   });
   clearTimeout(timer);
@@ -35,7 +39,20 @@ try {
   });
   await alice.send("Package push check"); await arrived; clearTimeout(timer);
   if ((await bob.history()).length !== 1) throw new Error("Installed package history mismatch.");
-  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push and history all passed.");
+  // Ephemeral loopback fixture only: browser-style status requests do not use Sideband credentials.
+  for (const tls of [true, false]) {
+    const status = await new Promise((resolve, reject) => {
+      const url = tls ? `https://${profile.server}/status.json` : `http://127.0.0.1:${profile.statusPort}/status.json`;
+      const req = (tls ? request : httpRequest)(url, { agent: false, rejectUnauthorized: false }, res => {
+        let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; });
+        res.once("end", () => resolve({ code: res.statusCode, body })); res.once("error", reject);
+      });
+      req.setTimeout(3000, () => req.destroy(new Error("Installed status request timed out.")));
+      req.once("error", reject); req.end();
+    });
+    assert.equal(status.code, 200); assert.deepEqual(JSON.parse(status.body), { rooms: 1, connectedParticipants: 2 });
+  }
+  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push, history and public status all passed.");
 } finally {
   clearTimeout(timer); await Promise.all(clients.map((client) => client.close())); child.kill();
   await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", resolve); });

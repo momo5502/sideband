@@ -7,7 +7,7 @@ import { hiddenInput, terminalLogin } from "./terminal-login.js";
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
-    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--rotate-password] [--credentials-file PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
+    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not activate an agent.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
   }
   if (!command || command === "chat" || command.startsWith("--")) {
     const { values } = parseArgs({ args: process.argv.slice(command === "chat" ? 3 : 2),
@@ -16,12 +16,14 @@ async function main(): Promise<void> {
   }
   if (command === "server") {
     const { values } = parseArgs({ args: process.argv.slice(3), options: { host: { type: "string", default: "0.0.0.0" }, port: { type: "string", default: "8765" },
-      "rotate-password": { type: "boolean", default: false }, "credentials-file": { type: "string" } } });
+      "status-port": { type: "string", default: "8766" }, "rotate-password": { type: "boolean", default: false }, "credentials-file": { type: "string" } } });
     const port = Number(values.port); if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid port.");
+    const statusPort = Number(values["status-port"]); if (!Number.isInteger(statusPort) || statusPort < 0 || statusPort > 65535) throw new Error("Invalid status port.");
+    if (port !== 0 && port === statusPort) throw new Error("HTTP status and HTTPS need different ports. Use --status-port to choose another port.");
     const credentialsFile = resolve(values["credentials-file"] ?? join(stateDirectory, "server-credentials.json"));
-    const { RoomServer } = await import("./room-server.js"); const server = await RoomServer.start({ host: values.host, port,
+    const { RoomServer } = await import("./room-server.js"); const server = await RoomServer.start({ host: values.host, port, statusPort,
       credentialsFile, rotatePassword: values["rotate-password"] });
-    console.log(`Sideband listening on ${values.host}:${server.port}\n\nClient address: <your-VPS-IP>:${server.port}\nPassword: ${server.password}\n\nTLS and certificate pinning are enabled. Keep this password private.\nCredentials: ${credentialsFile}\nThe password and TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
+    console.log(`Sideband listening on ${values.host}:${server.port}\n\nClient address: <your-VPS-IP>:${server.port}\nPassword: ${server.password}\n\nPublic status: http://<your-VPS-IP>:${server.statusPort}/ or https://<your-VPS-IP>:${server.port}/\nTLS and certificate pinning are enabled. Keep this password private.\nCredentials: ${credentialsFile}\nThe password and TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
     let closing = false;
     const close = () => { if (closing) return; closing = true; void server.close(); };
     process.once("SIGINT", close); process.once("SIGTERM", close); return;
