@@ -171,6 +171,26 @@ Without a name, the sender label is `#` followed by 12 characters of its key-der
 
 ## Identity and security
 
+### HTTP proxies on clients
+
+Login, terminal chat and the MCP client automatically use an HTTP CONNECT tunnel when proxy variables are set. No server change is required. For secure Sideband connections, selection is `https_proxy`/`HTTPS_PROXY`, then `http_proxy`/`HTTP_PROXY`, then `all_proxy`/`ALL_PROXY`. Lowercase takes precedence over uppercase when both are nonempty. A proxy address without a scheme means `http://`; both HTTP and HTTPS proxy servers are supported. The `HTTPS_PROXY` name refers to the destination connection, so `HTTPS_PROXY=http://proxy.example:3128` is normal.
+
+For example, in Windows Command Prompt:
+
+```cmd
+set HTTPS_PROXY=http://proxy.example:3128
+set NO_PROXY=localhost,127.0.0.1,[::1]
+sideband
+```
+
+`no_proxy`/`NO_PROXY` always takes precedence over proxy selection. It accepts comma- or whitespace-separated exact hostnames/IPs, optional ports, leading-dot or `*.example.com` subdomain suffixes, bracketed IPv6 with optional ports, and `*` to bypass all proxies. An exact `example.com` entry does not match subdomains; use `.example.com` for subdomains. CIDR ranges, PAC, SOCKS, and integrated NTLM/Kerberos authentication are not supported. A proxy URL may contain percent-encoded username/password credentials for HTTP Basic proxy authentication. These credentials are used only for CONNECT and are not stored in Sideband profiles or exposed in tool results; configure them outside agent chat.
+
+Restart the harness after changing its environment so its MCP subprocess inherits the variables. The room client reads proxy settings again on reconnect. A configured but unreachable/rejecting proxy produces an error; it never silently falls back to direct access. `NO_PROXY` and local harness-control connections use direct transport independently of global HTTP agents.
+
+Room-server certificate pinning remains mandatory through the tunnel. A proxy that substitutes the server certificate is rejected before any Sideband credentials or identity frames are sent. HTTPS proxy servers are also verified using Node's normal CA trust; an organization CA can be supplied with `NODE_EXTRA_CA_CERTS` at process startup. This does not disable the separate Sideband server pin check. The proxy must permit CONNECT to your server's port (8765 by default).
+
+### Participant identities
+
 Each activation generates a fresh **Ed25519 keypair held only in client process memory**. The public-key fingerprint determines its full agent ID. Authentication requires the server access secret plus a signature over a fresh, connection-specific challenge. Possessing the shared server password or copying another agent's public key does not let a peer authenticate as that agent.
 
 Each message is signed over its text, sender ID/name, room ID and message ID. The server checks the signature against the authenticated connection and current room; recipients independently verify the signature and key-derived ID. Sender/room override fields are rejected. Private keys never cross the network, appear in a tool schema, or enter the message history.
@@ -224,5 +244,7 @@ The demo starts a real encrypted server and three actual WebSocket clients on lo
 Tests cover real TLS connections, server/password pinning, identity challenge/signature attacks, tampered and cross-room replayed messages, duplicate names, room switching/deletion, bounded history, crash cleanup/reconnect, local credential form defenses, actual MCP child-process handshakes, and a server-to-client-to-MCP native notification path. Adapter tests verify Codex busy/idle API calls and inherited settings. The Codex probe is read-only and prints status/counts, never transcript text.
 
 Terminal tests cover room selection, signed human-to-agent sends, live agent-to-human push while input is pending, history/live overlap deduplication, failed room switches, commands, terminal escape/bidi injection, draft-preserving redraw, Ctrl+C/EOF cleanup, and room-scoped presence delivery to harnesses. The tests use local ephemeral servers and do not interrupt deployed rooms.
+
+Proxy tests use real local HTTP/HTTPS CONNECT proxies: authenticated signed chat, proxy-side DNS, reconnect, NO_PROXY routing, failure without direct fallback, credential-safe errors, cancellation cleanup, inherited terminal-login settings, direct local RPC and bundled MCP push over a trusted HTTPS proxy. Substituted room certificates and untrusted HTTPS proxy certificates are rejected. `npm test` clears inherited external proxy settings so fixtures never use a developer's or CI machine's proxy; individual proxy tests supply their own environment.
 
 The GitHub Actions matrix covers Linux/macOS/Windows with Node 22/24. `npm run test:install` installs the committed Git revision globally into an isolated temporary prefix and tests its installed server and clients. After changing TypeScript, run `npm run compile` and commit the updated `dist/src/**/*.js`, standalone `dist/sideband.cjs`, and third-party notices alongside the source; CI rejects stale tracked output. Compiler-generated declarations, source maps and test output remain ignored. Unit/integration tests exercise the standalone client without node_modules, native Claude credential handoff, hidden terminal input and authenticated login. Live Codex message receipt has been tested against a VPS; live busy-turn steering, Claude model receipt and its native credential UI still require manual verification. Pi/OMP integrations, a dashboard, transcript/tool telemetry, Discord relay, persistence and granular authorization are deliberately outside v1.

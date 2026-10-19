@@ -4,7 +4,7 @@ import { RoomClient } from "../dist/src/room-client.js";
 
 const server = await RoomServer.start({ host: "127.0.0.1", port: 0 });
 const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
-const peers = ["alice", "bob", "charlie"].map((name) => new RoomClient(profile, name));
+const peers = ["alice", "bob", "charlie"].map((name) => new RoomClient(profile, name, { proxyEnv: {} }));
 const pending = [];
 peers.forEach((client) => client.onMessage((message) => console.log(`${client.identity.name} received verified message from ${message.sender.name}: ${message.text}`)));
 try {

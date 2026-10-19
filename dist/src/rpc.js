@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { Duplex } from "node:stream";
+import { Agent as HttpAgent } from "node:http";
 import WebSocket from "ws";
 export class RpcError extends Error {
     code;
@@ -55,7 +56,9 @@ export class CodexRpc {
             if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.protocol !== "ws:") {
                 throw new Error("Sideband accepts only a local ws:// Codex endpoint.");
             }
-            socket = new WebSocket(options.url, { handshakeTimeout: options.timeoutMs ?? 10_000 });
+            const agent = new HttpAgent({ keepAlive: false });
+            socket = new WebSocket(options.url, { agent, handshakeTimeout: options.timeoutMs ?? 10_000 });
+            socket.once("close", () => agent.destroy());
         }
         else {
             child = spawn(options.command ?? process.env.CODEX_BIN ?? "codex", [

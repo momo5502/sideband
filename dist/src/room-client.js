@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Agent as HttpsAgent } from "node:https";
 import WebSocket from "ws";
+import { roomProxyAgent, roomProxyUrl } from "./room-proxy.js";
 import { AgentKeys, RoomError, VERSION, loginProof, messageProof, parsePassword, serverUrl, verifyMessage, validPresence } from "./room-protocol.js";
 export class RoomClient {
     profile;
@@ -59,15 +61,27 @@ export class RoomClient {
     }
     async open(generation) {
         const { secret, fingerprint } = parsePassword(this.profile.password);
+        const proxy = roomProxyUrl(this.endpoint, this.options.proxyEnv);
+        const connection = new AbortController();
+        const agent = proxy ? roomProxyAgent(proxy, connection.signal) : new HttpsAgent({ keepAlive: false });
+        let fatal;
+        agent.on("proxyConnect", (response) => {
+            if (response.statusCode === 200)
+                return;
+            fatal = response.statusCode === 407
+                ? new RoomError("PROXY_AUTH", "HTTP proxy authentication failed (407). Check the proxy credentials outside agent chat.")
+                : new RoomError("PROXY_CONNECT", `HTTP proxy refused CONNECT (${response.statusCode}). Check whether it allows access to the Sideband server port.`);
+        });
         const socket = new WebSocket(this.endpoint, {
             // This isn't unverified TLS: the exact SHA-256 certificate pin is verified below,
             // before any password, public identity or message is sent.
-            rejectUnauthorized: false, handshakeTimeout: 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
+            rejectUnauthorized: false, handshakeTimeout: proxy ? 10_000 : 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
+            // Explicitly bypass Node's global proxy agent when NO_PROXY (or no proxy) selects direct access.
+            agent,
         });
         this.socket = socket;
         let pinned = false;
         let authenticated = false;
-        let fatal;
         const resetWatchdog = () => {
             if (this.watchdog)
                 clearTimeout(this.watchdog);
@@ -125,6 +139,8 @@ export class RoomClient {
         socket.on("ping", resetWatchdog);
         socket.on("error", () => { });
         socket.on("close", () => {
+            connection.abort();
+            agent.destroy();
             if (this.watchdog)
                 clearTimeout(this.watchdog);
             for (const pending of this.pending.values()) {
@@ -140,7 +156,9 @@ export class RoomClient {
         try {
             await new Promise((resolve, reject) => {
                 socket.once("open", () => pinned ? resolve() : reject(fatal ?? new Error("Server pin was not verified.")));
-                socket.once("error", () => reject(fatal ?? new Error("Cannot connect to the room server.")));
+                socket.once("error", () => reject(fatal ?? new Error(proxy
+                    ? "Cannot connect through the configured HTTP proxy. Check proxy connectivity, TLS trust, and CONNECT access to the Sideband server port."
+                    : "Cannot connect to the room server.")));
                 socket.once("close", () => reject(fatal ?? new Error("Room server closed the connection.")));
             });
             if (generation !== this.generation || !this.wanted)
@@ -175,7 +193,7 @@ export class RoomClient {
             }
             catch (error) {
                 this.error(error);
-                if (error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE"].includes(error.code)) {
+                if (error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE", "PROXY_CONFIG", "PROXY_AUTH"].includes(error.code)) {
                     this.wanted = false;
                     this.state = "disconnected";
                     this.room = null;

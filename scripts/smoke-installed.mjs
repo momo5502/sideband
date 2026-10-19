@@ -27,7 +27,7 @@ try {
     });
   });
   clearTimeout(timer);
-  const alice = new RoomClient(profile, "installed-alice"); const bob = new RoomClient(profile, "installed-bob"); clients.push(alice, bob);
+  const alice = new RoomClient(profile, "installed-alice", { proxyEnv: {} }); const bob = new RoomClient(profile, "installed-bob", { proxyEnv: {} }); clients.push(alice, bob);
   await alice.connect(); await bob.connect(); const room = await alice.createRoom("installed-smoke"); await bob.joinRoom(room.id);
   const arrived = new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(new Error("Installed client did not receive push.")), 3000);
