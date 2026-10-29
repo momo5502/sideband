@@ -16,6 +16,8 @@ export class RoomClient {
     wanted = false;
     attempts = 0;
     generation = 0;
+    desiredRoom = null;
+    leaveRequested = false;
     pending = new Map();
     listeners = new Set();
     presenceListeners = new Set();
@@ -49,13 +51,16 @@ export class RoomClient {
             throw new Error("Already connected or connecting.");
         this.wanted = true;
         this.state = "connecting";
+        const generation = ++this.generation;
         try {
-            await this.open(++this.generation);
+            await this.open(generation);
         }
         catch (error) {
-            this.wanted = false;
-            this.state = "off";
-            this.socket?.terminate();
+            if (generation === this.generation) {
+                this.wanted = false;
+                this.state = "off";
+                this.socket?.terminate();
+            }
             throw error;
         }
     }
@@ -82,10 +87,17 @@ export class RoomClient {
         this.socket = socket;
         let pinned = false;
         let authenticated = false;
+        let ready = false;
+        const assertCurrent = () => {
+            if (generation !== this.generation || !this.wanted || this.socket !== socket || socket.readyState !== WebSocket.OPEN)
+                throw new Error("Connection cancelled.");
+        };
         const resetWatchdog = () => {
+            if (this.socket !== socket || generation !== this.generation || !this.wanted)
+                return;
             if (this.watchdog)
                 clearTimeout(this.watchdog);
-            this.watchdog = setTimeout(() => socket.terminate(), 45_000);
+            this.watchdog = setTimeout(() => socket.terminate(), this.options.heartbeatTimeoutMs ?? 45_000);
             this.watchdog.unref();
         };
         socket.on("upgrade", (response) => {
@@ -97,6 +109,8 @@ export class RoomClient {
             }
         });
         socket.on("message", (raw) => {
+            if (this.socket !== socket)
+                return;
             try {
                 const packet = JSON.parse(raw.toString());
                 if (packet.v !== VERSION)
@@ -113,6 +127,8 @@ export class RoomClient {
                         pending.resolve(packet.result);
                     return;
                 }
+                if (generation !== this.generation || !this.wanted)
+                    return;
                 if (packet.event === "message") {
                     if (!authenticated || !verifyMessage(packet.data))
                         throw new Error("Rejected a message with invalid identity/signature.");
@@ -141,6 +157,9 @@ export class RoomClient {
         socket.on("close", () => {
             connection.abort();
             agent.destroy();
+            // A failed attempt can finish closing after its replacement has started.
+            if (this.socket !== socket)
+                return;
             if (this.watchdog)
                 clearTimeout(this.watchdog);
             for (const pending of this.pending.values()) {
@@ -148,7 +167,9 @@ export class RoomClient {
                 pending.reject(new Error("Connection lost; request acceptance is unknown. Check history before resending."));
             }
             this.pending.clear();
-            if (!authenticated || generation !== this.generation || !this.wanted)
+            this.socket = undefined;
+            // open()'s caller retries failed authentication/restoration, not this close handler.
+            if (!ready || generation !== this.generation || !this.wanted)
                 return;
             this.state = "reconnecting";
             this.scheduleReconnect();
@@ -161,25 +182,72 @@ export class RoomClient {
                     : "Cannot connect to the room server.")));
                 socket.once("close", () => reject(fatal ?? new Error("Room server closed the connection.")));
             });
-            if (generation !== this.generation || !this.wanted)
-                throw new Error("Connection cancelled.");
+            assertCurrent();
             const { challenge } = await this.request("hello", { publicKey: this.identity.publicKey, ...(this.identity.name ? { name: this.identity.name } : {}) });
             if (typeof challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(challenge))
                 throw new Error("Invalid identity challenge.");
+            assertCurrent();
             const login = await this.request("authenticate", { secret, signature: this.keys.sign(loginProof(challenge, fingerprint, this.identity)) });
             if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey || login.identity.name !== this.identity.name)
                 throw new Error("Server returned an inconsistent agent identity.");
-            if (!login.resumed && this.room)
-                this.error(new Error("Previous room membership expired. Create or join a room again."));
-            this.room = login.room;
+            assertCurrent();
             authenticated = true;
+            this.room = login.room;
+            if (!this.leaveRequested && !this.room && this.desiredRoom) {
+                const restored = await this.restoreRoom(this.desiredRoom, assertCurrent);
+                assertCurrent();
+                this.room = restored;
+            }
+            if (this.leaveRequested) {
+                // Honor both a lost leave request and a leave issued while restoration was in flight.
+                if (this.room) {
+                    assertCurrent();
+                    await this.request("leave");
+                    assertCurrent();
+                }
+                this.room = null;
+            }
+            assertCurrent();
+            this.desiredRoom = this.room;
+            ready = true;
             this.state = "on";
             this.attempts = 0;
+            this.lastError = undefined;
             resetWatchdog();
         }
         catch (error) {
             socket.terminate();
             throw fatal ?? error;
+        }
+    }
+    async restoreRoom(room, assertCurrent) {
+        const join = async (target) => { assertCurrent(); if (this.leaveRequested)
+            return null; return this.request("join", { room: target }); };
+        try {
+            return await join(room.id);
+        }
+        catch (error) {
+            if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND")
+                throw error;
+        }
+        try {
+            return await join(room.name);
+        }
+        catch (error) {
+            if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND")
+                throw error;
+        }
+        // The last disconnected participant may have expired, or the server restarted.
+        assertCurrent();
+        if (this.leaveRequested)
+            return null;
+        try {
+            return await this.request("create", { name: room.name });
+        }
+        catch (error) {
+            if (!(error instanceof RoomError) || error.code !== "ROOM_EXISTS")
+                throw error;
+            return join(room.name); // Another reconnecting participant recreated it first.
         }
     }
     scheduleReconnect() {
@@ -192,7 +260,11 @@ export class RoomClient {
                 await this.open(generation);
             }
             catch (error) {
+                if (generation !== this.generation || !this.wanted)
+                    return;
                 this.error(error);
+                if (generation !== this.generation || !this.wanted)
+                    return;
                 if (error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE", "PROXY_CONFIG", "PROXY_AUTH"].includes(error.code)) {
                     this.wanted = false;
                     this.state = "disconnected";
@@ -225,9 +297,17 @@ export class RoomClient {
     requireOn() { if (this.state !== "on")
         throw new Error("Messaging is not connected."); }
     async listRooms() { this.requireOn(); return this.request("rooms"); }
-    async createRoom(name) { this.requireOn(); const room = await this.request("create", { name }); this.room = room; return room; }
-    async joinRoom(room) { this.requireOn(); const joined = await this.request("join", { room }); this.room = joined; return joined; }
-    async leaveRoom() { this.requireOn(); await this.request("leave"); this.room = null; }
+    async createRoom(name) { this.requireOn(); const room = await this.request("create", { name }); this.room = this.desiredRoom = room; this.leaveRequested = false; return room; }
+    async joinRoom(room) { this.requireOn(); const joined = await this.request("join", { room }); this.room = this.desiredRoom = joined; this.leaveRequested = false; return joined; }
+    async leaveRoom() {
+        if (this.state !== "reconnecting")
+            this.requireOn();
+        this.leaveRequested = true;
+        this.desiredRoom = null;
+        if (this.state !== "reconnecting")
+            await this.request("leave");
+        this.room = null;
+    }
     async members() { this.requireOn(); return this.request("members"); }
     async history(limit = 50) {
         this.requireOn();
@@ -248,6 +328,8 @@ export class RoomClient {
     async close() {
         this.wanted = false;
         ++this.generation;
+        this.desiredRoom = null;
+        this.leaveRequested = false;
         if (this.reconnectTimer)
             clearTimeout(this.reconnectTimer);
         if (this.watchdog)
