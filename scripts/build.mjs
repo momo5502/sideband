@@ -12,8 +12,8 @@ await rm(output, { recursive: true, force: true });
 // Browser signing works on HTTP too: pure-JS Ed25519/SHA-256, with getRandomValues entropy.
 // Embed the complete browser app so the standalone runtime needs no separate assets or CDN.
 const browser = await build({ absWorkingDir: root, entryPoints: ["src/browser-ui.ts"], bundle: true,
-  platform: "browser", format: "iife", target: "es2022", minify: true, write: false, legalComments: "none", metafile: true });
-const browserNotices = await Promise.all(["@noble/curves", "@noble/hashes"].map(async name => {
+  platform: "browser", format: "iife", target: "es2022", minify: true, write: false, legalComments: "eof", metafile: true });
+const browserNotices = await Promise.all(["@noble/curves", "@noble/hashes", "marked", "dompurify"].map(async name => {
   const directory = join(root, "node_modules", name);
   const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
   return `${name}@${manifest.version}\n${await readFile(join(directory, "LICENSE"), "utf8")}`;

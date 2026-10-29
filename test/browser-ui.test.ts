@@ -40,7 +40,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     return dom;
   };
   try {
-    await agent.connect(); await agent.createRoom("agents-room"); await agent.send("Before the human joined");
+    await agent.connect(); await agent.createRoom("agents-room"); await agent.send("Before the human joined\nHistory newline\n\n**history**");
     const dom = await open(); const doc = dom.window.document;
     const input = (id: string) => doc.getElementById(id) as HTMLInputElement;
     input("username").value = "human"; input("password").value = server.password;
@@ -72,6 +72,8 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     (doc.querySelector("#room-list button") as HTMLButtonElement).click();
     await until(() => doc.getElementById("messages")!.textContent!.includes("Before the human joined"));
     await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
+    const historyBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "history")!;
+    assert.equal(historyBody.querySelectorAll("br").length, 1); assert.equal(historyBody.querySelectorAll("p").length, 2);
     assert.equal(doc.body.classList.contains("menu-open"), false, "selecting a room closes the drawer");
     assert.equal(doc.querySelector("main")!.inert, false);
     assert.equal(doc.getElementById("room-menu")!.inert, mobile);
@@ -83,21 +85,28 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
       assert.equal(dom.window.getComputedStyle(doc.getElementById("leave")!).display, "none");
     }
     const received: string[] = []; agent.onMessage(message => received.push(message.text));
-    input("message").value = "Browser to agent"; doc.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    const outgoing = "Browser to agent\nSecond line\n\n**bold**";
+    input("message").value = outgoing; doc.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
     await until(() => received.length > 0 || !!doc.getElementById("notice")!.textContent);
-    assert.equal(doc.getElementById("notice")!.textContent, ""); assert.equal(received[0], "Browser to agent");
+    assert.equal(doc.getElementById("notice")!.textContent, ""); assert.equal(received[0], outgoing, "Markdown display never changes the signed message sent to agents");
     await until(() => input("message").value === "");
+    const ownBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "bold")!;
+    assert.equal(ownBody.querySelectorAll("br").length, 1); assert.equal(ownBody.querySelectorAll("p").length, 2);
     const hostile = '<img src=x onerror="window.hacked=true">\n<script>window.hacked=true</script>';
     input("message").value = "Unsent draft"; await agent.send(hostile);
-    await until(() => doc.getElementById("messages")!.textContent!.includes(hostile));
+    await until(() => doc.getElementById("messages")!.textContent!.includes("<script>window.hacked=true</script>"));
     assert.equal(doc.querySelector("#messages img, #messages script"), null); assert.equal((dom.window as any).hacked, undefined);
     assert.equal(input("message").value, "Unsent draft", "push must preserve the draft");
+    await agent.send("**Incoming**\r\nSecond line\r\n\r\n- first\r\n- second");
+    await until(() => !![...doc.querySelectorAll("#messages strong")].find(element => element.textContent === "Incoming"));
+    const incomingBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "Incoming")!;
+    assert.equal(incomingBody.querySelectorAll("br").length, 1); assert.equal(incomingBody.querySelectorAll("li").length, 2);
     if (mobile) doc.getElementById("menu-toggle")!.click();
     input("room-name").value = "another-room"; doc.getElementById("create-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
     await until(() => doc.getElementById("room-title")!.textContent === "another-room");
     await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
     assert.equal(doc.body.classList.contains("menu-open"), false, "creating a room closes the drawer too");
-    assert.ok(!doc.getElementById("messages")!.textContent!.includes(hostile));
+    assert.ok(!doc.getElementById("messages")!.textContent!.includes("<script>window.hacked=true</script>"));
     const previousKey = JSON.parse(identity!).key;
     // A real reload retains per-origin localStorage and this tab's sessionStorage.
     const reloaded = await open(saved, identity); const next = reloaded.window.document;

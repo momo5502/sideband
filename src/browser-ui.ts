@@ -1,9 +1,11 @@
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
+import { messageMarkdown } from "./browser-markdown.js";
 import type { AgentIdentity, SignedMessage, PresenceEvent } from "./room-protocol.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const user = $<HTMLInputElement>("username"), password = $<HTMLInputElement>("password"), message = $<HTMLTextAreaElement>("message");
 const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1";
+const markdown = messageMarkdown(window);
 let client: BrowserRoomClient | undefined, joining = false, loadingHistory = false;
 let backlog: (SignedMessage | PresenceEvent)[] = [], seen = new Set<string>();
 const mobile = window.matchMedia?.("(max-width:650px)");
@@ -43,7 +45,7 @@ function render(item: SignedMessage | PresenceEvent) {
     const meta = document.createElement("div"); meta.className = "meta";
     const sender = document.createElement("span"); sender.className = "sender"; sender.textContent = label(item.sender);
     const time = document.createElement("time"); time.className = "time"; time.dateTime = new Date(item.createdAt).toISOString(); time.textContent = new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const body = document.createElement("div"); body.className = "body"; body.textContent = item.text;
+    const body = document.createElement("div"); body.className = "message-body"; body.append(markdown(item.text));
     meta.append(sender, time); entry.append(meta, body);
   }
   log.append(entry); while (log.childElementCount > 500) log.firstElementChild!.remove();

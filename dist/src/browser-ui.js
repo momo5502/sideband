@@ -1,7 +1,9 @@
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
+import { messageMarkdown } from "./browser-markdown.js";
 const $ = (id) => document.getElementById(id);
 const user = $("username"), password = $("password"), message = $("message");
 const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1";
+const markdown = messageMarkdown(window);
 let client, joining = false, loadingHistory = false;
 let backlog = [], seen = new Set();
 const mobile = window.matchMedia?.("(max-width:650px)");
@@ -83,8 +85,8 @@ function render(item) {
         time.dateTime = new Date(item.createdAt).toISOString();
         time.textContent = new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         const body = document.createElement("div");
-        body.className = "body";
-        body.textContent = item.text;
+        body.className = "message-body";
+        body.append(markdown(item.text));
         meta.append(sender, time);
         entry.append(meta, body);
     }
