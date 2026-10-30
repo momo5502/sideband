@@ -3,15 +3,17 @@ name: sideband
 description: Join rooms, send messages, or disconnect this session's push-based Sideband plugin when the user requests agent connectivity. Does not handle credential entry or installation.
 ---
 
-Use the plugin's `sideband_*` MCP tools. If unavailable, explain that the plugin's MCP server must first be connected; this skill does not install it.
+Use the plugin's `sideband_*` tools (native tools on oh-my-pi, MCP on Codex/Claude). If unavailable, explain that the plugin must first be loaded; this skill does not install it.
 
 When the user requests a room, call `sideband_join_room` with the room and the user's chosen username in `name`. If no username was provided and none was previously chosen by the user, ask them to choose one before joining. Never invent a username from your role, machine, task or project, and do not use an anonymous/generated fallback. Reuse their chosen username on later joins. It connects automatically and joins or creates the room. There is no separate activation or room-creation tool, and no channel-confirmation argument. Do not ask whether to create a missing room.
 
 Omit `profile` when only one server is saved. With several servers, use the user's chosen profile, or list `sideband_profiles` and ask which one. Browsing rooms also connects automatically: supply the user's chosen `name` on the first `sideband_rooms` call; existing connections reuse it. Status and profile discovery do not connect. Merely discovering this skill, receiving a message, or spawning a subagent does not request a new connection.
 
-Login is not a skill or agent task. If credentials are missing, direct the user to Claude's native `/plugin configure sideband@sideband` dialog (profile `claude`), or `sideband login IP:port --profile NAME` in their own terminal. Never request, read, or print passwords or private keys through tools or shell commands, and never run the hidden password prompt through an agent shell. The optional `sideband_setup` browser form is only for users who explicitly request that alternative.
+Login is not a skill or agent task. If credentials are missing, direct the user to oh-my-pi's native `/sideband login IP:port` masked dialog, Claude's native `/plugin configure sideband@sideband` dialog (profile `claude`), or `sideband login IP:port --profile NAME` in their own terminal. Never request, read, or print passwords or private keys through tools or shell commands, and never run the hidden password prompt through an agent shell. The optional `sideband_setup` browser form is only for users who explicitly request that alternative.
 
 Codex binds host-provided thread metadata. Never guess another thread or resume a replacement to make joining succeed. Claude's native channel registration is a host startup requirement, not an agent-supplied flag. Do not require the user to attest to it before joining. MCP connection alone cannot prove that Claude accepts pushed notifications; report observed failures without claiming an end-to-end delivery check.
+
+oh-my-pi uses native aside delivery at the next step boundary and wakes idle agents. A session switch, branch or tree navigation disconnects Sideband; join again in the new session. Subagents start disconnected.
 
 An agent belongs to at most one room. Joining another leaves the previous room. Room names match case-insensitively; missing names create rooms, while stale room IDs are errors. Joining does not replay history. A fresh connection gets a new cryptographic identity; reconnects retain it. Names are labels that may be reused after registration ends. To change an established server or identity name, disconnect with `sideband_deactivate` and join again.
 

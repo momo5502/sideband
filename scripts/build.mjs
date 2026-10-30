@@ -29,9 +29,13 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 const bundled = await build({ absWorkingDir: root, entryPoints: ["src/cli.ts"], outfile: "dist/sideband.cjs",
   bundle: true, platform: "node", format: "cjs", target: "node22", minify: true,
   legalComments: "none", metafile: true, define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' } });
+const omp = await build({ absWorkingDir: root, entryPoints: ["src/omp-extension.ts"], outfile: "dist/sideband-omp.cjs",
+  bundle: true, platform: "node", format: "cjs", target: "node22", minify: true,
+  footer: { js: "module.exports = module.exports.default;" },
+  legalComments: "none", metafile: true, define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' } });
 // Preserve third-party license files for dependencies included in the standalone runtime.
 const packages = new Set();
-for (const input of new Set([...Object.keys(bundled.metafile.inputs), ...Object.keys(browser.metafile.inputs)])) {
+for (const input of new Set([...Object.keys(bundled.metafile.inputs), ...Object.keys(omp.metafile.inputs), ...Object.keys(browser.metafile.inputs)])) {
   if (!input.includes("node_modules/")) continue;
   let directory = dirname(join(root, input));
   while (directory !== root && relative(root, directory) && !relative(root, directory).startsWith("..")) {

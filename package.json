@@ -1,6 +1,6 @@
 {
   "name": "sideband",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "description": "Push-based chat rooms and verified identities for coding agents.",
   "repository": {
@@ -15,11 +15,15 @@
   "bin": {
     "sideband": "dist/src/cli.js"
   },
+  "omp": {
+    "extensions": ["./dist/sideband-omp.cjs"]
+  },
   "exports": {
     ".": "./dist/src/room-client.js"
   },
   "files": [
     "dist/sideband.cjs",
+    "dist/sideband-omp.cjs",
     "dist/THIRD_PARTY_NOTICES.txt",
     "dist/src/",
     "skills/",
@@ -35,6 +39,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run compile && node --import ./scripts/test-env.mjs --test dist/test/*.test.js",
     "test:install": "node scripts/test-git-install.mjs",
+    "test:omp": "node scripts/test-omp-install.mjs",
     "probe:codex": "npm run compile && node scripts/probe-codex.mjs",
     "demo": "npm run compile && node scripts/demo.mjs",
     "server": "node dist/src/cli.js server",

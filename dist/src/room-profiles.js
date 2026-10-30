@@ -37,7 +37,7 @@ export class RoomProfiles {
             value = JSON.parse(await readFile(path, "utf8"));
         }
         catch {
-            throw new Error(`Connection profile '${name}' is unavailable. Use sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.`);
+            throw new Error(`Connection profile '${name}' is unavailable. Use oh-my-pi's /sideband login HOST:PORT, sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.`);
         }
         parsePassword(value.password);
         return { server: serverUrl(value.server), password: value.password };
@@ -46,7 +46,7 @@ export class RoomProfiles {
         if (name === undefined) {
             const names = await this.names();
             if (!names.length)
-                throw new Error("No saved server. Use sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.");
+                throw new Error("No saved server. Use oh-my-pi's /sideband login HOST:PORT, sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.");
             if (names.length > 1)
                 throw new Error(`Multiple saved servers: ${names.join(", ")}. Specify a profile in the join or rooms call.`);
             name = names[0];
