@@ -33,7 +33,9 @@ function setRoom() {
   $("leave").hidden = !client?.room; message.disabled = !client?.room || joining; $<HTMLButtonElement>("send").disabled = !client?.room || joining;
   $("menu-leave").hidden = !client?.room;
   message.placeholder = client?.room ? "Write a message…" : "Join a room to send messages";
+  $<HTMLInputElement>("webhook-room").value = client?.room?.name ?? ""; clearWebhook();
 }
+function clearWebhook() { $<HTMLTextAreaElement>("webhook-url").value = ""; $("webhook-result").hidden = true; }
 function render(item: SignedMessage | PresenceEvent) {
   if (!client?.room || item.roomId !== client.room.id || seen.has(item.id)) return;
   seen.add(item.id); if (seen.size > 10000) seen.delete(seen.values().next().value!);
@@ -95,7 +97,7 @@ async function login() {
     document.body.classList.add("chatting"); setMenu(!client.room);
     connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
     candidate.onClose = () => {
-      if (client !== candidate) return; client = undefined; $("app").hidden = true; $("login-panel").hidden = false;
+      if (client !== candidate) return; client = undefined; clearWebhook(); $("app").hidden = true; $("login-panel").hidden = false;
       document.body.classList.remove("chatting"); setMenu(false);
       connection("Disconnected"); $("login-error").textContent = "Connection closed. Connect again to rejoin.";
     };
@@ -109,8 +111,23 @@ $("refresh").addEventListener("click", () => { void rooms().catch(error); });
 $("join-form").addEventListener("submit", event => { event.preventDefault(); const input = $<HTMLInputElement>("room-name"); const name = input.value.trim(); if (name) void join(name).then(() => { input.value = ""; }); });
 for (const id of ["leave", "menu-leave"]) $(id).addEventListener("click", () => { if (joining || !client) return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error); });
 $("logout").addEventListener("click", () => {
-  const previous = client; client = undefined; previous?.disconnect(); storage("sessionStorage", "remove", tabKey);
+  const previous = client; client = undefined; clearWebhook(); previous?.disconnect(); storage("sessionStorage", "remove", tabKey);
   $("app").hidden = true; $("login-panel").hidden = false; document.body.classList.remove("chatting"); setMenu(false); connection("Disconnected");
+});
+$("webhook-form").addEventListener("submit", event => {
+  event.preventDefault(); if (!client) return;
+  const owner = client, room = $<HTMLInputElement>("webhook-room").value.trim(), sender = $<HTMLInputElement>("webhook-sender").value.trim();
+  const button = $<HTMLButtonElement>("webhook-generate"); button.disabled = true; clearWebhook(); notice("");
+  void owner.request<{ path: string }>("webhook", { room, sender }).then(result => {
+    if (client !== owner || room !== $<HTMLInputElement>("webhook-room").value.trim() || sender !== $<HTMLInputElement>("webhook-sender").value.trim()) return;
+    $<HTMLTextAreaElement>("webhook-url").value = new URL(result.path, location.origin).href; $("webhook-result").hidden = false;
+  }).catch(value => { if (client === owner) error(value); }).finally(() => { button.disabled = false; });
+});
+for (const id of ["webhook-room", "webhook-sender"]) $(id).addEventListener("input", clearWebhook);
+$("webhook-copy").addEventListener("click", () => {
+  const output = $<HTMLTextAreaElement>("webhook-url"), value = output.value; if (!value) return;
+  if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(value).then(() => notice("Webhook URL copied.")).catch(() => { output.focus(); output.select(); notice("Select and copy the webhook URL."); });
+  else { output.focus(); output.select(); notice("Select and copy the webhook URL."); }
 });
 $("compose").addEventListener("submit", event => {
   event.preventDefault(); if (!client || joining || !message.value.trim()) return;
@@ -127,7 +144,8 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape") { event.preventDefault(); setMenu(false, true); }
   if (event.key === "Tab") {
     const drawer = $("room-menu");
-    const controls = [...drawer.querySelectorAll<HTMLElement>("button:not([hidden]):not(:disabled),input:not(:disabled),a[href]")];
+    const controls = [...drawer.querySelectorAll<HTMLElement>("button:not([hidden]):not(:disabled),input:not(:disabled),textarea:not(:disabled),summary,a[href]")]
+      .filter(element => !element.closest("[hidden]") && (!element.closest("details:not([open])") || element.tagName === "SUMMARY"));
     const first = controls[0], last = controls[controls.length - 1], active = document.activeElement;
     if (event.shiftKey && (active === first || !drawer.contains(active))) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && (active === last || !drawer.contains(active))) { event.preventDefault(); first?.focus(); }

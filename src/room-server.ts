@@ -7,6 +7,7 @@ import { createServer as createHttpServer, type Server as HttpServer, type Incom
 import { statusPage, type PublicStatus } from "./status-page.js";
 import { webPage } from "./web-page.js";
 import { browserScript } from "./browser-bundle.js";
+import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
@@ -24,6 +25,8 @@ export class RoomServer {
   readonly password: string;
   readonly fingerprint: string;
   private readonly secret: Buffer;
+  private readonly webhooks: Webhooks;
+  private webhookBudget = { tokens: 100, updated: Date.now() };
   private readonly http: HttpsServer;
   private readonly plainHttp?: HttpServer;
   private readonly ws: WebSocketServer;
@@ -37,6 +40,7 @@ export class RoomServer {
   private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions) {
     this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
     this.secret = createHash("sha256").update(identity.secret).digest();
+    this.webhooks = new Webhooks(this.secret);
     // The one copyable password includes the certificate pin. No domain/CA setup or TOFU is needed.
     this.password = `sb1.${this.fingerprint}.${identity.secret}`;
     this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (req, res) => this.httpRequest(req, res));
@@ -102,6 +106,13 @@ export class RoomServer {
     let path: string;
     try { path = new URL(req.url ?? "/", "https://sideband.invalid").pathname; }
     catch { res.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }); res.end("Bad request.\n"); return; }
+    if (path === "/webhooks") {
+      void this.webhookRequest(req, res, headers).catch(() => {
+        if (!res.headersSent) res.writeHead(500, { ...headers, "Content-Type": "text/plain; charset=utf-8", Connection: "close" });
+        res.end("Webhook delivery failed.\n");
+      });
+      return;
+    }
     const chat = path === "/chat" || path === "/chat.js";
     const known = path === "/" || path === "/status.json" || chat;
     if (chat) {
@@ -120,6 +131,54 @@ export class RoomServer {
     else { contentType = "text/html; charset=utf-8"; body = statusPage(this.publicStatus()); }
     res.writeHead(code, { ...headers, "Content-Type": contentType, "Content-Length": String(Buffer.byteLength(body)) });
     res.end(req.method === "HEAD" ? undefined : body);
+  }
+  private async webhookRequest(req: IncomingMessage, res: ServerResponse, headers: Record<string, string>): Promise<void> {
+    const respond = (code: number, body = "", extra: Record<string, string> = {}) => {
+      res.writeHead(code, { ...headers, "Content-Type": "text/plain; charset=utf-8", Connection: "close", ...extra });
+      res.end(body); req.resume();
+    };
+    if (req.method !== "POST") { respond(405, "Use POST with application/json.\n", { Allow: "POST" }); return; }
+    const target = this.webhooks.authorize(new URL(req.url!, "https://sideband.invalid"));
+    if (!target) { respond(403, "Invalid webhook URL.\n"); return; }
+    if (!/^application\/(?:json|[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i.test(req.headers["content-type"] ?? "")) { respond(415, "Use application/json.\n"); return; }
+    const now = Date.now(), budget = this.webhookBudget;
+    budget.tokens = Math.min(100, budget.tokens + (now - budget.updated) / 20); budget.updated = now;
+    if (budget.tokens < 1) { respond(429, "Too many webhook deliveries.\n", { "Retry-After": "1" }); return; }
+    budget.tokens--;
+    let payload: unknown;
+    try {
+      if (Number(req.headers["content-length"] ?? 0) > MAX_WEBHOOK_BYTES) { respond(413, "Webhook payload too large.\n"); return; }
+      const body = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = []; let size = 0, failed = false;
+        req.on("data", (chunk: Buffer) => {
+          if (failed) return;
+          size += chunk.length;
+          if (size > MAX_WEBHOOK_BYTES) { failed = true; reject(new RoomError("PAYLOAD_TOO_LARGE", "Webhook payload too large.")); return; }
+          chunks.push(chunk);
+        });
+        req.once("end", () => { if (!failed) resolve(Buffer.concat(chunks)); });
+        req.once("error", reject); req.once("aborted", () => reject(new Error("Request aborted.")));
+      });
+      payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    } catch (error) { respond(error instanceof RoomError && error.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, "Invalid or oversized JSON payload.\n"); return; }
+    let body: string;
+    try { body = webhookText(payload); }
+    catch { respond(400, "JSON nesting is too deep.\n"); return; }
+    const room = [...this.rooms.values()].find(room => room.name.toLowerCase() === target.room);
+    // A retained reconnecting member does not make an otherwise empty room an active destination.
+    if (!room || ![...room.members].some(id => this.members.get(id)?.socket?.readyState === WebSocket.OPEN)) { respond(204); return; }
+    if (this.names.has(target.sender.toLowerCase())) { respond(409, "Webhook sender name is in use by a connected participant.\n"); return; }
+    const message = this.webhooks.message(target, room.id, body);
+    this.broadcast(room, message);
+    respond(204);
+  }
+  private broadcast(room: RoomState, message: SignedMessage): void {
+    room.history.push(message); if (room.history.length > 50) room.history.shift();
+    for (const peerId of room.members) {
+      if (peerId === message.sender.id) continue;
+      const peer = this.members.get(peerId)!;
+      if (peer.socket) this.send(peer.socket, { event: "message", data: message });
+    }
   }
   private send(socket: WebSocket, packet: object): void {
     if (socket.readyState !== WebSocket.OPEN) return;
@@ -206,6 +265,11 @@ export class RoomServer {
     const member = connection.member;
     if (!member || member.socket !== socket) throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
     switch (method) {
+      case "webhook": {
+        const args = fields(params, ["room", "sender"]);
+        if (typeof args.sender === "string" && this.names.has(args.sender.toLowerCase())) throw new RoomError("NAME_IN_USE", "Choose a webhook sender name distinct from connected participants.");
+        return this.webhooks.create(args.room, args.sender);
+      }
       case "rooms": fields(params, []); return [...this.rooms.values()].map((room) => this.summary(room));
       case "create": {
         // Compatibility with pre-0.11 clients. Current clients expose only join.
@@ -249,12 +313,7 @@ export class RoomServer {
           if (prior.sender.id === member.identity.id && prior.signature === message.signature) return { messageId: id };
           throw new RoomError("MESSAGE_ID", "Message ID is already in use.");
         }
-        room.history.push(message); if (room.history.length > 50) room.history.shift();
-        for (const peerId of room.members) {
-          if (peerId === member.identity.id) continue;
-          const peer = this.members.get(peerId)!;
-          if (peer.socket) this.send(peer.socket, { event: "message", data: message });
-        }
+        this.broadcast(room, message);
         return { messageId: id };
       }
       default: throw new RoomError("UNKNOWN_METHOD", "Unknown method.");

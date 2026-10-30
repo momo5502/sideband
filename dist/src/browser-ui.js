@@ -60,7 +60,10 @@ function setRoom() {
     $("send").disabled = !client?.room || joining;
     $("menu-leave").hidden = !client?.room;
     message.placeholder = client?.room ? "Write a message…" : "Join a room to send messages";
+    $("webhook-room").value = client?.room?.name ?? "";
+    clearWebhook();
 }
+function clearWebhook() { $("webhook-url").value = ""; $("webhook-result").hidden = true; }
 function render(item) {
     if (!client?.room || item.roomId !== client.room.id || seen.has(item.id))
         return;
@@ -206,6 +209,7 @@ async function login() {
             if (client !== candidate)
                 return;
             client = undefined;
+            clearWebhook();
             $("app").hidden = true;
             $("login-panel").hidden = false;
             document.body.classList.remove("chatting");
@@ -244,6 +248,7 @@ for (const id of ["leave", "menu-leave"])
 $("logout").addEventListener("click", () => {
     const previous = client;
     client = undefined;
+    clearWebhook();
     previous?.disconnect();
     storage("sessionStorage", "remove", tabKey);
     $("app").hidden = true;
@@ -251,6 +256,37 @@ $("logout").addEventListener("click", () => {
     document.body.classList.remove("chatting");
     setMenu(false);
     connection("Disconnected");
+});
+$("webhook-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (!client)
+        return;
+    const owner = client, room = $("webhook-room").value.trim(), sender = $("webhook-sender").value.trim();
+    const button = $("webhook-generate");
+    button.disabled = true;
+    clearWebhook();
+    notice("");
+    void owner.request("webhook", { room, sender }).then(result => {
+        if (client !== owner || room !== $("webhook-room").value.trim() || sender !== $("webhook-sender").value.trim())
+            return;
+        $("webhook-url").value = new URL(result.path, location.origin).href;
+        $("webhook-result").hidden = false;
+    }).catch(value => { if (client === owner)
+        error(value); }).finally(() => { button.disabled = false; });
+});
+for (const id of ["webhook-room", "webhook-sender"])
+    $(id).addEventListener("input", clearWebhook);
+$("webhook-copy").addEventListener("click", () => {
+    const output = $("webhook-url"), value = output.value;
+    if (!value)
+        return;
+    if (navigator.clipboard?.writeText)
+        void navigator.clipboard.writeText(value).then(() => notice("Webhook URL copied.")).catch(() => { output.focus(); output.select(); notice("Select and copy the webhook URL."); });
+    else {
+        output.focus();
+        output.select();
+        notice("Select and copy the webhook URL.");
+    }
 });
 $("compose").addEventListener("submit", event => {
     event.preventDefault();
@@ -288,7 +324,8 @@ document.addEventListener("keydown", event => {
     }
     if (event.key === "Tab") {
         const drawer = $("room-menu");
-        const controls = [...drawer.querySelectorAll("button:not([hidden]):not(:disabled),input:not(:disabled),a[href]")];
+        const controls = [...drawer.querySelectorAll("button:not([hidden]):not(:disabled),input:not(:disabled),textarea:not(:disabled),summary,a[href]")]
+            .filter(element => !element.closest("[hidden]") && (!element.closest("details:not([open])") || element.tagName === "SUMMARY"));
         const first = controls[0], last = controls[controls.length - 1], active = document.activeElement;
         if (event.shiftKey && (active === first || !drawer.contains(active))) {
             event.preventDefault();

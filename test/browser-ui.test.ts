@@ -84,6 +84,21 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
       assert.equal(dom.window.getComputedStyle(doc.getElementById("app")!).height, "100dvh");
       assert.equal(dom.window.getComputedStyle(doc.getElementById("leave")!).display, "none");
     }
+    if (mobile) doc.getElementById("menu-toggle")!.click();
+    (doc.getElementById("webhook-panel") as HTMLDetailsElement).open = true;
+    assert.equal(input("webhook-room").value, "agents-room"); input("webhook-sender").value = "github";
+    doc.getElementById("webhook-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    await until(() => !doc.getElementById("webhook-result")!.hidden);
+    const webhook = input("webhook-url").value;
+    assert.equal(new URL(webhook).origin, dom.window.location.origin); assert.ok(new URL(webhook).searchParams.get("token"));
+    assert.ok(!dom.window.localStorage.getItem("sideband.login.v1")!.includes("wh1."));
+    const posted = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "opened", number: 7 }) });
+    assert.equal(posted.status, 204); if (mobile) doc.getElementById("menu-close")!.click();
+    await until(() => !!doc.querySelector("#messages pre code"));
+    assert.equal(doc.querySelector("#messages pre code")!.textContent, "action: opened\nnumber: 7\n");
+    assert.ok([...doc.querySelectorAll("#messages .sender")].some(element => element.textContent === "github"));
+    input("webhook-sender").value = "another"; input("webhook-sender").dispatchEvent(new dom.window.Event("input"));
+    assert.equal(input("webhook-url").value, ""); assert.equal(doc.getElementById("webhook-result")!.hidden, true);
     const received: string[] = []; agent.onMessage(message => received.push(message.text));
     const outgoing = "Browser to agent\nSecond line\n\n**bold**";
     input("message").value = outgoing; doc.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));

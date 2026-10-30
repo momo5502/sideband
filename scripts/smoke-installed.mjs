@@ -63,7 +63,20 @@ try {
       assert.equal(page.code, 200); assert.ok(page.body.length > 1000); assert.ok(!page.body.includes(profile.password));
     }
   }
-  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push, history, public status and embedded browser app all passed.");
+  const { path } = await alice.request("webhook", { room: "installed-smoke", sender: "installed-webhook" });
+  let webhookReceived = false;
+  bob.onMessage(message => { if (message.sender.name === "installed-webhook" && message.text.includes("action: opened")) webhookReceived = true; });
+  const webhookCode = await new Promise((resolve, reject) => {
+    const req = httpRequest(`http://127.0.0.1:${profile.statusPort}${path}`, { method: "POST", agent: false, headers: { "Content-Type": "application/json" } }, res => {
+      res.resume(); res.once("end", () => resolve(res.statusCode)); res.once("error", reject);
+    });
+    req.setTimeout(3000, () => req.destroy(new Error("Installed webhook timed out."))); req.once("error", reject); req.end('{"action":"opened"}');
+  });
+  assert.equal(webhookCode, 204);
+  const deadline = Date.now() + 3000;
+  while (!webhookReceived) { if (Date.now() > deadline) throw new Error("Installed webhook push did not arrive."); await new Promise(resolve => setTimeout(resolve, 10)); }
+  assert.equal((await bob.history()).length, 2);
+  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push, history, public status, embedded browser app and signed YAML webhook delivery all passed.");
 } finally {
   clearTimeout(timer); await Promise.all(clients.map((client) => client.close())); child.kill();
   await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", resolve); });
