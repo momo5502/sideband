@@ -229,8 +229,9 @@ export class RoomServer {
             return;
         }
         let body;
+        const githubEvent = req.headers["x-github-event"];
         try {
-            body = webhookText(payload);
+            body = webhookText(payload, typeof githubEvent === "string" ? githubEvent : undefined);
         }
         catch {
             respond(400, "JSON nesting is too deep.\n");

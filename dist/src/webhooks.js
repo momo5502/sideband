@@ -1,5 +1,6 @@
 import { createHmac, createPrivateKey, createPublicKey, randomUUID, sign, timingSafeEqual } from "node:crypto";
 import { stringify } from "yaml";
+import { githubWebhook } from "./github-webhook.js";
 import { agentName, identityFor, MAX_TEXT_BYTES, messageProof, RoomError, text } from "./room-protocol.js";
 export const MAX_WEBHOOK_BYTES = 256 * 1024;
 /** Capabilities are derived from the existing server secret; no webhook registry or saved tokens. */
@@ -52,7 +53,7 @@ export class Webhooks {
     }
 }
 /** JSON only: bounded depth, readable YAML, and a fence that payload strings cannot close. */
-export function webhookText(json) {
+export function webhookText(json, githubEvent) {
     const pending = [[json, 0]];
     while (pending.length) {
         const [value, depth] = pending.pop();
@@ -62,7 +63,7 @@ export function webhookText(json) {
             for (const item of Object.values(value))
                 pending.push([item, depth + 1]);
     }
-    let yaml = stringify(json, { lineWidth: 100, aliasDuplicateObjects: false });
+    let yaml = stringify(githubWebhook(json, githubEvent), { lineWidth: 100, aliasDuplicateObjects: false });
     let truncated = false;
     const cut = (limit) => { yaml = new TextDecoder().decode(Buffer.from(yaml).subarray(0, Math.max(0, limit - 3))).replace(/\uFFFD$/, ""); truncated = true; };
     if (Buffer.byteLength(yaml) > MAX_TEXT_BYTES - 128)

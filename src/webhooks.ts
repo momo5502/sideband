@@ -1,5 +1,6 @@
 import { createHmac, createPrivateKey, createPublicKey, randomUUID, sign, timingSafeEqual } from "node:crypto";
 import { stringify } from "yaml";
+import { githubWebhook } from "./github-webhook.js";
 import { agentName, identityFor, MAX_TEXT_BYTES, messageProof, RoomError, text, type SignedMessage } from "./room-protocol.js";
 
 export type WebhookTarget = { room: string; sender: string };
@@ -46,14 +47,14 @@ export class Webhooks {
 }
 
 /** JSON only: bounded depth, readable YAML, and a fence that payload strings cannot close. */
-export function webhookText(json: unknown): string {
+export function webhookText(json: unknown, githubEvent?: string): string {
   const pending: [unknown, number][] = [[json, 0]];
   while (pending.length) {
     const [value, depth] = pending.pop()!;
     if (depth > 32) throw new RoomError("INVALID_ARGUMENT", "Webhook JSON is nested too deeply.");
     if (value && typeof value === "object") for (const item of Object.values(value)) pending.push([item, depth + 1]);
   }
-  let yaml = stringify(json, { lineWidth: 100, aliasDuplicateObjects: false });
+  let yaml = stringify(githubWebhook(json, githubEvent), { lineWidth: 100, aliasDuplicateObjects: false });
   let truncated = false;
   const cut = (limit: number) => { yaml = new TextDecoder().decode(Buffer.from(yaml).subarray(0, Math.max(0, limit - 3))).replace(/\uFFFD$/, ""); truncated = true; };
   if (Buffer.byteLength(yaml) > MAX_TEXT_BYTES - 128) cut(MAX_TEXT_BYTES - 128);

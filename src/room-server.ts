@@ -162,7 +162,8 @@ export class RoomServer {
       payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
     } catch (error) { respond(error instanceof RoomError && error.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, "Invalid or oversized JSON payload.\n"); return; }
     let body: string;
-    try { body = webhookText(payload); }
+    const githubEvent = req.headers["x-github-event"];
+    try { body = webhookText(payload, typeof githubEvent === "string" ? githubEvent : undefined); }
     catch { respond(400, "JSON nesting is too deep.\n"); return; }
     const room = [...this.rooms.values()].find(room => room.name.toLowerCase() === target.room);
     // A retained reconnecting member does not make an otherwise empty room an active destination.

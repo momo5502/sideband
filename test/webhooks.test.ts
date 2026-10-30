@@ -23,11 +23,11 @@ function browser(server: RoomServer, key?: Uint8Array) {
   return new BrowserRoomClient(origin.replace("http:", "ws:") + "/browser-ws", server.password, "human", key,
     url => new NodeWebSocket(url, { origin }) as unknown as WebSocket);
 }
-async function deliver(server: RoomServer, path: string, body: string | Buffer = '{"hello":"world"}', options: { tls?: boolean; method?: string; contentType?: string; chunked?: boolean } = {}) {
+async function deliver(server: RoomServer, path: string, body: string | Buffer = '{"hello":"world"}', options: { tls?: boolean; method?: string; contentType?: string; chunked?: boolean; githubEvent?: string } = {}) {
   return new Promise<{ code: number; body: string; headers: import("node:http").IncomingHttpHeaders }>((resolve, reject) => {
     const req = (options.tls ? httpsRequest : httpRequest)({ hostname: "127.0.0.1", port: options.tls ? server.port : server.statusPort, path,
       method: options.method ?? "POST", rejectUnauthorized: false, agent: false,
-      headers: { "Content-Type": options.contentType ?? "application/json", ...(options.chunked ? {} : { "Content-Length": Buffer.byteLength(body) }) } }, res => {
+      headers: { "Content-Type": options.contentType ?? "application/json", ...(options.githubEvent ? { "X-GitHub-Event": options.githubEvent } : {}), ...(options.chunked ? {} : { "Content-Length": Buffer.byteLength(body) }) } }, res => {
       let response = ""; res.setEncoding("utf8"); res.on("data", chunk => response += chunk);
       res.once("end", () => resolve({ code: res.statusCode!, body: response, headers: res.headers })); res.once("error", reject);
     });
@@ -110,6 +110,13 @@ for (const tls of [false, true]) test(`webhook POST over ${tls ? "HTTPS" : "HTTP
     assert.equal((await agent.history()).length, 1, "invalid requests never post");
     for (let i = 0; i < 52; i++) assert.equal((await deliver(server, path, JSON.stringify({ sequence: i }))).code, 204);
     const retained = await agent.history(); assert.equal(retained.length, 50); assert.match(retained[0]!.text, /sequence: 2/);
+    const github = { action: "opened", repository: { full_name: "owner/repo", owner: { avatar_url: "noise-to-strip" } }, sender: { login: "author", id: 123 }, issue: { number: 1, title: "Bug", html_url: "https://github.com/owner/repo/issues/1", body: "Repro steps" } };
+    assert.equal((await deliver(server, path, JSON.stringify(github), { tls, githubEvent: "issues" })).code, 204);
+    const summarized = (await agent.history()).at(-1)!;
+    assert.equal(verifyMessage(summarized), true); assert.equal(summarized.sender.name, "github");
+    assert.match(summarized.text, /event: issues.opened/); assert.match(summarized.text, /body: Repro steps/); assert.ok(!summarized.text.includes("noise-to-strip"));
+    assert.equal((await deliver(server, path, JSON.stringify(github), { tls })).code, 204);
+    assert.match((await agent.history()).at(-1)!.text, /noise-to-strip/, "headerless generic webhooks preserve the original JSON fields");
   } finally { web.disconnect(); await agent.close(); await other.close(); await server.close(); }
 });
 

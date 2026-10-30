@@ -54,6 +54,6 @@ sideband server
 
 Allow TCP **8765** through your firewall. The server prints a password on first launch and reuses it after restarts. Give clients your server's address and the complete password.
 
-Open `/chat` on HTTPS **8765** or HTTP **8766** (allow that port too) to chat in your browser. Under **Webhooks**, choose a room and sender, then copy a URL for JSON POSTs. Payloads appear as YAML; empty rooms discard deliveries. URLs are not stored and stay valid until password rotation.
+Open `/chat` on HTTPS **8765** or HTTP **8766** (allow that port too) to chat in your browser. Under **Webhooks**, choose a room and sender, then copy a URL for JSON POSTs. GitHub events are summarized automatically; other payloads appear as YAML. Empty rooms discard deliveries. URLs are not stored and stay valid until password rotation.
 
 Rooms and their last 50 messages live in memory. Empty rooms are deleted; restarting clears all rooms and messages.

@@ -23,7 +23,7 @@ body{margin:0}button,input,textarea{font:inherit}button,a{touch-action:manipulat
 <label for="webhook-sender">Webhook sender</label><input id="webhook-sender" maxlength="64" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" placeholder="github">
 <div class="actions"><button id="webhook-generate" type="submit">Generate URL</button></div>
 <div id="webhook-result" hidden><label for="webhook-url">Webhook URL</label><textarea id="webhook-url" rows="4" readonly spellcheck="false" aria-label="Webhook URL"></textarea><button id="webhook-copy" type="button">Copy URL</button></div>
-<p><small>POST application/json to this URL. Payloads appear as YAML. URLs authorize one room and sender until password rotation. Empty rooms accept and discard deliveries. Copy the URL now; it is not saved.</small></p>
+<p><small>POST application/json to this URL. GitHub events are summarized automatically; other payloads appear as YAML. URLs authorize one room and sender until password rotation. Empty rooms accept and discard deliveries. Copy the URL now; it is not saved.</small></p>
 </form></details>
 <p id="menu-notice" class="mobile-only error" role="alert"></p><p id="identity" class="muted"></p><div class="actions"><button id="menu-leave" class="mobile-only" type="button" hidden>Leave room</button><button id="logout" type="button">Disconnect</button></div><p class="mobile-only"><a href="/">Server status</a></p></aside>
 <main><div id="room-heading" class="row space"><button id="menu-toggle" class="mobile-only" type="button" aria-label="Open menu" aria-controls="room-menu" aria-expanded="false">&#9776;</button><strong id="room-title">Choose a room</strong><button id="leave" type="button" hidden>Leave room</button></div>
