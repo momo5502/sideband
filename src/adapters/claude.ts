@@ -6,7 +6,7 @@ export class ClaudeAdapter implements DeliveryAdapter {
   constructor(private readonly server: Server) {}
   async prepare(): Promise<void> {
     // MCP initialization alone cannot prove that the host enabled native channels.
-    // The setup workflow must report this prerequisite, not claim delivery readiness.
+    // Registration is a host startup setting, not something a model-supplied flag can verify.
   }
   async deliver(message: Delivery): Promise<void> {
     await this.server.notification({

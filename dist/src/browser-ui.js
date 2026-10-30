@@ -136,11 +136,11 @@ async function rooms() {
     if (!list.length) {
         const empty = document.createElement("p");
         empty.className = "muted";
-        empty.textContent = "No rooms yet. Create one below.";
+        empty.textContent = "No rooms yet. Enter a name below to join.";
         $("room-list").append(empty);
     }
 }
-async function join(room, create = false) {
+async function join(room) {
     if (!client || joining)
         return;
     joining = true;
@@ -150,7 +150,7 @@ async function join(room, create = false) {
         // Queue live events across the join/history boundary; history can overlap pushed messages.
         loadingHistory = true;
         backlog = [];
-        await client.join(room, create);
+        await client.join(room);
         setRoom();
         const pushed = backlog;
         await history();
@@ -236,8 +236,8 @@ async function login() {
 $("login-form").addEventListener("submit", event => { event.preventDefault(); void login(); });
 $("forget").addEventListener("click", () => { storage("localStorage", "remove", savedKey); storage("sessionStorage", "remove", tabKey); password.value = ""; user.value = ""; $("login-error").textContent = "Saved login removed."; });
 $("refresh").addEventListener("click", () => { void rooms().catch(error); });
-$("create-form").addEventListener("submit", event => { event.preventDefault(); const input = $("room-name"); const name = input.value.trim(); if (name)
-    void join(name, true).then(() => { input.value = ""; }); });
+$("join-form").addEventListener("submit", event => { event.preventDefault(); const input = $("room-name"); const name = input.value.trim(); if (name)
+    void join(name).then(() => { input.value = ""; }); });
 for (const id of ["leave", "menu-leave"])
     $(id).addEventListener("click", () => { if (joining || !client)
         return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error); });

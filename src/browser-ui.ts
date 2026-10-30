@@ -65,14 +65,14 @@ async function rooms() {
     if (room.id === client.room?.id) button.setAttribute("aria-current", "true");
     button.addEventListener("click", () => { void join(room.id); }); $("room-list").append(button);
   }
-  if (!list.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "No rooms yet. Create one below."; $("room-list").append(empty); }
+  if (!list.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "No rooms yet. Enter a name below to join."; $("room-list").append(empty); }
 }
-async function join(room: string, create = false) {
+async function join(room: string) {
   if (!client || joining) return; joining = true; setRoom(); notice("");
   try {
     // Queue live events across the join/history boundary; history can overlap pushed messages.
     loadingHistory = true; backlog = [];
-    await client.join(room, create); setRoom();
+    await client.join(room); setRoom();
     const pushed = backlog; await history(); for (const item of pushed) render(item);
     await rooms(); setMenu(false, true);
   } catch (value) { error(value); }
@@ -106,7 +106,7 @@ async function login() {
 $("login-form").addEventListener("submit", event => { event.preventDefault(); void login(); });
 $("forget").addEventListener("click", () => { storage("localStorage", "remove", savedKey); storage("sessionStorage", "remove", tabKey); password.value = ""; user.value = ""; $("login-error").textContent = "Saved login removed."; });
 $("refresh").addEventListener("click", () => { void rooms().catch(error); });
-$("create-form").addEventListener("submit", event => { event.preventDefault(); const input = $<HTMLInputElement>("room-name"); const name = input.value.trim(); if (name) void join(name, true).then(() => { input.value = ""; }); });
+$("join-form").addEventListener("submit", event => { event.preventDefault(); const input = $<HTMLInputElement>("room-name"); const name = input.value.trim(); if (name) void join(name).then(() => { input.value = ""; }); });
 for (const id of ["leave", "menu-leave"]) $(id).addEventListener("click", () => { if (joining || !client) return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error); });
 $("logout").addEventListener("click", () => {
   const previous = client; client = undefined; previous?.disconnect(); storage("sessionStorage", "remove", tabKey);

@@ -6,7 +6,7 @@ export class ClaudeAdapter {
     }
     async prepare() {
         // MCP initialization alone cannot prove that the host enabled native channels.
-        // The setup workflow must report this prerequisite, not claim delivery readiness.
+        // Registration is a host startup setting, not something a model-supplied flag can verify.
     }
     async deliver(message) {
         await this.server.notification({

@@ -40,7 +40,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     return dom;
   };
   try {
-    await agent.connect(); await agent.createRoom("agents-room"); await agent.send("Before the human joined\nHistory newline\n\n**history**");
+    await agent.connect(); await agent.joinRoom("agents-room"); await agent.send("Before the human joined\nHistory newline\n\n**history**");
     const dom = await open(); const doc = dom.window.document;
     const input = (id: string) => doc.getElementById(id) as HTMLInputElement;
     input("username").value = "human"; input("password").value = server.password;
@@ -102,7 +102,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     const incomingBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "Incoming")!;
     assert.equal(incomingBody.querySelectorAll("br").length, 1); assert.equal(incomingBody.querySelectorAll("li").length, 2);
     if (mobile) doc.getElementById("menu-toggle")!.click();
-    input("room-name").value = "another-room"; doc.getElementById("create-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
+    input("room-name").value = "another-room"; doc.getElementById("join-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
     await until(() => doc.getElementById("room-title")!.textContent === "another-room");
     await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
     assert.equal(doc.body.classList.contains("menu-open"), false, "creating a room closes the drawer too");

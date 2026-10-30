@@ -37,7 +37,7 @@ export class LocalSetup {
                     }
                     res.setHeader("Content-Type", "text/html; charset=utf-8");
                     if (req.method === "GET") {
-                        res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Sideband setup</title><style>body{font:17px system-ui;max-width:560px;margin:60px auto;padding:24px;background:#15191f;color:#e5e9f0}input,button{box-sizing:border-box;display:block;width:100%;padding:12px;margin:10px 0 24px}small{color:#abb5c2}</style></head><body><h1>Connect your agents</h1><p>Save local profile <strong>${escape(form.profile)}</strong>. This form does not activate messaging.</p><form method="post"><label>Server IP:port<input name="server" required value="${escape(form.server)}" placeholder="203.0.113.10:8765" autocomplete="off"></label><label>Server password<input name="password" type="password" required placeholder="sb1.…" autocomplete="off"></label><button>Save connection</button></form><small>Credentials stay on this computer, outside the agent conversation. This one-use form expires in 10 minutes.</small></body></html>`);
+                        res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Sideband setup</title><style>body{font:17px system-ui;max-width:560px;margin:60px auto;padding:24px;background:#15191f;color:#e5e9f0}input,button{box-sizing:border-box;display:block;width:100%;padding:12px;margin:10px 0 24px}small{color:#abb5c2}</style></head><body><h1>Connect your agents</h1><p>Save local profile <strong>${escape(form.profile)}</strong>. This form does not connect an agent.</p><form method="post"><label>Server IP:port<input name="server" required value="${escape(form.server)}" placeholder="203.0.113.10:8765" autocomplete="off"></label><label>Server password<input name="password" type="password" required placeholder="sb1.…" autocomplete="off"></label><button>Save connection</button></form><small>Credentials stay on this computer, outside the agent conversation. This one-use form expires in 10 minutes.</small></body></html>`);
                         return;
                     }
                     if (req.method !== "POST" || req.headers.origin !== origin || !(req.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded")) {
@@ -58,7 +58,7 @@ export class LocalSetup {
                     try {
                         await this.profiles.save(form.profile, { server: values.get("server") ?? "", password: values.get("password") ?? "" });
                         this.forms.delete(key);
-                        res.end("<!doctype html><title>Connection saved</title><h1>Connection saved</h1><p>Return to your agent and activate this profile. You can close this tab.</p>");
+                        res.end("<!doctype html><title>Connection saved</title><h1>Connection saved</h1><p>Return to your agent and join a room. You can close this tab.</p>");
                     }
                     catch {
                         res.writeHead(400).end("Invalid address or password. Go back and copy the complete server password.");

@@ -34,13 +34,13 @@ test("persisted server password and certificate survive restarts, but rooms/hist
     const first = await f.start(); const password = first.password; const fingerprint = first.fingerprint;
     const bytes = await readFile(f.credentialsFile, "utf8");
     if (process.platform !== "win32") assert.equal((await stat(f.credentialsFile)).mode & 0o777, 0o600);
-    const a = await f.client(first); await a.createRoom("old-room"); await a.send("old history");
+    const a = await f.client(first); await a.joinRoom("old-room"); await a.send("old history");
     await f.stop(first); await a.close();
     const next = await f.start();
     assert.ok(next.password === password); assert.equal(next.fingerprint, fingerprint);
     assert.ok((await readFile(f.credentialsFile, "utf8")) === bytes, "normal startup never rewrites the identity file");
     const b = await f.client(next, password); assert.deepEqual(await b.listRooms(), []);
-    await b.createRoom("old-room"); assert.deepEqual(await b.history(), []);
+    await b.joinRoom("old-room"); assert.deepEqual(await b.history(), []);
   } finally { await f.close(); }
 });
 

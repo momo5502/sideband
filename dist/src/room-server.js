@@ -268,6 +268,7 @@ export class RoomServer {
                 fields(params, []);
                 return [...this.rooms.values()].map((room) => this.summary(room));
             case "create": {
+                // Compatibility with pre-0.11 clients. Current clients expose only join.
                 const args = fields(params, ["name"]);
                 const name = text(args.name, "room name", 100).trim();
                 if (!name || /[\x00-\x1f\x7f]/.test(name))
@@ -281,10 +282,17 @@ export class RoomServer {
             }
             case "join": {
                 const args = fields(params, ["room"]);
-                const target = text(args.room, "room", 100);
-                const room = this.rooms.get(target) ?? [...this.rooms.values()].find((room) => room.name.toLowerCase() === target.toLowerCase());
-                if (!room)
-                    throw new RoomError("ROOM_NOT_FOUND", "Room does not exist.");
+                const target = text(args.room, "room", 100).trim();
+                if (!target || /[\x00-\x1f\x7f]/.test(target))
+                    throw new RoomError("INVALID_ARGUMENT", "Invalid room name.");
+                let room = this.rooms.get(target) ?? [...this.rooms.values()].find((room) => room.name.toLowerCase() === target.toLowerCase());
+                if (!room) {
+                    // A stale ID must not become a new room named after that ID during recovery.
+                    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(target))
+                        throw new RoomError("ROOM_NOT_FOUND", "Room ID does not exist. Join by name to create a room.");
+                    room = { id: randomUUID(), name: target, members: new Set(), history: [] };
+                    this.rooms.set(room.id, room);
+                }
                 this.join(member, room);
                 return this.summary(room);
             }
@@ -342,7 +350,7 @@ export class RoomServer {
     currentRoom(member) {
         const room = member.roomId ? this.rooms.get(member.roomId) : undefined;
         if (!room)
-            throw new RoomError("NO_ROOM", "Create or join a room first.");
+            throw new RoomError("NO_ROOM", "Join a room first.");
         return room;
     }
     join(member, room) {

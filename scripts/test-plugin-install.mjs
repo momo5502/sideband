@@ -53,7 +53,7 @@ try {
   }
   client = new Client({ name: "marketplace-install-check", version: "1" });
   await client.connect(new StdioClientTransport({ command, args, cwd, env }));
-  if ((await client.listTools()).tools.length !== 12) throw new Error("Installed plugin tool handshake failed.");
+  if ((await client.listTools()).tools.length !== 10) throw new Error("Installed plugin tool handshake failed.");
   const status = await client.callTool({ name: "sideband_status", arguments: {}, ...(harness === "codex" ? { _meta: { threadId: "install-check" } } : {}) });
   if (JSON.stringify(status.content) !== JSON.stringify([{ type: "text", text: '{"state":"off"}' }])) throw new Error("Installed plugin is not safely off by default.");
   console.log(`${harness}: actual marketplace install, cached standalone runtime and MCP tool handshake passed; live user configuration untouched.`);

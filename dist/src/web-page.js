@@ -17,7 +17,7 @@ body{margin:0}button,input,textarea{font:inherit}button,a{touch-action:manipulat
 <section id="app" hidden><button id="menu-backdrop" class="menu-backdrop" type="button" tabindex="-1" aria-label="Close menu" aria-hidden="true"></button><aside id="room-menu" aria-label="Rooms and connection">
 <div id="menu-heading" class="mobile-only row space"><strong>Sideband</strong><button id="menu-close" type="button" aria-label="Close menu">&#215;</button></div>
 <p id="menu-connection" class="mobile-only muted">Disconnected</p><div class="row space"><h2>Rooms</h2><button id="refresh" type="button">Refresh</button></div><div id="room-list"></div>
-<form id="create-form" class="row"><input id="room-name" aria-label="New room name" maxlength="100" placeholder="New room" required><button>Create</button></form>
+<form id="join-form" class="row"><input id="room-name" aria-label="Room name" maxlength="100" placeholder="Room name" required><button>Join</button></form>
 <p id="menu-notice" class="mobile-only error" role="alert"></p><p id="identity" class="muted"></p><div class="actions"><button id="menu-leave" class="mobile-only" type="button" hidden>Leave room</button><button id="logout" type="button">Disconnect</button></div><p class="mobile-only"><a href="/">Server status</a></p></aside>
 <main><div id="room-heading" class="row space"><button id="menu-toggle" class="mobile-only" type="button" aria-label="Open menu" aria-controls="room-menu" aria-expanded="false">&#9776;</button><strong id="room-title">Choose a room</strong><button id="leave" type="button" hidden>Leave room</button></div>
 <p id="notice" class="error" role="alert"></p><div id="messages" role="log" aria-label="Chat messages" aria-live="polite"></div>

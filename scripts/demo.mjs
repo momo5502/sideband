@@ -9,9 +9,9 @@ const pending = [];
 peers.forEach((client) => client.onMessage((message) => console.log(`${client.identity.name} received verified message from ${message.sender.name}: ${message.text}`)));
 try {
   for (const client of peers) await client.connect();
-  const first = await peers[0].createRoom("task-one");
+  const first = await peers[0].joinRoom("task-one");
   await peers[1].joinRoom(first.id);
-  await peers[2].createRoom("task-two");
+  await peers[2].joinRoom("task-two");
   console.log("Two rooms; Alice and Bob share task-one. Charlie is isolated.");
   pending.push(new Promise((resolve) => peers[1].onMessage(resolve)));
   await peers[0].send("Picked task 123");

@@ -92,7 +92,7 @@ test("signed TLS chat and reconnect use authenticated CONNECT, including proxy-s
   const alice = new RoomClient(profile, "alice", { proxyEnv: { HTTPS_PROXY: authenticated }, reconnectMs: 20 });
   const bob = new RoomClient({ ...profile, server: `127.0.0.1:${server.port}` }, "bob", { proxyEnv: {} });
   try {
-    await alice.connect(); await bob.connect(); const room = await alice.createRoom("proxy-chat"); await bob.joinRoom(room.id);
+    await alice.connect(); await bob.connect(); const room = await alice.joinRoom("proxy-chat"); await bob.joinRoom(room.id);
     const messages: string[] = []; bob.onMessage(message => messages.push(message.text));
     await alice.send("signed through proxy"); await until(() => messages.length === 1);
     alice.dropConnection(); await until(() => tunnel.requests.length === 2 && alice.state === "on");
@@ -181,13 +181,12 @@ test("bundled MCP supports a trusted HTTPS proxy while untrusted proxy TLS is re
   try {
     await assert.rejects(untrusted.connect(), /configured HTTP proxy/);
     const ca = join(directory, "proxy-ca.pem"); await writeFile(ca, tunnel.certificate!);
-    await sender.connect(); const room = await sender.createRoom("https-proxy");
+    await sender.connect(); const room = await sender.joinRoom("https-proxy");
     await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [join(process.cwd(), "dist/sideband.cjs"), "mcp", "--harness", "claude"],
       env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
         SIDEBAND_STATE_DIR: directory, SIDEBAND_CLAUDE_SERVER: profile.server, SIDEBAND_CLAUDE_PASSWORD: profile.password,
         HTTPS_PROXY: tunnel.url, NODE_EXTRA_CA_CERTS: ca }, stderr: "pipe" }));
     const call = (name: string, args: Record<string, unknown>) => mcp.callTool({ name, arguments: args });
-    assert.equal((await call("sideband_activate", { profile: "claude", claude_channel_enabled: true })).isError, undefined);
     assert.equal((await call("sideband_join_room", { room: room.id })).isError, undefined);
     let notification: unknown;
     mcp.setNotificationHandler(NotificationSchema.extend({ method: z.literal("notifications/claude/channel") }), value => { notification = value.params; });

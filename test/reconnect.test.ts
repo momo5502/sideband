@@ -25,7 +25,7 @@ async function fixture(graceMs = 25, reconnectMs = 180) {
 test("expired membership rejoins the same room and identity, without polling, history replay or automatic sends", async () => {
   const f = await fixture();
   try {
-    const room = await f.client.createRoom("long-disconnect"); await f.peer.joinRoom(room.id);
+    const room = await f.client.joinRoom("long-disconnect"); await f.peer.joinRoom(room.id);
     const identity = f.client.identity.id; const arrived: SignedMessage[] = []; f.client.onMessage(message => arrived.push(message));
     const methods: string[] = []; const request = f.client.request.bind(f.client);
     f.client.request = async (method, params) => { methods.push(method); return request(method, params) as never; };
@@ -43,8 +43,8 @@ test("expired membership rejoins the same room and identity, without polling, hi
 test("an empty deleted room is recreated by name; a failed manual join does not change the remembered room", async () => {
   const f = await fixture();
   try {
-    const old = await f.client.createRoom("recreated"); await f.client.send("Old ephemeral history");
-    await assert.rejects(f.client.joinRoom("does-not-exist"), /does not exist/);
+    const old = await f.client.joinRoom("recreated"); await f.client.send("Old ephemeral history");
+    await assert.rejects(f.client.joinRoom("bad\u0000room"), /Invalid room name/);
     f.client.dropConnection(); await until(async () => (await f.peer.listRooms()).length === 0);
     await until(() => f.client.state === "on" && !!f.client.room && f.client.room.id !== old.id);
     assert.equal(f.client.room!.name, old.name); assert.deepEqual(await f.client.history(), []);
@@ -57,14 +57,14 @@ test("room restoration joins a replacement with the same name and handles concur
   for (const race of [false, true]) {
     const f = await fixture();
     try {
-      const old = await f.client.createRoom("shared-room"); const request = f.client.request.bind(f.client);
+      const old = await f.client.joinRoom("shared-room"); const request = f.client.request.bind(f.client);
       let replacement: Room | undefined;
       if (race) f.client.request = async (method, params) => {
-        if (method === "create" && !replacement) replacement = await f.peer.createRoom(old.name);
+        if (method === "join" && params?.room === old.name && !replacement) replacement = await f.peer.joinRoom(old.name);
         return request(method, params) as never;
       };
       f.client.dropConnection(); await until(async () => (await f.peer.listRooms()).length === 0);
-      if (!race) replacement = await f.peer.createRoom(old.name);
+      if (!race) replacement = await f.peer.joinRoom(old.name);
       await until(() => f.client.state === "on" && !!replacement && f.client.room?.id === replacement.id);
       assert.notEqual(f.client.room!.id, old.id); assert.equal((await f.peer.members()).length, 2);
       assert.equal((await f.peer.listRooms()).length, 1); assert.equal(f.client.lastError, undefined);
@@ -74,7 +74,7 @@ test("room restoration joins a replacement with the same name and handles concur
 test("a drop during automatic rejoin retries rather than becoming stuck or reporting a false connected state", async () => {
   const f = await fixture();
   try {
-    const room = await f.client.createRoom("retry-restore"); await f.peer.joinRoom(room.id);
+    const room = await f.client.joinRoom("retry-restore"); await f.peer.joinRoom(room.id);
     const request = f.client.request.bind(f.client); let interrupted = false; let logins = 0;
     f.client.request = async (method, params) => {
       if (method === "hello") logins++;
@@ -89,7 +89,7 @@ test("a drop during automatic rejoin retries rather than becoming stuck or repor
 test("explicit leave is remembered even if its request failed before reaching the server", async () => {
   const f = await fixture(2000, 20);
   try {
-    const room = await f.client.createRoom("do-not-rejoin"); await f.peer.joinRoom(room.id);
+    const room = await f.client.joinRoom("do-not-rejoin"); await f.peer.joinRoom(room.id);
     const request = f.client.request.bind(f.client); let failed = false;
     f.client.request = async (method, params) => {
       if (method === "leave" && !failed) { failed = true; throw new Error("Simulated lost leave request"); }
@@ -108,7 +108,7 @@ test("the existing harness delivery session continues receiving push after autom
   const f = await fixture(); const deliveries: Delivery[] = []; let prepared = 0;
   const session = new RoomSession(f.profile, { prepare: async () => { prepared++; }, deliver: async delivery => { deliveries.push(delivery); }, close: async () => {} }, "harness-receiver");
   try {
-    await session.enable(); const room = await f.peer.createRoom("same-harness"); await session.client.joinRoom(room.id);
+    await session.enable(); const room = await f.peer.joinRoom("same-harness"); await session.client.joinRoom(room.id);
     const identity = session.client.identity.id;
     session.client.dropConnection(); await until(async () => (await f.peer.members()).length === 1);
     await until(() => session.client.state === "on" && session.client.room?.id === room.id);
@@ -122,7 +122,7 @@ test("disabling during restoration cancels stale completion and all future recon
   const gate = new Promise<void>(resolve => { release = resolve; });
   let restoring = false; let hellos = 0;
   try {
-    const room = await f.client.createRoom("cancel-restore"); await f.peer.joinRoom(room.id);
+    const room = await f.client.joinRoom("cancel-restore"); await f.peer.joinRoom(room.id);
     const request = f.client.request.bind(f.client);
     f.client.request = async (method, params) => {
       if (method === "hello") hellos++;
@@ -139,7 +139,7 @@ test("leave during in-flight restoration stays connected without rejoining the r
   const f = await fixture(); let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; }); let restoring = false;
   try {
-    const room = await f.client.createRoom("cancel-room-only"); await f.peer.joinRoom(room.id);
+    const room = await f.client.joinRoom("cancel-room-only"); await f.peer.joinRoom(room.id);
     const request = f.client.request.bind(f.client);
     f.client.request = async (method, params) => {
       const result = await request(method, params);
@@ -159,7 +159,7 @@ test("a stale open socket with no heartbeat is replaced automatically, as after 
   let hellos = 0; const request = client.request.bind(client);
   client.request = async (method, params) => { if (method === "hello") hellos++; return request(method, params) as never; };
   try {
-    await client.connect(); const room = await client.createRoom("silent-socket"); const id = client.identity.id;
+    await client.connect(); const room = await client.joinRoom("silent-socket"); const id = client.identity.id;
     await until(() => hellos >= 2 && client.state === "on");
     assert.equal(client.room?.id, room.id); assert.equal(client.identity.id, id);
   } finally { await client.close(); await server.close(); }
@@ -167,7 +167,7 @@ test("a stale open socket with no heartbeat is replaced automatically, as after 
 test("a conflicting name after expiry stops recovery without impersonating, renaming, or claiming another identity", async () => {
   const f = await fixture(); const holder = new RoomClient(f.profile, "returning-agent");
   try {
-    await f.client.createRoom("name-conflict"); f.client.dropConnection();
+    await f.client.joinRoom("name-conflict"); f.client.dropConnection();
     await until(async () => (await f.peer.listRooms()).length === 0); await holder.connect();
     await until(() => f.client.state === "disconnected");
     assert.match(f.client.lastError!, /already registered/); assert.notEqual(f.client.identity.id, holder.identity.id);
@@ -181,7 +181,7 @@ test("server downtime retries; persistent-credential restart recreates the room 
   const port = server.port;
   const client = new RoomClient({ server: `127.0.0.1:${port}`, password: server.password }, "survivor", { reconnectMs: 30 });
   try {
-    await client.connect(); const room = await client.createRoom("after-restart"); const id = client.identity.id;
+    await client.connect(); const room = await client.joinRoom("after-restart"); const id = client.identity.id;
     await client.send("Not resent"); await server.close();
     await until(() => client.state === "reconnecting" && !!client.lastError);
     server = await RoomServer.start({ host: "127.0.0.1", port, credentialsFile });

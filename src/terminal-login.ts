@@ -45,5 +45,5 @@ export async function terminalLogin(endpoint: string, profile: string): Promise<
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(profile)) throw new Error("Invalid connection profile name.");
   const password = await hiddenInput("Server password (hidden): ");
   await loginAndSave(profile, { server, password });
-  console.log(`Login verified. Saved profile '${profile}'. Messaging remains off until you activate it in your agent.`);
+  console.log(`Login verified. Saved profile '${profile}'. Ask your agent to join a room; it connects automatically.`);
 }

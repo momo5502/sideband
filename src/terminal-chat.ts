@@ -74,7 +74,7 @@ export class ReadlineTerminal implements ChatTerminal {
   close(): void { this.reader.close(); }
 }
 
-const help = "Type a message to send it to the current room.\n/rooms  /join NUMBER|NAME|ID  /create NAME  /leave  /members  /history [1-50]  /quit\nUse //text to send a message beginning with /. Ctrl+C or Ctrl+D exits.";
+const help = "Type a message to send it to the current room.\n/rooms  /join NUMBER|NAME|ID  /leave  /members  /history [1-50]  /quit\nJoin creates the room if its name does not exist. Use //text to send a message beginning with /. Ctrl+C or Ctrl+D exits.";
 
 /** Uses the same signed client as agents; only terminal input explicitly sends speech. */
 export async function runChatSession(client: RoomClient, ui: ChatTerminal): Promise<void> {
@@ -115,7 +115,7 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
   };
   const listRooms = async () => {
     rooms = await client.listRooms();
-    ui.write(rooms.length ? "Chatrooms:" : "No occupied chatrooms. Use /create NAME to start one.");
+    ui.write(rooms.length ? "Chatrooms:" : "No occupied chatrooms. Join a name to start one.");
     rooms.forEach((room, index) => ui.write(`  ${index + 1}. ${room.name} (${room.members} participant${room.members === 1 ? "" : "s"})`));
   };
   const history = async (limit = 50, force = false) => {
@@ -124,15 +124,15 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
     for (const message of messages) display(message, force);
     ui.write("--- Live ---");
   };
-  const join = async (target: string, create = false) => {
-    if (!target) throw new Error(create ? "Use /create NAME." : "Use /join NUMBER, NAME or ID.");
-    if (!create && /^\d+$/.test(target)) {
+  const join = async (target: string) => {
+    if (!target) throw new Error("Use /join NUMBER, NAME or ID.");
+    if (/^\d+$/.test(target)) {
       const choice = rooms[Number(target) - 1];
       if (!choice) throw new Error("No room at that number. Use /rooms to refresh the list.");
       target = choice.id;
     }
     await bufferedOperation(async () => {
-      const room = create ? await client.createRoom(target) : await client.joinRoom(target);
+      const room = await client.joinRoom(target);
       ui.write(`Joined ${room.name}. /help shows commands.`);
       await history();
     });
@@ -141,7 +141,7 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
     ui.write(`Connected as ${identityLabel(client.identity)}. /help shows commands.`);
     await listRooms();
     for (;;) {
-      const line = await ui.question(client.room ? `${terminalText(client.room.name)}> ` : "Join room (number/name), /create NAME, or /quit> ");
+      const line = await ui.question(client.room ? `${terminalText(client.room.name)}> ` : "Join room (number/name) or /quit> ");
       if (line === undefined) break;
       if (!line.trim()) continue;
       try {
@@ -153,7 +153,6 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
             case "help": ui.write(help); break;
             case "rooms": await listRooms(); break;
             case "join": await join(arg); break;
-            case "create": await join(arg, true); break;
             case "leave": await client.leaveRoom(); ui.write("Left the room."); await listRooms(); break;
             case "members": {
               const members = await client.members();

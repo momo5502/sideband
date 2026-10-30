@@ -35,7 +35,7 @@ test("public status has only room/connected-participant aggregates, never names,
     unauthenticated = new WebSocket(`wss://${profile.server}/ws`, { rejectUnauthorized: false }); unauthenticated.on("error", () => {});
     await new Promise<void>(resolve => unauthenticated!.once("open", resolve));
     assert.deepEqual(await status(server), { rooms: 0, connectedParticipants: 0 });
-    await alice.connect(); const room = await alice.createRoom("private-room-<script>name</script>");
+    await alice.connect(); const room = await alice.joinRoom("private-room-<script>name</script>");
     await alice.send("private-message-contents"); await bob.connect();
     assert.deepEqual(await status(server), { rooms: 1, connectedParticipants: 2 }, "connected clients outside a room still count");
     const page = await get(server); const json = await get(server, "/status.json?password=do-not-reflect-this");
@@ -62,7 +62,7 @@ test("counts track room switching, logout and disconnected clients during reconn
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const alice = new RoomClient(profile); const bob = new RoomClient(profile, undefined, { reconnectMs: 100_000 });
   try {
-    await alice.connect(); const room = await alice.createRoom("first"); await bob.connect(); await bob.createRoom("second");
+    await alice.connect(); const room = await alice.joinRoom("first"); await bob.connect(); await bob.joinRoom("second");
     assert.deepEqual(await status(server), { rooms: 2, connectedParticipants: 2 });
     await bob.joinRoom(room.id); assert.deepEqual(await status(server), { rooms: 1, connectedParticipants: 2 });
     bob.dropConnection(); await until(async () => (await status(server)).connectedParticipants === 1);

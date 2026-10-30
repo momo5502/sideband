@@ -160,16 +160,9 @@ export class RoomClient {
     const join = async (target: string): Promise<Room | null> => { assertCurrent(); if (this.leaveRequested) return null; return this.request<Room>("join", { room: target }); };
     try { return await join(room.id); }
     catch (error) { if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND") throw error; }
-    try { return await join(room.name); }
-    catch (error) { if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND") throw error; }
-    // The last disconnected participant may have expired, or the server restarted.
     assertCurrent();
     if (this.leaveRequested) return null;
-    try { return await this.request<Room>("create", { name: room.name }); }
-    catch (error) {
-      if (!(error instanceof RoomError) || error.code !== "ROOM_EXISTS") throw error;
-      return join(room.name); // Another reconnecting participant recreated it first.
-    }
+    return this.joinNamedRoom(room.name, assertCurrent);
   }
   private scheduleReconnect(): void {
     const delay = this.options.reconnectMs ?? Math.min(10_000, 250 * 2 ** Math.min(this.attempts++, 6));
@@ -203,8 +196,20 @@ export class RoomClient {
   }
   private requireOn(): void { if (this.state !== "on") throw new Error("Messaging is not connected."); }
   async listRooms(): Promise<Room[]> { this.requireOn(); return this.request("rooms"); }
-  async createRoom(name: string): Promise<Room> { this.requireOn(); const room = await this.request<Room>("create", { name }); this.room = this.desiredRoom = room; this.leaveRequested = false; return room; }
-  async joinRoom(room: string): Promise<Room> { this.requireOn(); const joined = await this.request<Room>("join", { room }); this.room = this.desiredRoom = joined; this.leaveRequested = false; return joined; }
+  private async joinNamedRoom(room: string, assertCurrent: () => void = () => {}): Promise<Room> {
+    try { return await this.request<Room>("join", { room }); }
+    catch (error) {
+      if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND" || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(room.trim())) throw error;
+    }
+    // Older servers separated creation from joining. Keep direct join usable there too.
+    assertCurrent();
+    try { return await this.request<Room>("create", { name: room }); }
+    catch (error) {
+      if (!(error instanceof RoomError) || error.code !== "ROOM_EXISTS") throw error;
+      assertCurrent(); return this.request<Room>("join", { room });
+    }
+  }
+  async joinRoom(room: string): Promise<Room> { this.requireOn(); const joined = await this.joinNamedRoom(room); this.room = this.desiredRoom = joined; this.leaveRequested = false; return joined; }
   async leaveRoom(): Promise<void> {
     if (this.state !== "reconnecting") this.requireOn();
     this.leaveRequested = true; this.desiredRoom = null;
@@ -218,7 +223,7 @@ export class RoomClient {
     return messages;
   }
   async send(text: string): Promise<{ messageId: string }> {
-    this.requireOn(); if (!this.room) throw new Error("Create or join a room first.");
+    this.requireOn(); if (!this.room) throw new Error("Join a room first.");
     const message = { id: randomUUID(), roomId: this.room.id, sender: this.identity, text };
     return this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof(message)) });
   }

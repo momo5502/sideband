@@ -36,8 +36,7 @@ test("standalone plugin runs without node_modules and uses native Claude credent
     const names = await call("sideband_profiles");
     assert.deepEqual(names.content, [{ type: "text", text: '{"profiles":["claude"]}' }]);
     assert.ok(!JSON.stringify(names).includes(server.password));
-    await sender.connect(); const room = await sender.createRoom("standalone");
-    assert.equal((await call("sideband_activate", { profile: "claude", claude_channel_enabled: true })).isError, undefined);
+    await sender.connect(); const room = await sender.joinRoom("standalone");
     assert.equal((await call("sideband_join_room", { room: room.id })).isError, undefined);
     const arrived = new Promise<unknown>((resolve, reject) => {
       timer = setTimeout(() => reject(new Error("Missing standalone notification")), 4000);

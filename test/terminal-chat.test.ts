@@ -84,7 +84,7 @@ test("human terminal browses rooms, sees history/live pushes, sends signed messa
   const human = new RoomClient(profile, "human"); const agent = new RoomClient(profile, "agent");
   const printed: string[] = []; const prompts: string[] = []; const received: string[] = []; let step = 0;
   try {
-    await agent.connect(); const room = await agent.createRoom("project");
+    await agent.connect(); const room = await agent.joinRoom("project");
     await agent.send("retained context"); await human.connect();
     const sent = new Promise<void>(resolve => agent.onMessage(message => { received.push(message.text); resolve(); }));
     const ui: ChatTerminal = {
@@ -99,11 +99,11 @@ test("human terminal browses rooms, sees history/live pushes, sends signed messa
             return "human reply";
           }
           case 2: await sent; return "/members";
-          case 3: return "/join missing-room";
+          case 3: return "/join 00000000-0000-0000-0000-000000000000";
           case 4: assert.equal(human.room?.id, room.id); return "/history 0";
           case 5: return "//literal slash";
           case 6: return "/leave";
-          case 7: return "/create human-room";
+          case 7: return "/join human-room";
           default: return "/quit";
         }
       },
@@ -129,7 +129,7 @@ test("terminal join history and live overlap is shown once, without replaying hi
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const human = new RoomClient(profile); const agent = new RoomClient(profile);
   try {
-    await agent.connect(); await agent.createRoom("race"); await human.connect();
+    await agent.connect(); await agent.joinRoom("race"); await human.connect();
     const original = human.history.bind(human);
     human.history = async limit => {
       const received = new Promise<void>(resolve => human.onMessage(() => resolve()));
@@ -153,7 +153,7 @@ test("packaged CLI with no arguments selects a saved login, joins, receives, sen
   try {
     const entry = join(directory, "sideband.cjs"); await copyFile(resolve("dist/sideband.cjs"), entry);
     await new RoomProfiles(directory).save("vps", profile);
-    await agent.connect(); await agent.createRoom("cli-room"); await agent.send("prior context");
+    await agent.connect(); await agent.joinRoom("cli-room"); await agent.send("prior context");
     // A simulated TTY over pipes exercises the actual bundled CLI/readline without a platform PTY dependency.
     const shim = "process.stdin.isTTY = true; process.stdout.isTTY = true; process.stdout.getColorDepth = () => 4; delete process.env.NO_COLOR; process.env.TERM = 'xterm'; process.stdin.setRawMode = function(mode) { this.isRaw = mode; return this; };";
     child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(shim)}`, entry], {

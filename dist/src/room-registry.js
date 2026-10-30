@@ -1,3 +1,4 @@
+import { agentName } from "./room-protocol.js";
 export function callerKey(harness, meta) {
     if (harness === "claude")
         return "claude-process";
@@ -14,50 +15,67 @@ export class RoomRegistry {
     constructor(create) {
         this.create = create;
     }
-    status(key) { return this.sessions.get(key)?.status() ?? { state: this.pending.has(key) ? "connecting" : "off" }; }
+    status(key) { return this.sessions.get(key)?.session.status() ?? { state: this.pending.has(key) ? "connecting" : "off" }; }
     get(key) {
-        const session = this.sessions.get(key);
-        if (!session)
-            throw new Error("Messaging is off for this session. Activate first.");
-        return session;
+        const entry = this.sessions.get(key);
+        if (!entry)
+            throw new Error("Messaging is off for this session. Join a room first.");
+        return entry.session;
     }
-    async activate(key, profile, name) {
-        if (this.closing || this.sessions.has(key) || this.pending.has(key))
-            throw new Error("This session is already active/connecting or shutting down.");
-        const pending = (async () => {
-            const session = await this.create(key, profile, name);
+    async connect(key, load, profile, name) {
+        if (this.closing)
+            throw new Error("Messaging is shutting down.");
+        const requestedName = name === undefined ? undefined : agentName(name);
+        let entry = this.sessions.get(key);
+        if (!entry) {
+            let pending = this.pending.get(key);
+            if (!pending) {
+                pending = (async () => {
+                    const selected = await load();
+                    if (this.closing)
+                        throw new Error("Connection cancelled.");
+                    const session = await this.create(key, selected.profile, requestedName);
+                    try {
+                        if (this.closing)
+                            throw new Error("Connection cancelled.");
+                        await session.enable();
+                        if (this.closing)
+                            throw new Error("Connection cancelled.");
+                        const connected = { session, profile: selected.name };
+                        this.sessions.set(key, connected);
+                        return connected;
+                    }
+                    catch (error) {
+                        await session.disable();
+                        throw error;
+                    }
+                })();
+                this.pending.set(key, pending);
+            }
             try {
-                if (this.closing)
-                    throw new Error("Activation cancelled.");
-                await session.enable();
-                if (this.closing)
-                    throw new Error("Activation cancelled.");
-                this.sessions.set(key, session);
-                return session;
+                entry = await pending;
             }
-            catch (error) {
-                await session.disable();
-                throw error;
+            finally {
+                if (this.pending.get(key) === pending)
+                    this.pending.delete(key);
             }
-        })();
-        this.pending.set(key, pending);
-        try {
-            return await pending;
         }
-        finally {
-            this.pending.delete(key);
-        }
+        if (profile !== undefined && profile !== entry.profile)
+            throw new Error("Already connected to a different profile. Disconnect with sideband_deactivate before changing servers.");
+        if (name !== undefined && requestedName !== entry.session.client.identity.name)
+            throw new Error("Already connected with a different name. Disconnect with sideband_deactivate before changing identity.");
+        return entry.session;
     }
     async deactivate(key) {
         await this.pending.get(key)?.catch(() => { });
-        const session = this.sessions.get(key);
+        const entry = this.sessions.get(key);
         this.sessions.delete(key);
-        await session?.disable();
+        await entry?.session.disable();
     }
     async close() {
         this.closing = true;
         await Promise.allSettled(this.pending.values());
-        await Promise.allSettled([...this.sessions.values()].map((session) => session.disable()));
+        await Promise.allSettled([...this.sessions.values()].map(({ session }) => session.disable()));
         this.sessions.clear();
     }
 }

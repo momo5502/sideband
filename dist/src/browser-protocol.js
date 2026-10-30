@@ -131,8 +131,8 @@ export class BrowserRoomClient {
         });
     }
     rooms() { return this.request("rooms"); }
-    async join(room, create = false) {
-        const joined = await this.request(create ? "create" : "join", create ? { name: room } : { room });
+    async join(room) {
+        const joined = await this.request("join", { room });
         this.room = joined;
         return joined;
     }

@@ -5,7 +5,7 @@ import { connect as connectTcp } from "node:net";
 import WebSocket from "ws";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
-import { AgentKeys, loginProof, messageProof, parsePassword, verifyMessage, validPresence, type PresenceEvent, type SignedMessage } from "../src/room-protocol.js";
+import { AgentKeys, RoomError, loginProof, messageProof, parsePassword, verifyMessage, validPresence, type PresenceEvent, type SignedMessage } from "../src/room-protocol.js";
 import { RoomSession } from "../src/room-session.js";
 import { RoomRegistry, callerKey } from "../src/room-registry.js";
 import type { DeliveryAdapter } from "../src/adapters/codex.js";
@@ -32,7 +32,7 @@ test("real TLS push: three agents, broadcasts exclude sender, different rooms is
     [a, b, c].forEach((client, index) => client.onMessage((message) => received[index]!.push(message)));
     const methods: string[] = []; const request = b.request.bind(b);
     b.request = async (method, params) => { methods.push(method); return request(method, params) as never; };
-    const room = await a.createRoom("task-one"); await b.joinRoom(room.id); await c.createRoom("task-two");
+    const room = await a.joinRoom("task-one"); await b.joinRoom(room.id); await c.joinRoom("task-two");
     await a.send("Explicit tool message");
     await until(() => received[1]!.length === 1);
     assert.deepEqual(received.map((messages) => messages.length), [0, 1, 0]);
@@ -48,7 +48,7 @@ test("real TLS push: three agents, broadcasts exclude sender, different rooms is
 test("history bounded to latest 50; join and history reads never push past messages", async () => {
   const f = await fixture();
   try {
-    const a = await f.client(); const b = await f.client(); const room = await a.createRoom("history");
+    const a = await f.client(); const b = await f.client(); const room = await a.joinRoom("history");
     for (let index = 0; index < 60; index++) await a.send(`message-${index}`);
     const pushed: SignedMessage[] = []; b.onMessage((message) => pushed.push(message)); await b.joinRoom(room.id);
     const history = await b.history();
@@ -57,21 +57,56 @@ test("history bounded to latest 50; join and history reads never push past messa
     await assert.rejects(b.history(51), /1-50/);
   } finally { await f.close(); }
 });
+
+test("joining a name atomically creates or joins; stale IDs and invalid names preserve membership", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.client(); const b = await f.client();
+    const [first, second] = await Promise.all([a.joinRoom("  Shared-Room  "), b.joinRoom("shared-room")]);
+    assert.equal(first.id, second.id); assert.equal((await a.listRooms()).length, 1);
+    assert.equal((await a.members()).length, 2);
+    await a.send("Kept context");
+    for (const invalid of ["", "   ", "bad\u0000room", "x".repeat(101), randomUUID()]) await assert.rejects(a.joinRoom(invalid));
+    assert.equal(a.room!.id, first.id); assert.equal((await a.history())[0]!.text, "Kept context");
+    await a.joinRoom("SHARED-ROOM"); assert.equal(a.room!.id, first.id);
+    assert.equal((await a.listRooms()).length, 1, "invalid targets never create phantom rooms");
+    await assert.rejects(a.request("create", { name: "shared-room" }), /in use/, "old clients retain legacy semantics");
+  } finally { await f.close(); }
+});
+
+test("direct joins also work with legacy server creation, including a competing creator", async () => {
+  for (const race of [false, true]) {
+    const f = await fixture();
+    try {
+      const a = await f.client(); const b = await f.client(); const request = a.request.bind(a); const methods: string[] = [];
+      let missing = true;
+      a.request = async (method, params) => {
+        methods.push(method);
+        if (method === "join" && missing) { missing = false; throw new RoomError("ROOM_NOT_FOUND", "Legacy server: room does not exist."); }
+        if (method === "create" && race) await b.joinRoom("legacy-room");
+        return request(method, params) as never;
+      };
+      const joined = await a.joinRoom("legacy-room");
+      assert.equal(joined.name, "legacy-room"); assert.deepEqual(methods, race ? ["join", "create", "join"] : ["join", "create"]);
+      assert.equal((await b.listRooms()).length, 1);
+    } finally { await f.close(); }
+  }
+});
 test("graceful last departure deletes room and history; failed join keeps previous membership", async () => {
   const f = await fixture();
   try {
-    const a = await f.client(); const b = await f.client(); const room = await a.createRoom("temporary"); await a.send("ephemeral");
-    await assert.rejects(a.joinRoom("missing"), /does not exist/);
+    const a = await f.client(); const b = await f.client(); const room = await a.joinRoom("temporary"); await a.send("ephemeral");
+    await assert.rejects(a.joinRoom("bad\u0000room"), /Invalid room name/);
     assert.equal(a.room!.id, room.id); assert.equal((await a.history()).length, 1);
     await a.leaveRoom(); assert.deepEqual(await b.listRooms(), []);
     await assert.rejects(b.joinRoom(room.id), /does not exist/);
-    const fresh = await a.createRoom("temporary"); assert.notEqual(fresh.id, room.id); assert.deepEqual(await a.history(), []);
+    const fresh = await a.joinRoom("temporary"); assert.notEqual(fresh.id, room.id); assert.deepEqual(await a.history(), []);
   } finally { await f.close(); }
 });
 test("reconnect retains private-key identity and membership during grace without replaying history", async () => {
   const f = await fixture({ graceMs: 2000 });
   try {
-    const a = await f.client("reconnector", 20); const b = await f.client(); const room = await a.createRoom("reconnect"); await b.joinRoom(room.id);
+    const a = await f.client("reconnector", 20); const b = await f.client(); const room = await a.joinRoom("reconnect"); await b.joinRoom(room.id);
     const id = a.identity.id; const messages: SignedMessage[] = []; a.onMessage((message) => messages.push(message));
     a.dropConnection(); await until(() => a.state === "reconnecting"); await until(() => a.state === "on");
     assert.equal(a.identity.id, id); assert.equal(a.room!.id, room.id); assert.equal((await b.members()).length, 2);
@@ -81,7 +116,7 @@ test("reconnect retains private-key identity and membership during grace without
 test("crashed last member is reaped and its room disappears after disconnect grace", async () => {
   const f = await fixture({ graceMs: 30 });
   try {
-    const a = await f.client("crashed", 100_000); const observer = await f.client(); await a.createRoom("crash");
+    const a = await f.client("crashed", 100_000); const observer = await f.client(); await a.joinRoom("crash");
     a.dropConnection(); await until(async () => (await observer.listRooms()).length === 0);
   } finally { await f.close(); }
 });
@@ -97,14 +132,14 @@ test("a fresh process/session gets a fresh ID; names cannot claim an existing re
 test("signed text cannot be changed, sender forged, or replayed into a different room", async () => {
   const f = await fixture();
   try {
-    const a = await f.client("alice"); const b = await f.client("attacker"); const room = await a.createRoom("signed"); await b.joinRoom(room.id);
+    const a = await f.client("alice"); const b = await f.client("attacker"); const room = await a.joinRoom("signed"); await b.joinRoom(room.id);
     await a.send("Original"); const message = (await b.history())[0]!;
     assert.equal(verifyMessage({ ...message, text: "Forged" }), false);
     assert.equal(verifyMessage({ ...message, sender: { ...message.sender, id: b.identity.id } }), false);
     await assert.rejects(b.request("send", { id: randomUUID(), text: message.text, signature: message.signature }), /signature/);
     await assert.rejects(b.request("send", { id: message.id, text: message.text, signature: message.signature, sender: a.identity }), /Unexpected field/);
     const own = { id: randomUUID(), roomId: room.id, sender: b.identity, text: "Signed for old room" };
-    const signature = b.keys.sign(messageProof(own)); await b.createRoom("other room");
+    const signature = b.keys.sign(messageProof(own)); await b.joinRoom("other room");
     await assert.rejects(b.request("send", { id: own.id, text: own.text, signature }), /signature/);
     assert.deepEqual(await b.history(), []);
   } finally { await f.close(); }
@@ -148,7 +183,7 @@ test("knowing the shared password and somebody else's public key is insufficient
 });
 test("in-memory server instances without a credentials file are isolated", async () => {
   const first = await fixture(); const oldPassword = first.server.password;
-  const a = await first.client(); await a.createRoom("old"); await first.close();
+  const a = await first.client(); await a.joinRoom("old"); await first.close();
   const next = await fixture();
   try { assert.notEqual(next.server.password, oldPassword); assert.deepEqual(await (await next.client()).listRooms(), []); }
   finally { await next.close(); }
@@ -166,7 +201,7 @@ test("pushed verified messages reach delivery adapter without an agent fetch; pr
   const adapter: DeliveryAdapter = { prepare: async () => {}, deliver: async (message) => { deliveries.push(message); }, close: async () => {} };
   const session = new RoomSession(f.profile, adapter, "receiver");
   try {
-    await session.enable(); const a = await f.client(); const room = await a.createRoom("harness"); await session.client.joinRoom(room.id);
+    await session.enable(); const a = await f.client(); const room = await a.joinRoom("harness"); await session.client.joinRoom(room.id);
     await a.send("Push into context"); await until(() => deliveries.length === 1); await session.drain();
     assert.equal(deliveries[0]!.verified, true); assert.equal(deliveries[0]!.sender.id, a.identity.id);
     const failing = new RoomSession({ ...f.profile, server: "127.0.0.1:1" }, { ...adapter, prepare: async () => { throw new Error("No live harness"); } });
@@ -180,11 +215,37 @@ test("MCP registry binds host-supplied caller only and keeps subagents off", asy
   const adapter: DeliveryAdapter = { prepare: async () => {}, deliver: async () => {}, close: async () => {} };
   const registry = new RoomRegistry(async (_key, profile, name) => new RoomSession(profile, adapter, name));
   try {
-    await registry.activate("main", f.profile, "main");
+    const load = async () => ({ name: "local", profile: f.profile });
+    const session = await registry.connect("main", load, undefined, "main");
     assert.deepEqual(registry.status("subagent"), { state: "off" }); assert.throws(() => registry.get("subagent"), /off/);
-    await assert.rejects(registry.activate("main", f.profile), /already/);
+    assert.equal(await registry.connect("main", load), session, "reuse the current identity and connection");
+    await assert.rejects(registry.connect("main", load, "other"), /different profile/);
+    await assert.rejects(registry.connect("main", load, undefined, "other"), /different name/);
     await registry.deactivate("main"); assert.deepEqual(registry.status("main"), { state: "off" });
   } finally { await registry.close(); await f.close(); }
+});
+
+test("registry coalesces the first connection and cleans up failed or cancelled setup", async () => {
+  const f = await fixture(); let created = 0; let loads = 0;
+  const adapter: DeliveryAdapter = { prepare: async () => {}, deliver: async () => {}, close: async () => {} };
+  const registry = new RoomRegistry(async (_key, profile, name) => { created++; return new RoomSession(profile, adapter, name); });
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const load = async () => { loads++; await gate; return { name: "only", profile: f.profile }; };
+  try {
+    const first = registry.connect("main", load, undefined, "main");
+    const second = registry.connect("main", load);
+    assert.deepEqual(registry.status("main"), { state: "connecting" }); release();
+    assert.equal(await first, await second); assert.equal(loads, 1); assert.equal(created, 1);
+    await assert.rejects(registry.connect("failed", async () => { throw new Error("Missing credentials"); }), /Missing credentials/);
+    assert.deepEqual(registry.status("failed"), { state: "off" });
+    await registry.connect("failed", async () => ({ name: "only", profile: f.profile }));
+    assert.equal(created, 2, "a failed initial attempt can be retried");
+    let resolveLate!: () => void; const late = new Promise<void>(resolve => { resolveLate = resolve; });
+    const cancelled = registry.connect("cancelled", async () => { await late; return { name: "only", profile: f.profile }; });
+    const rejected = assert.rejects(cancelled, /cancelled/); const closed = registry.close(); resolveLate();
+    await rejected; await closed; assert.equal(created, 2, "shutdown prevents a delayed connection opening");
+    assert.deepEqual(registry.status("main"), { state: "off" });
+  } finally { release(); await registry.close(); await f.close(); }
 });
 
 test("server presence is scoped to the room, excludes self, cannot be client-forged and is not message history", async () => {
@@ -193,7 +254,7 @@ test("server presence is scoped to the room, excludes self, cannot be client-for
     const a = await f.client("observer"); const b = await f.client("visitor", 20); const c = await f.client("elsewhere");
     const events: PresenceEvent[][] = [[], [], []];
     [a, b, c].forEach((client, index) => client.onPresence(event => events[index]!.push(event)));
-    const room = await a.createRoom("presence"); await c.createRoom("isolated");
+    const room = await a.joinRoom("presence"); await c.joinRoom("isolated");
     await b.joinRoom(room.id); await until(() => events[0]!.length === 1);
     assert.equal(events[0]![0]!.kind, "joined"); assert.equal(events[0]![0]!.participant.id, b.identity.id);
     assert.equal(validPresence(events[0]![0]), true);
@@ -208,7 +269,7 @@ test("server presence is scoped to the room, excludes self, cannot be client-for
     assert.equal(events[0]![3]!.kind, "left"); assert.deepEqual(await a.history(), []);
     assert.equal(events[1]!.length, 0); assert.equal(events[2]!.length, 0);
     await b.joinRoom(room.id); await until(() => events[0]!.length === 5);
-    await b.createRoom("moved"); await until(() => events[0]!.length === 6);
+    await b.joinRoom("moved"); await until(() => events[0]!.length === 6);
     assert.equal(events[0]![5]!.kind, "left");
   } finally { await f.close(); }
 });
@@ -217,7 +278,7 @@ test("disconnect expiry does not emit a duplicate departure, and graceful logout
   const f = await fixture({ graceMs: 30 });
   try {
     const a = await f.client(); const b = await f.client(undefined, 100_000);
-    const room = await a.createRoom("expiry"); await b.joinRoom(room.id);
+    const room = await a.joinRoom("expiry"); await b.joinRoom(room.id);
     const events: PresenceEvent[] = []; a.onPresence(event => events.push(event));
     b.dropConnection(); await until(async () => (await a.members()).length === 1);
     assert.deepEqual(events.map(event => event.kind), ["disconnected"]);
@@ -232,7 +293,7 @@ test("server presence reaches harness delivery as an event, not verified partici
   const adapter: DeliveryAdapter = { prepare: async () => {}, deliver: async message => { deliveries.push(message); }, close: async () => {} };
   const session = new RoomSession(f.profile, adapter);
   try {
-    await session.enable(); const room = await session.client.createRoom("presence-harness");
+    await session.enable(); const room = await session.client.joinRoom("presence-harness");
     const peer = await f.client("peer"); await peer.joinRoom(room.id); await peer.close();
     await until(() => deliveries.length === 2); await session.drain();
     assert.deepEqual(deliveries.map(delivery => delivery.presence), ["joined", "left"]);

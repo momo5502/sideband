@@ -90,8 +90,8 @@ export class BrowserRoomClient {
     });
   }
   rooms(): Promise<Room[]> { return this.request("rooms"); }
-  async join(room: string, create = false): Promise<Room> {
-    const joined = await this.request<Room>(create ? "create" : "join", create ? { name: room } : { room }); this.room = joined; return joined;
+  async join(room: string): Promise<Room> {
+    const joined = await this.request<Room>("join", { room }); this.room = joined; return joined;
   }
   async leave(): Promise<void> { await this.request("leave"); this.room = null; }
   async history(): Promise<SignedMessage[]> {

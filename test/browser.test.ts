@@ -44,7 +44,7 @@ for (const tls of [false, true]) test(`browser chat over ${tls ? "HTTPS" : "HTTP
   const web = browser(server, tls, undefined, undefined, key), other = browser(server, tls, undefined, "other-human");
   let resumed: BrowserRoomClient | undefined;
   try {
-    await agent.connect(); const room = await agent.createRoom("browser-room"); await agent.send("Earlier message");
+    await agent.connect(); const room = await agent.joinRoom("browser-room"); await agent.send("Earlier message");
     await web.connect(); assert.equal((await web.rooms()).length, 1); await web.join(room.id);
     assert.equal((await web.history())[0]?.text, "Earlier message");
     const toAgent = waitFor<SignedMessage>(resolve => agent.onMessage(resolve));
@@ -54,12 +54,12 @@ for (const tls of [false, true]) test(`browser chat over ${tls ? "HTTPS" : "HTTP
     await web.send("No self echo"); await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(echoes, 0);
     const toBrowser = waitFor<SignedMessage>(resolve => { web.onMessage = resolve; });
     await agent.send("Hello from the native agent"); assert.equal((await toBrowser).text, "Hello from the native agent");
-    await other.connect(); await other.join("separate-room", true); let leaked = 0; other.onMessage = () => leaked++;
+    await other.connect(); await other.join("separate-room"); let leaked = 0; other.onMessage = () => leaked++;
     await web.send("Private to this room"); await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(leaked, 0);
     await assert.rejects(web.request("send", { id: "forged", text: "cannot forge", signature: own.signature }), /signature/i);
     resumed = browser(server, tls, undefined, undefined, key); await resumed.connect();
     assert.deepEqual(resumed.identity, web.identity); assert.equal(resumed.room?.id, room.id);
-    await resumed.leave(); await resumed.join("new-room", true); assert.equal(resumed.room?.name, "new-room");
+    await resumed.leave(); await resumed.join("new-room"); assert.equal(resumed.room?.name, "new-room");
   } finally { web.disconnect(); other.disconnect(); resumed?.disconnect(); await agent.close(); await server.close(); }
 });
 test("browser login rejects wrong passwords, certificate identity and duplicate names", async () => {

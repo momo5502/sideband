@@ -30,6 +30,15 @@ export class RoomProfiles {
     parsePassword(value.password);
     return { server: serverUrl(value.server), password: value.password };
   }
+  async resolve(name?: string): Promise<{ name: string; profile: ConnectionProfile }> {
+    if (name === undefined) {
+      const names = await this.names();
+      if (!names.length) throw new Error("No saved server. Use sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.");
+      if (names.length > 1) throw new Error(`Multiple saved servers: ${names.join(", ")}. Specify a profile in the join or rooms call.`);
+      name = names[0]!;
+    }
+    return { name, profile: await this.load(name) };
+  }
   async save(name: string, profile: ConnectionProfile): Promise<void> {
     const destination = this.path(name);
     parsePassword(profile.password);
