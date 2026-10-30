@@ -17,17 +17,17 @@ test("GitHub issue-opened payload keeps task details and removes repository/user
   assert.deepEqual(parse(rendered.slice(8, -4)), expected); assert.ok(rendered.length < 300);
   assert.ok(!rendered.includes("noise")); assert.ok(!rendered.includes("null")); assert.ok(!rendered.includes("[]"));
   const changed = githubWebhook({ ...payload, issue: { ...issue, body: "Please fix the crash.\nReproduction steps here.", labels: [{ name: "bug" }], assignees: [{ login: "worker" }] }, assignee: { login: "worker", ...metadata } }, "issues") as any;
-  assert.equal(changed.issue.body, "Please fix the crash.\nReproduction steps here."); assert.deepEqual(changed.issue.labels, ["bug"]); assert.deepEqual(changed.issue.assignees, ["worker"]); assert.equal(changed.assignee, "worker");
+  assert.equal(changed.issue.body, undefined); assert.deepEqual(changed.issue.labels, ["bug"]); assert.deepEqual(changed.issue.assignees, ["worker"]); assert.equal(changed.assignee, "worker");
 });
 
-test("PRs, issue/PR comments and reviews preserve actionable content without repeating parent bodies", () => {
+test("PRs, issue/PR comments and reviews preserve links and metadata without bodies", () => {
   const pr = { ...issue, html_url: "https://github.com/momo5502/sogen/pull/1720", merged: true, head: { ref: "fix", label: "contributor:fix", repo: context.repository }, base: { ref: "main", repo: context.repository }, body: "Parent body" };
   const merged = githubWebhook({ ...context, action: "closed", pull_request: pr }, "pull_request") as any;
   assert.equal(merged.pull_request.merged, true); assert.equal(merged.pull_request.head, "contributor:fix"); assert.equal(merged.pull_request.base, "main");
   const result = githubWebhook({ ...context, action: "created", issue: { ...issue, body: "Do not repeat", pull_request: { url: "api" } }, comment: { ...metadata, body: "Please retry CI.", html_url: "https://github.com/comment" } }, "issue_comment") as any;
-  assert.equal(result.issue, undefined); assert.equal(result.pull_request.number, 1720); assert.equal(result.pull_request.body, undefined); assert.equal(result.comment.body, "Please retry CI.");
+  assert.equal(result.issue, undefined); assert.equal(result.pull_request.number, 1720); assert.equal(result.pull_request.body, undefined); assert.equal(result.comment.body, undefined); assert.equal(result.comment.url, "https://github.com/comment");
   const review = githubWebhook({ ...context, action: "submitted", pull_request: pr, review: { state: "changes_requested", body: "Handle the null case.", html_url: "https://github.com/review" } }, "pull_request_review") as any;
-  assert.equal(review.review.state, "changes_requested"); assert.equal(review.review.body, "Handle the null case."); assert.equal(review.pull_request.body, undefined);
+  assert.equal(review.review.state, "changes_requested"); assert.equal(review.review.body, undefined); assert.equal(review.review.url, "https://github.com/review"); assert.equal(review.pull_request.body, undefined);
   const inline = githubWebhook({ ...context, action: "created", pull_request: pr, comment: { body: "Off by one.", path: "src/main.cpp", line: 42, html_url: "https://github.com/comment", diff_hunk: "large diff" } }, "pull_request_review_comment") as any;
   assert.equal(inline.comment.path, "src/main.cpp"); assert.equal(inline.comment.line, 42); assert.equal(inline.comment.diff_hunk, undefined);
 });
@@ -59,7 +59,7 @@ test("GitHub ping, releases, refs and unknown events never dump webhook configur
   const ping = githubWebhook({ ...context, hook: { config: { url: "secret-webhook-url", secret: "secret-value" } } }, "ping") as any;
   assert.equal(ping.message, "Webhook connected."); assert.ok(!JSON.stringify(ping).includes("secret"));
   const release = githubWebhook({ ...context, action: "published", release: { tag_name: "v1", name: "First release", body: "Changes", html_url: "https://github.com/release", assets: [metadata] } }, "release") as any;
-  assert.equal(release.release.tag, "v1"); assert.equal(release.release.body, "Changes"); assert.equal(release.release.assets, undefined);
+  assert.equal(release.release.tag, "v1"); assert.equal(release.release.body, undefined); assert.equal(release.release.url, "https://github.com/release"); assert.equal(release.release.assets, undefined);
   assert.equal((githubWebhook({ ref: "feature", ref_type: "branch" }, "create") as any).ref, "feature");
   assert.deepEqual(githubWebhook({ ...context, action: "new", hook: { config: { secret: "never-forward" } } }, "future_event"), { event: "future_event.new", repository: "momo5502/sogen", actor: "momo5502" });
   assert.deepEqual(githubWebhook(null, "issues"), { event: "issues" });
@@ -67,9 +67,18 @@ test("GitHub ping, releases, refs and unknown events never dump webhook configur
   assert.deepEqual(parse(webhookText(context).slice(8, -4)), context, "generic payloads stay intact without GitHub's header");
 });
 
-test("long GitHub bodies remain bounded readable YAML with explicit field truncation", () => {
-  const rendered = webhookText({ ...context, action: "opened", issue: { ...issue, body: "🚀".repeat(3000) } }, "issues");
-  assert.ok(Buffer.byteLength(rendered) <= MAX_TEXT_BYTES); assert.match(rendered, /truncated/); assert.ok(!rendered.includes("\uFFFD"));
-  const shortBody = webhookText({ ...context, action: "created", issue, comment: { body: "a".repeat(4000) } }, "issue_comment");
-  const parsed = parse(shortBody.slice(8, -4)); assert.equal(parsed.comment.body, "a".repeat(2000) + "… [truncated]");
+test("all GitHub entity bodies are omitted entirely while generic webhook bodies remain intact", () => {
+  const body = "OMITTED-BODY".repeat(3000), item = { ...issue, body };
+  const cases: [string, object][] = [["issues", { issue: item }], ["pull_request", { pull_request: item }], ["discussion", { discussion: item }],
+    ["issue_comment", { issue: item, comment: { body, html_url: "https://github.com/comment" } }],
+    ["pull_request_review", { pull_request: item, review: { body, state: "approved" } }],
+    ["pull_request_review_comment", { pull_request: item, comment: { body, path: "src/main.cpp", line: 42 } }],
+    ["discussion_comment", { discussion: item, comment: { body, html_url: "https://github.com/comment" } }],
+    ["release", { release: { body, tag_name: "v1", html_url: "https://github.com/release" } }]];
+  for (const [event, payload] of cases) {
+    const rendered = webhookText({ ...context, ...payload }, event);
+    assert.ok(Buffer.byteLength(rendered) <= MAX_TEXT_BYTES); assert.ok(!rendered.includes("OMITTED-BODY"), event); assert.doesNotMatch(rendered, /\bbody:/, event);
+    assert.ok(!rendered.includes("truncated"), "bodies are omitted rather than shortened"); assert.ok(parse(rendered.slice(8, -4)));
+  }
+  assert.deepEqual(parse(webhookText({ body: "Generic content" }).slice(8, -4)), { body: "Generic content" });
 });

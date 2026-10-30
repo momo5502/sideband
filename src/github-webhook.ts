@@ -10,15 +10,15 @@ const short = (value: unknown, limit = 240): string | undefined => {
 const compact = (value: Data): Data => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== "" &&
   (!Array.isArray(item) || item.length > 0) && (typeof item !== "object" || Array.isArray(item) || Object.keys(item).length > 0)));
 const names = (value: unknown, key: string) => list(value).slice(0, 10).map(item => short(data(item)[key])).filter(value => value !== undefined);
-const entity = (value: unknown, includeBody: boolean): Data => {
+const entity = (value: unknown, includeDetails: boolean): Data => {
   const item = data(value);
   return compact({ number: number(item.number), title: short(item.title), url: short(item.html_url, 600),
-    ...(includeBody ? { body: short(item.body, 2000), labels: names(item.labels, "name"), assignees: names(item.assignees, "login") } : {}),
+    ...(includeDetails ? { labels: names(item.labels, "name"), assignees: names(item.assignees, "login") } : {}),
     ...(typeof item.merged === "boolean" && item.merged ? { merged: true } : {}) });
 };
 const comment = (value: unknown): Data => {
   const item = data(value);
-  return compact({ body: short(item.body, 2000), state: short(item.state), url: short(item.html_url, 600), path: short(item.path), line: number(item.line) });
+  return compact({ state: short(item.state), url: short(item.html_url, 600), path: short(item.path), line: number(item.line) });
 };
 
 /** GitHub's event header selects a field allowlist. Never dump hook configuration or API metadata. */
@@ -55,7 +55,7 @@ export function githubWebhook(payload: unknown, event?: string): unknown {
   if (event === "status") Object.assign(summary, compact({ context: short(p.context), state: short(p.state), description: short(p.description), commit: short(p.sha)?.slice(0, 12), url: short(p.target_url, 600) }));
   if (p.release) {
     const release = data(p.release);
-    summary.release = compact({ tag: short(release.tag_name), name: short(release.name), url: short(release.html_url, 600), body: short(release.body, 1500) });
+    summary.release = compact({ tag: short(release.tag_name), name: short(release.name), url: short(release.html_url, 600) });
   }
   if (event === "create" || event === "delete") Object.assign(summary, compact({ ref: short(p.ref), ref_type: short(p.ref_type) }));
   if (event === "ping") summary.message = "Webhook connected.";

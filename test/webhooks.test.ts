@@ -114,7 +114,7 @@ for (const tls of [false, true]) test(`webhook POST over ${tls ? "HTTPS" : "HTTP
     assert.equal((await deliver(server, path, JSON.stringify(github), { tls, githubEvent: "issues" })).code, 204);
     const summarized = (await agent.history()).at(-1)!;
     assert.equal(verifyMessage(summarized), true); assert.equal(summarized.sender.name, "github");
-    assert.match(summarized.text, /event: issues.opened/); assert.match(summarized.text, /body: Repro steps/); assert.ok(!summarized.text.includes("noise-to-strip"));
+    assert.match(summarized.text, /event: issues.opened/); assert.ok(!summarized.text.includes("Repro steps")); assert.ok(!summarized.text.includes("noise-to-strip"));
     assert.equal((await deliver(server, path, JSON.stringify(github), { tls })).code, 204);
     assert.match((await agent.history()).at(-1)!.text, /noise-to-strip/, "headerless generic webhooks preserve the original JSON fields");
   } finally { web.disconnect(); await agent.close(); await other.close(); await server.close(); }

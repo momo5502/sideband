@@ -65,13 +65,13 @@ try {
   }
   const { path } = await alice.request("webhook", { room: "installed-smoke", sender: "installed-webhook" });
   let webhookReceived = false;
-  bob.onMessage(message => { if (message.sender.name === "installed-webhook" && message.text.includes("event: issues.opened") && !message.text.includes("metadata-noise")) webhookReceived = true; });
+  bob.onMessage(message => { if (message.sender.name === "installed-webhook" && message.text.includes("event: issues.opened") && !message.text.includes("metadata-noise") && !message.text.includes("body-noise")) webhookReceived = true; });
   const webhookCode = await new Promise((resolve, reject) => {
     const req = httpRequest(`http://127.0.0.1:${profile.statusPort}${path}`, { method: "POST", agent: false, headers: { "Content-Type": "application/json", "X-GitHub-Event": "issues" } }, res => {
       res.resume(); res.once("end", () => resolve(res.statusCode)); res.once("error", reject);
     });
     req.setTimeout(3000, () => req.destroy(new Error("Installed webhook timed out."))); req.once("error", reject);
-    req.end(JSON.stringify({ action: "opened", repository: { full_name: "owner/repo", owner: { avatar_url: "metadata-noise" } }, issue: { number: 1, title: "Bug" } }));
+    req.end(JSON.stringify({ action: "opened", repository: { full_name: "owner/repo", owner: { avatar_url: "metadata-noise" } }, issue: { number: 1, title: "Bug", body: "body-noise" } }));
   });
   assert.equal(webhookCode, 204);
   const deadline = Date.now() + 3000;
