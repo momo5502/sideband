@@ -187,7 +187,7 @@ test("bundled MCP supports a trusted HTTPS proxy while untrusted proxy TLS is re
         SIDEBAND_STATE_DIR: directory, SIDEBAND_CLAUDE_SERVER: profile.server, SIDEBAND_CLAUDE_PASSWORD: profile.password,
         HTTPS_PROXY: tunnel.url, NODE_EXTRA_CA_CERTS: ca }, stderr: "pipe" }));
     const call = (name: string, args: Record<string, unknown>) => mcp.callTool({ name, arguments: args });
-    assert.equal((await call("sideband_join_room", { room: room.id })).isError, undefined);
+    assert.equal((await call("sideband_join_room", { room: room.id, name: "receiver" })).isError, undefined);
     let notification: unknown;
     mcp.setNotificationHandler(NotificationSchema.extend({ method: z.literal("notifications/claude/channel") }), value => { notification = value.params; });
     await sender.send("through secure proxy"); await until(() => notification !== undefined);

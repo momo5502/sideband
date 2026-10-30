@@ -51,6 +51,14 @@ test("direct MCP joins connect once, create missing rooms, reuse identity and ne
     const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args });
     assert.deepEqual(read(await call("sideband_status")), { state: "off" });
     assert.deepEqual(await observer.listRooms(), []);
+    for (const name of [undefined, "", "   "]) {
+      const rejected = await call("sideband_join_room", { room: "New-Room", ...(name === undefined ? {} : { name }) });
+      assert.equal(rejected.isError, true); assert.match(JSON.stringify(rejected.content), /Ask the user to choose one/);
+      assert.deepEqual(read(await call("sideband_status")), { state: "off" });
+    }
+    const browsing = await call("sideband_rooms");
+    assert.equal(browsing.isError, true); assert.match(JSON.stringify(browsing.content), /Ask the user to choose one/);
+    assert.deepEqual(read(await call("sideband_status")), { state: "off" });
     const joined = (await Promise.all([
       call("sideband_join_room", { room: "New-Room", name: "worker" }),
       call("sideband_join_room", { room: "new-room", name: "worker" }),
@@ -60,16 +68,18 @@ test("direct MCP joins connect once, create missing rooms, reuse identity and ne
     const first = read(await call("sideband_status"));
     assert.equal(first.identity.name, "worker"); assert.equal(first.state, "on");
     assert.equal(read(await call("sideband_rooms"))[0].id, joined[0].id);
-    assert.equal((await call("sideband_join_room", { room: "other", profile: "different" })).isError, true);
+    assert.equal((await call("sideband_join_room", { room: "other", profile: "different", name: "worker" })).isError, true);
     assert.equal((await call("sideband_join_room", { room: "other", name: "different" })).isError, true);
+    const unnamed = await call("sideband_join_room", { room: "other" });
+    assert.equal(unnamed.isError, true); assert.match(JSON.stringify(unnamed.content), /Ask the user to choose one/);
     assert.equal(read(await call("sideband_status")).room.id, joined[0].id);
-    const switched = read(await call("sideband_join_room", { room: "another-room" }));
+    const switched = read(await call("sideband_join_room", { room: "another-room", name: "worker" }));
     assert.notEqual(switched.id, joined[0].id); assert.deepEqual(read(await call("sideband_history")), []);
     assert.equal(read(await call("sideband_status")).identity.id, first.identity.id);
     assert.deepEqual((await observer.listRooms()).map(room => room.name), ["another-room"]);
     read(await call("sideband_leave_room")); assert.equal(read(await call("sideband_status")).state, "on");
     assert.deepEqual(await observer.listRooms(), []);
-    read(await call("sideband_join_room", { room: "again" }));
+    read(await call("sideband_join_room", { room: "again", name: "worker" }));
     assert.equal(read(await call("sideband_status")).identity.id, first.identity.id);
     read(await call("sideband_deactivate"));
     read(await call("sideband_join_room", { room: "again", name: "worker" }));
@@ -89,19 +99,19 @@ test("multiple saved servers require selection in the connecting call, without a
   try {
     await client.connect(transport);
     const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args });
-    const ambiguous = await call("sideband_join_room", { room: "work" });
+    const ambiguous = await call("sideband_join_room", { room: "work", name: "worker" });
     assert.equal(ambiguous.isError, true); assert.match(JSON.stringify(ambiguous.content), /Multiple saved servers: first, second/);
     assert.deepEqual(read(await call("sideband_status")), { state: "off" });
-    assert.deepEqual(read(await call("sideband_rooms", { profile: "second" })), []);
+    assert.deepEqual(read(await call("sideband_rooms", { profile: "second", name: "worker" })), []);
     const identity = read(await call("sideband_status")).identity;
-    assert.equal(identity.name, undefined, "a name is optional"); assert.match(identity.id, /^agent-/);
-    const room = read(await call("sideband_join_room", { room: "work" }));
+    assert.equal(identity.name, "worker"); assert.match(identity.id, /^agent-/);
+    const room = read(await call("sideband_join_room", { room: "work", name: "worker" }));
     assert.equal(read(await call("sideband_status")).identity.id, identity.id);
     assert.deepEqual(await (await fetch(`http://127.0.0.1:${first.statusPort}/status.json`)).json(), { rooms: 0, connectedParticipants: 0 });
     assert.deepEqual(await (await fetch(`http://127.0.0.1:${second.statusPort}/status.json`)).json(), { rooms: 1, connectedParticipants: 1 });
-    assert.equal((await call("sideband_join_room", { room: "work", profile: "first" })).isError, true);
+    assert.equal((await call("sideband_join_room", { room: "work", profile: "first", name: "worker" })).isError, true);
     read(await call("sideband_deactivate"));
-    const other = read(await call("sideband_join_room", { room: "work", profile: "first" }));
+    const other = read(await call("sideband_join_room", { room: "work", profile: "first", name: "worker" }));
     assert.notEqual(other.id, room.id);
   } finally { await client.close(); await first.close(); await second.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -115,6 +125,7 @@ for (const harness of ["codex", "claude"]) {
       assert.ok(!listed.tools.some(tool => ["sideband_activate", "sideband_create_room"].includes(tool.name)));
       assert.ok(listed.tools.every(tool => !("claude_channel_enabled" in (tool.inputSchema.properties ?? {}))));
       assert.ok(listed.tools.every((tool) => !("password" in (tool.inputSchema.properties ?? {}))));
+      assert.ok(listed.tools.find(tool => tool.name === "sideband_join_room")!.inputSchema.required!.includes("name"));
       assert.equal(client.getServerCapabilities()?.experimental?.["claude/channel"] !== undefined, harness === "claude");
       const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args, _meta: { threadId: "thread-one" } });
       assert.deepEqual((await call("sideband_status")).content, [{ type: "text", text: '{"state":"off"}' }]);
@@ -123,7 +134,13 @@ for (const harness of ["codex", "claude"]) {
       assert.equal((await call("sideband_send", { text: "hello", sender: "alice" })).isError, true);
       assert.equal((await call("sideband_join_room", { room: "work", password: "do-not-use" })).isError, true);
       const missing = await call("sideband_join_room", { room: "work" });
-      assert.equal(missing.isError, true); assert.match(JSON.stringify(missing.content), /No saved server/);
+      assert.equal(missing.isError, true); assert.match(JSON.stringify(missing.content), /Ask the user to choose one/);
+      const unconfigured = await call("sideband_join_room", { room: "work", name: "chosen" });
+      assert.equal(unconfigured.isError, true); assert.match(JSON.stringify(unconfigured.content), /No saved server/);
+      await new RoomProfiles(directory).save("fixture", { server: "127.0.0.1:1", password: `sb1.${"a".repeat(43)}.${"b".repeat(43)}` });
+      const anonymousBrowse = await call("sideband_rooms");
+      assert.equal(anonymousBrowse.isError, true); assert.match(JSON.stringify(anonymousBrowse.content), /Ask the user to choose one/);
+      assert.deepEqual((await call("sideband_status")).content, [{ type: "text", text: '{"state":"off"}' }]);
       if (harness === "codex") assert.equal((await client.callTool({ name: "sideband_status", arguments: {} })).isError, true);
       assert.equal(stderr, "", "off-state must not spawn the invalid Codex helper");
     } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }
