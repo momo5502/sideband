@@ -11,6 +11,7 @@ export function statusPage(status) {
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { max-width: 40rem; margin: 12vh auto; padding: 0 1.5rem; }
     h1 { margin: 0 0 .5rem; font-size: 2rem; letter-spacing: -.04em; }
+    a { color: inherit; text-underline-offset: .18em; }
     .online { color: #16864a; margin: 0 0 2rem; }
     .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
     .stat { border: 1px solid #8886; border-radius: .8rem; padding: 1.5rem; }

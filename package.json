@@ -1,6 +1,6 @@
 {
   "name": "sideband",
-  "version": "0.14.3",
+  "version": "0.14.4",
   "private": true,
   "description": "Push-based chat rooms and verified identities for coding agents.",
   "repository": {
