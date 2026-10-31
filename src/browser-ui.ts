@@ -22,6 +22,21 @@ function setMenu(open: boolean, restoreFocus = false) {
 function connection(text: string) { $("connection").textContent = text; $("menu-connection").textContent = text; }
 function notice(text: string) { $("notice").textContent = text; $("menu-notice").textContent = text; }
 const label = (identity: AgentIdentity) => identity.name || `#${identity.id.slice(6, 18)}`;
+const namePalette = ["#8ab4f8", "#81c995", "#fdd663", "#f28b82", "#c58af9", "#78d9ec", "#ffb4d2", "#ffb86b"];
+const nameColors = new Map<string, string>();
+function participantName(identity: AgentIdentity): HTMLSpanElement {
+  let color = nameColors.get(identity.id);
+  if (!color) {
+    let hash = 2166136261;
+    for (const char of identity.id) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0;
+    const used = new Set(nameColors.values());
+    color = namePalette.map((_, index) => namePalette[(hash + index) % namePalette.length]!).find(candidate => !used.has(candidate))
+      ?? `hsl(${(hash % 360 + nameColors.size * 137.508) % 360}, 75%, 76%)`;
+    nameColors.set(identity.id, color);
+  }
+  const name = document.createElement("span"); name.className = "sender"; name.textContent = label(identity); name.style.color = color;
+  return name;
+}
 const storage = (kind: "localStorage" | "sessionStorage", action: "get" | "set" | "remove", key: string, value?: string): string | null => {
   try { const target = window[kind]; if (action === "get") return target.getItem(key); if (action === "set") target.setItem(key, value!); else target.removeItem(key); }
   catch { if (action === "set") $("login-error").textContent = "Browser storage is unavailable; this login cannot be remembered."; }
@@ -41,11 +56,11 @@ function render(item: SignedMessage | PresenceEvent) {
   seen.add(item.id); if (seen.size > 10000) seen.delete(seen.values().next().value!);
   const log = $("messages"), nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const entry = document.createElement("div");
-  if ("kind" in item) { entry.className = "event"; entry.textContent = `${label(item.participant)} ${item.kind}.`; }
+  if ("kind" in item) { entry.className = "event"; entry.append(participantName(item.participant), ` ${item.kind}.`); }
   else {
     entry.className = "message";
     const meta = document.createElement("div"); meta.className = "meta";
-    const sender = document.createElement("span"); sender.className = "sender"; sender.textContent = label(item.sender);
+    const sender = participantName(item.sender);
     const time = document.createElement("time"); time.className = "time"; time.dateTime = new Date(item.createdAt).toISOString(); time.textContent = new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const body = document.createElement("div"); body.className = "message-body"; body.append(markdown(item.text));
     meta.append(sender, time); entry.append(meta, body);
@@ -93,7 +108,7 @@ async function login() {
     await candidate.connect(); client = candidate;
     storage("localStorage", "set", savedKey, JSON.stringify({ name, password: enteredPassword }));
     storage("sessionStorage", "set", tabKey, JSON.stringify({ name, key: base64(secretKey) }));
-    $("app").hidden = false; $("login-panel").hidden = true; $("identity").textContent = `You: ${label(client.identity)}`;
+    $("app").hidden = false; $("login-panel").hidden = true; $("identity").replaceChildren("You: ", participantName(client.identity));
     document.body.classList.add("chatting"); setMenu(!client.room);
     connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
     candidate.onClose = () => {

@@ -33,6 +33,25 @@ function setMenu(open, restoreFocus = false) {
 function connection(text) { $("connection").textContent = text; $("menu-connection").textContent = text; }
 function notice(text) { $("notice").textContent = text; $("menu-notice").textContent = text; }
 const label = (identity) => identity.name || `#${identity.id.slice(6, 18)}`;
+const namePalette = ["#8ab4f8", "#81c995", "#fdd663", "#f28b82", "#c58af9", "#78d9ec", "#ffb4d2", "#ffb86b"];
+const nameColors = new Map();
+function participantName(identity) {
+    let color = nameColors.get(identity.id);
+    if (!color) {
+        let hash = 2166136261;
+        for (const char of identity.id)
+            hash = Math.imul(hash ^ char.charCodeAt(0), 16777619) >>> 0;
+        const used = new Set(nameColors.values());
+        color = namePalette.map((_, index) => namePalette[(hash + index) % namePalette.length]).find(candidate => !used.has(candidate))
+            ?? `hsl(${(hash % 360 + nameColors.size * 137.508) % 360}, 75%, 76%)`;
+        nameColors.set(identity.id, color);
+    }
+    const name = document.createElement("span");
+    name.className = "sender";
+    name.textContent = label(identity);
+    name.style.color = color;
+    return name;
+}
 const storage = (kind, action, key, value) => {
     try {
         const target = window[kind];
@@ -74,15 +93,13 @@ function render(item) {
     const entry = document.createElement("div");
     if ("kind" in item) {
         entry.className = "event";
-        entry.textContent = `${label(item.participant)} ${item.kind}.`;
+        entry.append(participantName(item.participant), ` ${item.kind}.`);
     }
     else {
         entry.className = "message";
         const meta = document.createElement("div");
         meta.className = "meta";
-        const sender = document.createElement("span");
-        sender.className = "sender";
-        sender.textContent = label(item.sender);
+        const sender = participantName(item.sender);
         const time = document.createElement("time");
         time.className = "time";
         time.dateTime = new Date(item.createdAt).toISOString();
@@ -201,7 +218,7 @@ async function login() {
         storage("sessionStorage", "set", tabKey, JSON.stringify({ name, key: base64(secretKey) }));
         $("app").hidden = false;
         $("login-panel").hidden = true;
-        $("identity").textContent = `You: ${label(client.identity)}`;
+        $("identity").replaceChildren("You: ", participantName(client.identity));
         document.body.classList.add("chatting");
         setMenu(!client.room);
         connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
