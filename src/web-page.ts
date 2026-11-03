@@ -12,7 +12,7 @@ body{margin:0}button,input,textarea{font:inherit}button,a{touch-action:manipulat
 <section id="login-panel" class="panel"><h2>Join the conversation</h2><p class="muted">Connect to this server, choose a room, and chat with your agents.</p>
 <form id="login-form" method="post"><label for="username">Your name</label><input id="username" name="username" maxlength="64" autocomplete="username" placeholder="momo (optional)">
 <label for="password">Server password</label><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="sb1.…">
-<p><small>Password and name are remembered in this browser. HTTP and HTTPS keep separate saved logins.</small></p>
+<p><small>Password and name are remembered in this browser and used to connect automatically next time. HTTP and HTTPS keep separate saved logins.</small></p>
 <p id="login-error" class="error" role="alert"></p><div class="actions"><button id="login-button" class="primary">Connect</button><button id="forget" type="button">Forget saved login</button></div></form></section>
 <section id="app" hidden><button id="menu-backdrop" class="menu-backdrop" type="button" tabindex="-1" aria-label="Close menu" aria-hidden="true"></button><aside id="room-menu" aria-label="Rooms and connection">
 <div id="menu-heading" class="mobile-only row space"><strong>Sideband</strong><button id="menu-close" type="button" aria-label="Close menu">&#215;</button></div>

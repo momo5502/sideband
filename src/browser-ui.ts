@@ -6,7 +6,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 const user = $<HTMLInputElement>("username"), password = $<HTMLInputElement>("password"), message = $<HTMLTextAreaElement>("message");
 const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1";
 const markdown = messageMarkdown(window);
-let client: BrowserRoomClient | undefined, joining = false, loadingHistory = false;
+let client: BrowserRoomClient | undefined, connecting: BrowserRoomClient | undefined, joining = false, loadingHistory = false;
 let backlog: (SignedMessage | PresenceEvent)[] = [], seen = new Set<string>();
 const mobile = window.matchMedia?.("(max-width:650px)");
 function setMenu(open: boolean, restoreFocus = false) {
@@ -44,6 +44,7 @@ const storage = (kind: "localStorage" | "sessionStorage", action: "get" | "set" 
 };
 function error(value: unknown, login = false) { const text = value instanceof Error ? value.message : "Something went wrong."; if (login) $("login-error").textContent = text; else notice(text); }
 function setRoom() {
+  document.title = client?.room ? `${client.room.name} — Sideband` : "Sideband chat";
   $("room-title").textContent = client?.room?.name || "Choose a room";
   $("leave").hidden = !client?.room; message.disabled = !client?.room || joining; $<HTMLButtonElement>("send").disabled = !client?.room || joining;
   $("menu-leave").hidden = !client?.room;
@@ -96,7 +97,9 @@ async function join(room: string) {
   finally { loadingHistory = false; for (const item of backlog) render(item); backlog = []; joining = false; setRoom(); if (client?.room && !mobile?.matches) message.focus(); }
 }
 async function login() {
-  const loginButton = $<HTMLButtonElement>("login-button"); loginButton.disabled = true; $("login-error").textContent = "";
+  const loginButton = $<HTMLButtonElement>("login-button");
+  if (client || connecting || loginButton.disabled) return;
+  loginButton.disabled = true; $("login-error").textContent = "";
   let candidate: BrowserRoomClient | undefined;
   try {
     const name = user.value.trim(), enteredPassword = password.value.trim();
@@ -104,29 +107,38 @@ async function login() {
     try { const saved = JSON.parse(storage("sessionStorage", "get", tabKey) || "null"); if (saved?.name === name && /^[A-Za-z0-9_-]{43}$/.test(saved.key)) secretKey = unbase64(saved.key); } catch { /* Start a fresh identity. */ }
     secretKey ??= crypto.getRandomValues(new Uint8Array(32));
     candidate = new BrowserRoomClient(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/browser-ws`, enteredPassword, name, secretKey);
+    connecting = candidate;
     candidate.onMessage = receive; candidate.onPresence = receive; candidate.onError = value => error(value);
-    await candidate.connect(); client = candidate;
+    await candidate.connect();
+    if (connecting !== candidate) { candidate.disconnect(); return; }
+    client = candidate;
     storage("localStorage", "set", savedKey, JSON.stringify({ name, password: enteredPassword }));
     storage("sessionStorage", "set", tabKey, JSON.stringify({ name, key: base64(secretKey) }));
     $("app").hidden = false; $("login-panel").hidden = true; $("identity").replaceChildren("You: ", participantName(client.identity));
     document.body.classList.add("chatting"); setMenu(!client.room);
     connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
     candidate.onClose = () => {
-      if (client !== candidate) return; client = undefined; clearWebhook(); $("app").hidden = true; $("login-panel").hidden = false;
+      if (client !== candidate) return; client = undefined; setRoom(); $("app").hidden = true; $("login-panel").hidden = false;
       document.body.classList.remove("chatting"); setMenu(false);
       connection("Disconnected"); $("login-error").textContent = "Connection closed. Connect again to rejoin.";
     };
     setRoom(); if (client.room) await history(); await rooms();
-  } catch (value) { if (client === candidate) client = undefined; candidate?.disconnect(); $("app").hidden = true; $("login-panel").hidden = false; document.body.classList.remove("chatting"); setMenu(false); connection("Disconnected"); error(value, true); }
-  finally { loginButton.disabled = false; }
+  } catch (value) {
+    if (candidate && connecting !== candidate) return;
+    if (client === candidate) client = undefined; candidate?.disconnect(); setRoom(); $("app").hidden = true; $("login-panel").hidden = false;
+    document.body.classList.remove("chatting"); setMenu(false); connection("Disconnected"); error(value, true);
+  } finally { if (!candidate || connecting === candidate) { connecting = undefined; loginButton.disabled = false; } }
 }
 $("login-form").addEventListener("submit", event => { event.preventDefault(); void login(); });
-$("forget").addEventListener("click", () => { storage("localStorage", "remove", savedKey); storage("sessionStorage", "remove", tabKey); password.value = ""; user.value = ""; $("login-error").textContent = "Saved login removed."; });
+$("forget").addEventListener("click", () => {
+  const pending = connecting; connecting = undefined; pending?.disconnect(); $<HTMLButtonElement>("login-button").disabled = false;
+  storage("localStorage", "remove", savedKey); storage("sessionStorage", "remove", tabKey); password.value = ""; user.value = ""; $("login-error").textContent = "Saved login removed.";
+});
 $("refresh").addEventListener("click", () => { void rooms().catch(error); });
 $("join-form").addEventListener("submit", event => { event.preventDefault(); const input = $<HTMLInputElement>("room-name"); const name = input.value.trim(); if (name) void join(name).then(() => { input.value = ""; }); });
 for (const id of ["leave", "menu-leave"]) $(id).addEventListener("click", () => { if (joining || !client) return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error); });
 $("logout").addEventListener("click", () => {
-  const previous = client; client = undefined; clearWebhook(); previous?.disconnect(); storage("sessionStorage", "remove", tabKey);
+  const previous = client; client = undefined; setRoom(); previous?.disconnect(); storage("sessionStorage", "remove", tabKey);
   $("app").hidden = true; $("login-panel").hidden = false; document.body.classList.remove("chatting"); setMenu(false); connection("Disconnected");
 });
 $("webhook-form").addEventListener("submit", event => {
@@ -151,7 +163,6 @@ $("compose").addEventListener("submit", event => {
     .finally(() => { $<HTMLButtonElement>("send").disabled = !client?.room; message.focus(); });
 });
 message.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$<HTMLButtonElement>("send").disabled) $<HTMLFormElement>("compose").requestSubmit(); } });
-try { const saved = JSON.parse(storage("localStorage", "get", savedKey) || "null"); if (typeof saved?.name === "string" && typeof saved.password === "string") { user.value = saved.name; password.value = saved.password; } } catch { /* Ignore corrupt browser state. */ }
 $("menu-toggle").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open"), true));
 for (const id of ["menu-close", "menu-backdrop"]) $(id).addEventListener("click", () => setMenu(false, true));
 document.addEventListener("keydown", event => {
@@ -168,3 +179,10 @@ document.addEventListener("keydown", event => {
 });
 mobile?.addEventListener("change", () => setMenu(!client?.room));
 setMenu(false);
+try {
+  const saved = JSON.parse(storage("localStorage", "get", savedKey) || "null");
+  if (typeof saved?.name === "string" && typeof saved.password === "string") {
+    user.value = saved.name; password.value = saved.password;
+    if (password.value.trim()) void login();
+  }
+} catch { /* Ignore corrupt browser state. */ }

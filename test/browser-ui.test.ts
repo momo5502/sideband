@@ -13,7 +13,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const agent = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "agent-peer");
   const sockets = new Set<NodeWebSocket>(); const pages: JSDOM[] = []; const errors: Error[] = [];
-  const open = async (saved?: string | null, identity?: string | null) => {
+  const open = async (saved?: string | null, identity?: string | null, forgetOnOpen = false) => {
     const console = new VirtualConsole(); console.on("jsdomError", error => errors.push(error));
     // Only our locally served test app executes. No user pages or external scripts are loaded.
     const dom = await JSDOM.fromURL(`http://127.0.0.1:${server.statusPort}/chat`, {
@@ -22,7 +22,10 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
         Object.assign(window, { TextEncoder, TextDecoder, matchMedia: () => Object.assign(new window.EventTarget(), { matches: mobile }) });
         assert.equal(window.crypto.subtle, undefined, "exercise HTTP without Web Crypto signing");
         window.WebSocket = class extends NodeWebSocket {
-          constructor(url: string | URL) { super(String(url), { origin: `http://127.0.0.1:${server.statusPort}` }); sockets.add(this); this.once("close", () => sockets.delete(this)); }
+          constructor(url: string | URL) {
+            super(String(url), { origin: `http://127.0.0.1:${server.statusPort}` }); sockets.add(this); this.once("close", () => sockets.delete(this));
+            if (forgetOnOpen) this.once("open", () => window.document.getElementById("forget")!.click());
+          }
         } as unknown as typeof window.WebSocket;
         if (saved) window.localStorage.setItem("sideband.login.v1", saved);
         if (identity) window.sessionStorage.setItem("sideband.identity.v1", identity);
@@ -42,6 +45,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
   try {
     await agent.connect(); await agent.joinRoom("agents-room"); await agent.send("Before the human joined\nHistory newline\n\n**history**");
     const dom = await open(); const doc = dom.window.document;
+    assert.equal(doc.title, "Sideband chat"); assert.equal(sockets.size, 0, "first visit waits for credentials");
     const input = (id: string) => doc.getElementById(id) as HTMLInputElement;
     input("username").value = "human"; input("password").value = server.password;
     doc.getElementById("login-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
@@ -71,6 +75,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     assert.ok(JSON.parse(saved!).password === server.password); assert.equal(JSON.parse(saved!).name, "human");
     (doc.querySelector("#room-list button") as HTMLButtonElement).click();
     await until(() => doc.getElementById("messages")!.textContent!.includes("Before the human joined"));
+    assert.equal(doc.title, "agents-room — Sideband");
     await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
     const historyBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "history")!;
     assert.equal(historyBody.querySelectorAll("br").length, 1); assert.equal(historyBody.querySelectorAll("p").length, 2);
@@ -119,6 +124,7 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     if (mobile) doc.getElementById("menu-toggle")!.click();
     input("room-name").value = "another-room"; doc.getElementById("join-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
     await until(() => doc.getElementById("room-title")!.textContent === "another-room");
+    assert.equal(doc.title, "another-room — Sideband");
     await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
     assert.equal(doc.body.classList.contains("menu-open"), false, "creating a room closes the drawer too");
     assert.ok(!doc.getElementById("messages")!.textContent!.includes("<script>window.hacked=true</script>"));
@@ -127,21 +133,40 @@ for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"
     const reloaded = await open(saved, identity); const next = reloaded.window.document;
     assert.ok((next.getElementById("password") as HTMLInputElement).value === server.password);
     assert.equal((next.getElementById("username") as HTMLInputElement).value, "human");
-    next.getElementById("login-form")!.dispatchEvent(new reloaded.window.Event("submit", { cancelable: true }));
     await until(() => next.getElementById("room-title")!.textContent === "another-room");
+    assert.equal(next.title, "another-room — Sideband", "saved login connects and restores the room without clicking Connect");
     assert.equal(next.body.classList.contains("menu-open"), false, "restoring a room starts with full-screen chat, not the drawer");
     assert.equal(JSON.parse(reloaded.window.sessionStorage.getItem("sideband.identity.v1")!).key, previousKey);
     if (mobile) {
       next.getElementById("menu-toggle")!.click(); next.getElementById("menu-leave")!.click();
       await until(() => next.getElementById("room-title")!.textContent === "Choose a room");
+      assert.equal(next.title, "Sideband chat");
       assert.equal(next.body.classList.contains("menu-open"), true, "leaving a room keeps room selection accessible");
       assert.equal(next.getElementById("menu-leave")!.hidden, true);
     }
     next.getElementById("logout")!.click(); await until(() => !next.getElementById("login-panel")!.hidden);
+    assert.equal(next.title, "Sideband chat");
     assert.equal(next.body.classList.contains("chatting"), false); assert.equal(next.body.classList.contains("menu-open"), false);
     next.getElementById("forget")!.click();
     assert.equal(reloaded.window.localStorage.getItem("sideband.login.v1"), null); assert.equal(reloaded.window.sessionStorage.getItem("sideband.identity.v1"), null);
     assert.equal((next.getElementById("password") as HTMLInputElement).value, "");
+    const badPassword = server.password.slice(0, -1) + (server.password.endsWith("A") ? "B" : "A");
+    const failed = await open(JSON.stringify({ name: "retry-human", password: badPassword })); const retry = failed.window.document;
+    await until(() => !!retry.getElementById("login-error")!.textContent && !(retry.getElementById("login-button") as HTMLButtonElement).disabled);
+    assert.equal(retry.getElementById("login-panel")!.hidden, false); assert.equal(retry.title, "Sideband chat");
+    (retry.getElementById("password") as HTMLInputElement).value = server.password;
+    retry.getElementById("login-form")!.dispatchEvent(new failed.window.Event("submit", { cancelable: true }));
+    retry.getElementById("login-form")!.dispatchEvent(new failed.window.Event("submit", { cancelable: true }));
+    await until(() => !retry.getElementById("app")!.hidden);
+    assert.equal(retry.getElementById("login-error")!.textContent, "", "manual retry works and duplicate submissions do not start competing connections");
+    const connectedBeforeCancel = sockets.size;
+    const cancelled = await open(JSON.stringify({ name: "cancel-human", password: server.password }), undefined, true);
+    const cancel = cancelled.window.document;
+    await until(() => sockets.size === connectedBeforeCancel && cancel.getElementById("login-error")!.textContent === "Saved login removed.");
+    assert.equal(cancel.getElementById("app")!.hidden, true); assert.equal(cancel.title, "Sideband chat");
+    assert.equal(cancelled.window.localStorage.getItem("sideband.login.v1"), null, "cancelled auto-login cannot save forgotten credentials again");
+    assert.equal(cancelled.window.sessionStorage.getItem("sideband.identity.v1"), null);
+    assert.equal((cancel.getElementById("password") as HTMLInputElement).value, ""); assert.equal((cancel.getElementById("login-button") as HTMLButtonElement).disabled, false);
     assert.deepEqual(errors, []);
   } finally { for (const socket of sockets) socket.terminate(); for (const page of pages) page.window.close(); await agent.close(); await server.close(); }
 });

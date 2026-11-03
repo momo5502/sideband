@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const user = $("username"), password = $("password"), message = $("message");
 const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1";
 const markdown = messageMarkdown(window);
-let client, joining = false, loadingHistory = false;
+let client, connecting, joining = false, loadingHistory = false;
 let backlog = [], seen = new Set();
 const mobile = window.matchMedia?.("(max-width:650px)");
 function setMenu(open, restoreFocus = false) {
@@ -73,6 +73,7 @@ function error(value, login = false) { const text = value instanceof Error ? val
 else
     notice(text); }
 function setRoom() {
+    document.title = client?.room ? `${client.room.name} — Sideband` : "Sideband chat";
     $("room-title").textContent = client?.room?.name || "Choose a room";
     $("leave").hidden = !client?.room;
     message.disabled = !client?.room || joining;
@@ -195,6 +196,8 @@ async function join(room) {
 }
 async function login() {
     const loginButton = $("login-button");
+    if (client || connecting || loginButton.disabled)
+        return;
     loginButton.disabled = true;
     $("login-error").textContent = "";
     let candidate;
@@ -209,10 +212,15 @@ async function login() {
         catch { /* Start a fresh identity. */ }
         secretKey ??= crypto.getRandomValues(new Uint8Array(32));
         candidate = new BrowserRoomClient(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/browser-ws`, enteredPassword, name, secretKey);
+        connecting = candidate;
         candidate.onMessage = receive;
         candidate.onPresence = receive;
         candidate.onError = value => error(value);
         await candidate.connect();
+        if (connecting !== candidate) {
+            candidate.disconnect();
+            return;
+        }
         client = candidate;
         storage("localStorage", "set", savedKey, JSON.stringify({ name, password: enteredPassword }));
         storage("sessionStorage", "set", tabKey, JSON.stringify({ name, key: base64(secretKey) }));
@@ -226,7 +234,7 @@ async function login() {
             if (client !== candidate)
                 return;
             client = undefined;
-            clearWebhook();
+            setRoom();
             $("app").hidden = true;
             $("login-panel").hidden = false;
             document.body.classList.remove("chatting");
@@ -240,9 +248,12 @@ async function login() {
         await rooms();
     }
     catch (value) {
+        if (candidate && connecting !== candidate)
+            return;
         if (client === candidate)
             client = undefined;
         candidate?.disconnect();
+        setRoom();
         $("app").hidden = true;
         $("login-panel").hidden = false;
         document.body.classList.remove("chatting");
@@ -251,11 +262,24 @@ async function login() {
         error(value, true);
     }
     finally {
-        loginButton.disabled = false;
+        if (!candidate || connecting === candidate) {
+            connecting = undefined;
+            loginButton.disabled = false;
+        }
     }
 }
 $("login-form").addEventListener("submit", event => { event.preventDefault(); void login(); });
-$("forget").addEventListener("click", () => { storage("localStorage", "remove", savedKey); storage("sessionStorage", "remove", tabKey); password.value = ""; user.value = ""; $("login-error").textContent = "Saved login removed."; });
+$("forget").addEventListener("click", () => {
+    const pending = connecting;
+    connecting = undefined;
+    pending?.disconnect();
+    $("login-button").disabled = false;
+    storage("localStorage", "remove", savedKey);
+    storage("sessionStorage", "remove", tabKey);
+    password.value = "";
+    user.value = "";
+    $("login-error").textContent = "Saved login removed.";
+});
 $("refresh").addEventListener("click", () => { void rooms().catch(error); });
 $("join-form").addEventListener("submit", event => { event.preventDefault(); const input = $("room-name"); const name = input.value.trim(); if (name)
     void join(name).then(() => { input.value = ""; }); });
@@ -265,7 +289,7 @@ for (const id of ["leave", "menu-leave"])
 $("logout").addEventListener("click", () => {
     const previous = client;
     client = undefined;
-    clearWebhook();
+    setRoom();
     previous?.disconnect();
     storage("sessionStorage", "remove", tabKey);
     $("app").hidden = true;
@@ -321,14 +345,6 @@ message.addEventListener("keydown", event => { if (event.key === "Enter" && !eve
     if (!$("send").disabled)
         $("compose").requestSubmit();
 } });
-try {
-    const saved = JSON.parse(storage("localStorage", "get", savedKey) || "null");
-    if (typeof saved?.name === "string" && typeof saved.password === "string") {
-        user.value = saved.name;
-        password.value = saved.password;
-    }
-}
-catch { /* Ignore corrupt browser state. */ }
 $("menu-toggle").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open"), true));
 for (const id of ["menu-close", "menu-backdrop"])
     $(id).addEventListener("click", () => setMenu(false, true));
@@ -356,4 +372,14 @@ document.addEventListener("keydown", event => {
 });
 mobile?.addEventListener("change", () => setMenu(!client?.room));
 setMenu(false);
+try {
+    const saved = JSON.parse(storage("localStorage", "get", savedKey) || "null");
+    if (typeof saved?.name === "string" && typeof saved.password === "string") {
+        user.value = saved.name;
+        password.value = saved.password;
+        if (password.value.trim())
+            void login();
+    }
+}
+catch { /* Ignore corrupt browser state. */ }
 //# sourceMappingURL=browser-ui.js.map
