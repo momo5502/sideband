@@ -2,10 +2,13 @@ import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
 import { messageMarkdown } from "./browser-markdown.js";
 const $ = (id) => document.getElementById(id);
 const user = $("username"), password = $("password"), message = $("message");
-const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1";
+const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1", roomsKey = "sideband.rooms.v1";
 const markdown = messageMarkdown(window);
 let client, connecting, joining = false, loadingHistory = false;
 let backlog = [], seen = new Set();
+let historyGeneration = 0;
+let availableRooms = [];
+const mentions = new Map(), pinged = new Set(), notifications = new Map();
 const mobile = window.matchMedia?.("(max-width:650px)");
 function setMenu(open, restoreFocus = false) {
     const expanded = !!mobile?.matches && !!client && open;
@@ -72,6 +75,84 @@ function error(value, login = false) { const text = value instanceof Error ? val
     $("login-error").textContent = text;
 else
     notice(text); }
+function saveRooms(owner = client) {
+    if (owner)
+        storage("sessionStorage", "set", roomsKey, JSON.stringify({ name: owner.identity.name ?? "", rooms: [...owner.joinedRooms.values()].map(room => room.name), active: owner.room?.name ?? null,
+            pings: [...owner.joinedRooms.values()].filter(room => mentions.has(room.id)).map(room => ({ room: room.name, count: mentions.get(room.id) })) }));
+}
+function updateRoomButtons() {
+    for (const button of $("room-list").querySelectorAll("button[data-room-id]")) {
+        const id = button.dataset.roomId, joined = !!client?.joinedRooms.has(id), count = mentions.get(id) ?? 0;
+        button.classList.toggle("joined", joined);
+        button.dataset.joined = String(joined);
+        button.title = joined ? "Joined — click to view" : "Click to join";
+        if (id === client?.room?.id)
+            button.setAttribute("aria-current", "true");
+        else
+            button.removeAttribute("aria-current");
+        const badge = button.querySelector(".mention-badge");
+        badge.hidden = count === 0;
+        badge.textContent = count > 99 ? "@99+" : `@${count}`;
+        badge.setAttribute("aria-label", `${count} unread ${count === 1 ? "mention" : "mentions"}`);
+    }
+}
+function markRead(id) { mentions.delete(id); notifications.get(id)?.close(); notifications.delete(id); updateRoomButtons(); saveRooms(); }
+function updateNotifications() {
+    const button = $("notifications"), status = $("notification-status");
+    button.textContent = "Enable desktop notifications";
+    button.disabled = true;
+    if (client && !client.identity.name) {
+        status.textContent = "Connect with a username to receive @mentions.";
+        return;
+    }
+    if (window.isSecureContext === false) {
+        status.textContent = "Desktop notifications need HTTPS or localhost. Mention badges still work.";
+        return;
+    }
+    if (typeof Notification === "undefined") {
+        status.textContent = "Desktop notifications are unavailable in this browser. Mention badges still work.";
+        return;
+    }
+    if (Notification.permission === "granted") {
+        button.textContent = "Desktop notifications enabled";
+        status.textContent = "Mentions notify you while this client is open.";
+    }
+    else if (Notification.permission === "denied")
+        status.textContent = "Notifications are blocked. Enable them in your browser's site settings.";
+    else {
+        button.disabled = false;
+        status.textContent = "Get notified when someone mentions @yourUsername.";
+    }
+}
+function ping(item) {
+    const owner = client, username = owner?.identity.name;
+    const key = `${item.roomId}:${item.id}`;
+    if (!owner || !username || item.sender.id === owner.identity.id || pinged.has(key))
+        return;
+    if (!new RegExp(`(^|[^a-zA-Z0-9_@-])@${username}(?![a-zA-Z0-9_-])`, "i").test(item.text))
+        return;
+    pinged.add(key);
+    if (pinged.size > 10000)
+        pinged.delete(pinged.values().next().value);
+    mentions.set(item.roomId, (mentions.get(item.roomId) ?? 0) + 1);
+    updateRoomButtons();
+    saveRooms();
+    if (window.isSecureContext === false || typeof Notification === "undefined" || Notification.permission !== "granted")
+        return;
+    try {
+        const room = owner.joinedRooms.get(item.roomId);
+        if (!room)
+            return;
+        notifications.get(room.id)?.close();
+        const notification = new Notification(`${label(item.sender)} mentioned you in ${room.name}`, { body: Array.from(item.text).slice(0, 240).join(""), tag: `sideband:${room.id}`, renotify: true });
+        notifications.set(room.id, notification);
+        notification.onclick = () => { notification.close(); window.focus(); if (client === owner)
+            void join(room.id); };
+    }
+    catch {
+        $("notification-status").textContent = "A desktop notification could not be displayed. Your mention badge is still available.";
+    }
+}
 function setRoom() {
     document.title = client?.room ? `${client.room.name} — Sideband` : "Sideband chat";
     $("room-title").textContent = client?.room?.name || "Choose a room";
@@ -117,43 +198,77 @@ function render(item) {
     if (nearBottom)
         log.scrollTop = log.scrollHeight;
 }
-function receive(item) { if (loadingHistory) {
-    if (backlog.length < 1000)
-        backlog.push(item);
+function receive(item) {
+    if (!("kind" in item))
+        ping(item);
+    if (loadingHistory) {
+        if (backlog.length < 1000)
+            backlog.push(item);
+    }
+    else
+        render(item);
 }
-else
-    render(item); }
 async function history() {
+    const owner = client, room = owner?.room;
+    if (!owner || !room)
+        return;
+    const generation = ++historyGeneration;
     loadingHistory = true;
     backlog = [];
     seen.clear();
     $("messages").replaceChildren();
     try {
-        for (const item of await client.history())
-            render(item);
+        const items = await owner.history();
+        if (client === owner && owner.room?.id === room.id && generation === historyGeneration)
+            for (const item of items)
+                render(item);
     }
     finally {
-        loadingHistory = false;
-        for (const item of backlog)
-            render(item);
-        backlog = [];
-        $("messages").scrollTop = $("messages").scrollHeight;
+        if (generation === historyGeneration) {
+            loadingHistory = false;
+            if (client === owner)
+                for (const item of backlog)
+                    render(item);
+            backlog = [];
+            $("messages").scrollTop = $("messages").scrollHeight;
+        }
     }
 }
 async function rooms() {
     if (!client)
         return;
-    const list = await client.rooms();
+    const owner = client, list = await owner.rooms();
+    if (client !== owner)
+        return;
+    availableRooms = list;
+    for (const room of list)
+        if (owner.joinedRooms.has(room.id))
+            owner.joinedRooms.set(room.id, room);
+    drawRooms();
+}
+function drawRooms() {
+    if (!client)
+        return;
+    const focus = document.activeElement?.dataset.roomId;
+    const list = [...new Map([...availableRooms, ...client.joinedRooms.values()].map(room => [room.id, room])).values()];
     $("room-list").replaceChildren();
     for (const room of list) {
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = `${room.name} · ${room.members}`;
-        if (room.id === client.room?.id)
-            button.setAttribute("aria-current", "true");
+        button.dataset.roomId = room.id;
+        const title = document.createElement("span");
+        title.className = "room-label";
+        title.textContent = `${room.name} · ${room.members}`;
+        const badge = document.createElement("span");
+        badge.className = "mention-badge";
+        badge.hidden = true;
+        button.append(title, badge);
         button.addEventListener("click", () => { void join(room.id); });
         $("room-list").append(button);
     }
+    updateRoomButtons();
+    if (focus)
+        [...$("room-list").querySelectorAll("button")].find(button => button.dataset.roomId === focus)?.focus();
     if (!list.length) {
         const empty = document.createElement("p");
         empty.className = "muted";
@@ -167,16 +282,25 @@ async function join(room) {
     joining = true;
     setRoom();
     notice("");
+    const owner = client;
     try {
         // Queue live events across the join/history boundary; history can overlap pushed messages.
         loadingHistory = true;
         backlog = [];
-        await client.join(room);
+        await owner.subscribe(room);
+        if (client !== owner)
+            return;
         setRoom();
+        saveRooms();
+        drawRooms();
         const pushed = backlog;
         await history();
         for (const item of pushed)
             render(item);
+        if (client !== owner)
+            return;
+        if (owner.room)
+            markRead(owner.room.id);
         await rooms();
         setMenu(false, true);
     }
@@ -203,6 +327,11 @@ async function login() {
     let candidate;
     try {
         const name = user.value.trim(), enteredPassword = password.value.trim();
+        let remembered;
+        try {
+            remembered = JSON.parse(storage("sessionStorage", "get", roomsKey) || "null") ?? undefined;
+        }
+        catch { /* Ignore corrupt room preferences. */ }
         let secretKey;
         try {
             const saved = JSON.parse(storage("sessionStorage", "get", tabKey) || "null");
@@ -213,15 +342,52 @@ async function login() {
         secretKey ??= crypto.getRandomValues(new Uint8Array(32));
         candidate = new BrowserRoomClient(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/browser-ws`, enteredPassword, name, secretKey);
         connecting = candidate;
-        candidate.onMessage = receive;
-        candidate.onPresence = receive;
-        candidate.onError = value => error(value);
+        candidate.onMessage = item => { if (client === candidate)
+            receive(item); };
+        candidate.onPresence = item => { if (client === candidate)
+            receive(item); };
+        candidate.onError = value => { if (client === candidate)
+            error(value); };
         await candidate.connect();
         if (connecting !== candidate) {
             candidate.disconnect();
             return;
         }
         client = candidate;
+        ++historyGeneration;
+        loadingHistory = false;
+        backlog = [];
+        seen.clear();
+        $("messages").replaceChildren();
+        availableRooms = [];
+        mentions.clear();
+        pinged.clear();
+        for (const notification of notifications.values())
+            notification.close();
+        notifications.clear();
+        if (remembered?.name === name && Array.isArray(remembered.rooms)) {
+            for (const room of remembered.rooms) {
+                if (typeof room !== "string" || !room || room.length > 100)
+                    continue;
+                if (![...candidate.joinedRooms.values()].some(joined => joined.name.toLowerCase() === room.toLowerCase()))
+                    await candidate.subscribe(room);
+                if (connecting !== candidate) {
+                    candidate.disconnect();
+                    return;
+                }
+            }
+            const active = remembered.active;
+            candidate.room = typeof active === "string" ? [...candidate.joinedRooms.values()].find(room => room.name.toLowerCase() === active.toLowerCase()) ?? null : null;
+            if (Array.isArray(remembered.pings))
+                for (const ping of remembered.pings) {
+                    if (!ping || typeof ping !== "object" || typeof ping.room !== "string" || !Number.isSafeInteger(ping.count) || ping.count <= 0)
+                        continue;
+                    const room = [...candidate.joinedRooms.values()].find(room => room.name.toLowerCase() === ping.room.toLowerCase());
+                    if (room)
+                        mentions.set(room.id, ping.count);
+                }
+        }
+        saveRooms();
         storage("localStorage", "set", savedKey, JSON.stringify({ name, password: enteredPassword }));
         storage("sessionStorage", "set", tabKey, JSON.stringify({ name, key: base64(secretKey) }));
         $("app").hidden = false;
@@ -229,10 +395,12 @@ async function login() {
         $("identity").replaceChildren("You: ", participantName(client.identity));
         document.body.classList.add("chatting");
         setMenu(!client.room);
+        updateNotifications();
         connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
         candidate.onClose = () => {
             if (client !== candidate)
                 return;
+            saveRooms(candidate);
             client = undefined;
             setRoom();
             $("app").hidden = true;
@@ -243,8 +411,11 @@ async function login() {
             $("login-error").textContent = "Connection closed. Connect again to rejoin.";
         };
         setRoom();
-        if (client.room)
+        if (client.room) {
             await history();
+            if (client === candidate && candidate.room)
+                markRead(candidate.room.id);
+        }
         await rooms();
     }
     catch (value) {
@@ -272,6 +443,15 @@ $("login-form").addEventListener("submit", event => { event.preventDefault(); vo
 $("forget").addEventListener("click", () => {
     const pending = connecting;
     connecting = undefined;
+    if (pending && client === pending) {
+        client = undefined;
+        setRoom();
+        $("app").hidden = true;
+        $("login-panel").hidden = false;
+        document.body.classList.remove("chatting");
+        setMenu(false);
+        connection("Disconnected");
+    }
     pending?.disconnect();
     $("login-button").disabled = false;
     storage("localStorage", "remove", savedKey);
@@ -279,19 +459,38 @@ $("forget").addEventListener("click", () => {
     password.value = "";
     user.value = "";
     $("login-error").textContent = "Saved login removed.";
+    storage("sessionStorage", "remove", roomsKey);
 });
 $("refresh").addEventListener("click", () => { void rooms().catch(error); });
 $("join-form").addEventListener("submit", event => { event.preventDefault(); const input = $("room-name"); const name = input.value.trim(); if (name)
     void join(name).then(() => { input.value = ""; }); });
 for (const id of ["leave", "menu-leave"])
-    $(id).addEventListener("click", () => { if (joining || !client)
-        return; void client.leave().then(async () => { setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error); });
+    $(id).addEventListener("click", () => {
+        if (joining || !client)
+            return;
+        const owner = client, room = owner.room;
+        void owner.leave().then(async () => { if (client !== owner)
+            return; if (room)
+            markRead(room.id); saveRooms(); setRoom(); $("messages").replaceChildren(); await rooms(); setMenu(true); }).catch(error);
+    });
+$("notifications").addEventListener("click", () => {
+    if (typeof Notification === "undefined" || window.isSecureContext === false)
+        return;
+    $("notifications").disabled = true;
+    void Notification.requestPermission().then(updateNotifications).catch(value => { updateNotifications(); error(value); });
+});
 $("logout").addEventListener("click", () => {
     const previous = client;
     client = undefined;
     setRoom();
     previous?.disconnect();
     storage("sessionStorage", "remove", tabKey);
+    storage("sessionStorage", "remove", roomsKey);
+    mentions.clear();
+    pinged.clear();
+    for (const notification of notifications.values())
+        notification.close();
+    notifications.clear();
     $("app").hidden = true;
     $("login-panel").hidden = false;
     document.body.classList.remove("chatting");
@@ -371,6 +570,7 @@ document.addEventListener("keydown", event => {
     }
 });
 mobile?.addEventListener("change", () => setMenu(!client?.room));
+window.addEventListener("focus", updateNotifications);
 setMenu(false);
 try {
     const saved = JSON.parse(storage("localStorage", "get", savedKey) || "null");

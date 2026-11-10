@@ -14,9 +14,9 @@ import {
   type AgentIdentity, type Room, type SignedMessage, type PresenceKind,
 } from "./room-protocol.js";
 
-type Member = { identity: AgentIdentity; roomId?: string; socket?: WebSocket; expiry?: NodeJS.Timeout };
+type Member = { identity: AgentIdentity; roomIds: Set<string>; roomId?: string; socket?: WebSocket; expiry?: NodeJS.Timeout };
 type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
-type Connection = { alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
+type Connection = { browser: boolean; alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
 export type RoomServerOptions = { host?: string; port?: number; statusPort?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
   credentialsFile?: string; rotatePassword?: boolean };
 
@@ -64,7 +64,7 @@ export class RoomServer {
     if ((!browser && !native) || this.stopping || this.connections.size >= (this.options.maxClients ?? 1024)) {
       socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
     }
-    this.ws.handleUpgrade(req, socket, head, client => this.accept(client));
+    this.ws.handleUpgrade(req, socket, head, client => this.accept(client, browser));
   }
   static async start(options: RoomServerOptions = {}): Promise<RoomServer> {
     if (options.rotatePassword && !options.credentialsFile) throw new Error("Password rotation requires a credentials file.");
@@ -186,9 +186,9 @@ export class RoomServer {
     if (socket.bufferedAmount > 1024 * 1024) { socket.terminate(); return; }
     socket.send(JSON.stringify({ v: VERSION, ...packet }));
   }
-  private accept(socket: WebSocket): void {
+  private accept(socket: WebSocket, browser: boolean): void {
     const connection: Connection = {
-      alive: true, challenge: randomBytes(32).toString("base64url"), tokens: 200, lastRefill: Date.now(),
+      browser, alive: true, challenge: randomBytes(32).toString("base64url"), tokens: 200, lastRefill: Date.now(),
       authTimer: setTimeout(() => socket.close(1008, "Authentication required"), this.options.authTimeoutMs ?? 5000),
     };
     connection.authTimer.unref();
@@ -248,10 +248,11 @@ export class RoomServer {
       if (reserved && reserved !== candidate.id) throw new RoomError("NAME_IN_USE", "That agent name is already registered. Choose another name.");
       let member = this.members.get(candidate.id);
       const resumed = !!member;
+      if (!connection.browser && member && member.roomIds.size > 1) throw new RoomError("IDENTITY_MODE", "This identity is joined to multiple rooms in the browser.");
       if (member && member.identity.name !== candidate.name) throw new RoomError("IDENTITY_NAME", "An active identity cannot change its name.");
       if (!member) {
         if (this.members.size >= (this.options.maxClients ?? 1024)) throw new RoomError("CAPACITY", "Server client capacity reached.");
-        member = { identity: candidate };
+        member = { identity: candidate, roomIds: new Set() };
         this.members.set(candidate.id, member);
         if (candidate.name) this.names.set(candidate.name.toLowerCase(), candidate.id);
       }
@@ -261,10 +262,12 @@ export class RoomServer {
       prior?.close(4001, "Reconnected elsewhere");
       clearTimeout(connection.authTimer);
       if (resumed && !prior) this.presence(member, "reconnected");
-      return { identity: member.identity, room: member.roomId ? this.summary(this.rooms.get(member.roomId)!) : null, resumed };
+      return { identity: member.identity, room: member.roomId ? this.summary(this.rooms.get(member.roomId)!) : null, resumed,
+        ...(connection.browser ? { rooms: [...member.roomIds].map(id => this.summary(this.rooms.get(id)!)) } : {}) };
     }
     const member = connection.member;
     if (!member || member.socket !== socket) throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
+    if (["subscribe", "room_leave", "room_history", "room_send"].includes(method) && !connection.browser) throw new RoomError("UNKNOWN_METHOD", "This operation is available to browser clients only.");
     switch (method) {
       case "webhook": {
         const args = fields(params, ["room", "sender"]);
@@ -281,7 +284,8 @@ export class RoomServer {
         const room: RoomState = { id: randomUUID(), name, members: new Set(), history: [] };
         this.rooms.set(room.id, room); this.join(member, room); return this.summary(room);
       }
-      case "join": {
+      case "join":
+      case "subscribe": {
         const args = fields(params, ["room"]); const target = text(args.room, "room", 100).trim();
         if (!target || /[\x00-\x1f\x7f]/.test(target)) throw new RoomError("INVALID_ARGUMENT", "Invalid room name.");
         let room = this.rooms.get(target) ?? [...this.rooms.values()].find((room) => room.name.toLowerCase() === target.toLowerCase());
@@ -291,19 +295,26 @@ export class RoomServer {
           room = { id: randomUUID(), name: target, members: new Set(), history: [] };
           this.rooms.set(room.id, room);
         }
-        this.join(member, room); return this.summary(room);
+        if (method === "subscribe") this.subscribe(member, room); else this.join(member, room);
+        return this.summary(room);
+      }
+      case "room_leave": {
+        const args = fields(params, ["room"]); const room = this.memberRoom(member, args.room);
+        this.leave(member, room.id); return { left: true };
       }
       case "leave": fields(params, []); this.leave(member); return { left: true };
       case "logout": fields(params, []); this.remove(member); connection.member = undefined; return { loggedOut: true };
       case "members": fields(params, []); return [...this.currentRoom(member).members].map((id) => ({ ...this.members.get(id)!.identity, connected: !!this.members.get(id)!.socket }));
-      case "history": {
-        const args = fields(params, ["limit"]); const limit = args.limit ?? 50;
+      case "history":
+      case "room_history": {
+        const args = fields(params, method === "room_history" ? ["room", "limit"] : ["limit"]); const limit = args.limit ?? 50;
         if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 50) throw new RoomError("INVALID_ARGUMENT", "History limit must be 1-50.");
-        return this.currentRoom(member).history.slice(-(limit as number));
+        return (method === "room_history" ? this.memberRoom(member, args.room) : this.currentRoom(member)).history.slice(-(limit as number));
       }
-      case "send": {
-        const args = fields(params, ["id", "text", "signature"]);
-        const room = this.currentRoom(member);
+      case "send":
+      case "room_send": {
+        const args = fields(params, method === "room_send" ? ["room", "id", "text", "signature"] : ["id", "text", "signature"]);
+        const room = method === "room_send" ? this.memberRoom(member, args.room) : this.currentRoom(member);
         const id = text(args.id, "message ID", 64);
         const body = text(args.text, "message", MAX_TEXT_BYTES);
         if (!body.trim() || Buffer.byteLength(body) > MAX_TEXT_BYTES) throw new RoomError("INVALID_ARGUMENT", "Message must be nonempty and at most 8192 UTF-8 bytes.");
@@ -321,33 +332,46 @@ export class RoomServer {
     }
   }
   private summary(room: RoomState): Room { return { id: room.id, name: room.name, members: room.members.size }; }
+  private memberRoom(member: Member, value: unknown): RoomState {
+    const id = text(value, "room ID", 64), room = this.rooms.get(id);
+    if (!room || !member.roomIds.has(id)) throw new RoomError("NO_ROOM", "Join that room first.");
+    return room;
+  }
   private currentRoom(member: Member): RoomState {
     const room = member.roomId ? this.rooms.get(member.roomId) : undefined;
     if (!room) throw new RoomError("NO_ROOM", "Join a room first.");
     return room;
   }
   private join(member: Member, room: RoomState): void {
-    if (member.roomId === room.id) return;
-    this.leave(member); member.roomId = room.id; room.members.add(member.identity.id);
-    this.presence(member, "joined");
+    if (member.roomId === room.id && member.roomIds.size === 1) return;
+    this.leave(member); this.rooms.set(room.id, room); this.subscribe(member, room);
   }
-  private presence(member: Member, kind: PresenceKind): void {
-    const room = member.roomId ? this.rooms.get(member.roomId) : undefined;
-    if (!room || this.stopping) return;
-    const data = { id: randomUUID(), roomId: room.id, kind, participant: member.identity, createdAt: Date.now() };
-    for (const id of room.members) {
-      if (id === member.identity.id) continue;
-      const peer = this.members.get(id);
-      if (peer?.socket) this.send(peer.socket, { event: "presence", data });
+  private subscribe(member: Member, room: RoomState): void {
+    member.roomId = room.id;
+    if (member.roomIds.has(room.id)) return;
+    member.roomIds.add(room.id); room.members.add(member.identity.id);
+    this.presence(member, "joined", room.id);
+  }
+  private presence(member: Member, kind: PresenceKind, roomId?: string): void {
+    if (this.stopping) return;
+    for (const target of roomId ? [roomId] : member.roomIds) {
+      const room = this.rooms.get(target); if (!room) continue;
+      const data = { id: randomUUID(), roomId: room.id, kind, participant: member.identity, createdAt: Date.now() };
+      for (const id of room.members) {
+        if (id === member.identity.id) continue;
+        const peer = this.members.get(id);
+        if (peer?.socket) this.send(peer.socket, { event: "presence", data });
+      }
     }
   }
-  private leave(member: Member): void {
-    if (!member.roomId) return;
-    // A crashed peer was already announced on disconnect; expiry is not a second departure.
-    if (member.socket) this.presence(member, "left");
-    const room = this.rooms.get(member.roomId); room?.members.delete(member.identity.id);
-    if (room?.members.size === 0) this.rooms.delete(room.id);
-    member.roomId = undefined;
+  private leave(member: Member, roomId?: string): void {
+    for (const id of roomId ? [roomId] : [...member.roomIds]) {
+      // A crashed peer was already announced on disconnect; expiry is not a second departure.
+      if (member.socket) this.presence(member, "left", id);
+      const room = this.rooms.get(id); room?.members.delete(member.identity.id);
+      if (room?.members.size === 0) this.rooms.delete(room.id);
+      member.roomIds.delete(id); if (member.roomId === id) member.roomId = undefined;
+    }
   }
   private remove(member: Member): void {
     if (member.expiry) clearTimeout(member.expiry);

@@ -8,7 +8,7 @@ export type SignedMessage = { id: string; roomId: string; sender: AgentIdentity;
 export type PresenceKind = "joined" | "left" | "disconnected" | "reconnected";
 /** Server-observed membership, not a participant-authored or signed message. */
 export type PresenceEvent = { id: string; roomId: string; kind: PresenceKind; participant: AgentIdentity; createdAt: number };
-export type Login = { identity: AgentIdentity; room: Room | null; resumed: boolean };
+export type Login = { identity: AgentIdentity; room: Room | null; rooms?: Room[]; resumed: boolean };
 export type ConnectionProfile = { server: string; password: string };
 export class RoomError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "RoomError"; }

@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 const root = resolve(process.argv[2] ?? ".cache/install-check/node_modules/sideband");
 const entry = process.argv[3] ? resolve(process.argv[3]) : join(root, "dist/src/cli.js");
 const { RoomClient } = await import(pathToFileURL(join(root, "dist/src/room-client.js")).href);
+const { BrowserRoomClient } = await import(pathToFileURL(join(root, "dist/src/browser-protocol.js")).href);
+const { default: NodeWebSocket } = await import("ws");
 const state = await mkdtemp(join(tmpdir(), "sideband-smoke-server-"));
 const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0"], {
   env: { ...process.env, SIDEBAND_STATE_DIR: state }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -77,7 +79,26 @@ try {
   const deadline = Date.now() + 3000;
   while (!webhookReceived) { if (Date.now() > deadline) throw new Error("Installed webhook push did not arrive."); await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.equal((await bob.history()).length, 2);
-  console.log("Installed npm package: server startup, generated credential, pinned TLS, signed client login, room join, live push, history, public status, embedded browser app and signed YAML webhook delivery all passed.");
+  const origin = `http://127.0.0.1:${profile.statusPort}`;
+  const web = new BrowserRoomClient(origin.replace("http:", "ws:") + "/browser-ws", profile.password, "installed-web-user", undefined, url => new NodeWebSocket(url, { origin }));
+  clients.push({ close: async () => web.disconnect() }); await web.connect();
+  const firstRoom = await web.subscribe("installed-smoke"), secondRoom = await web.subscribe("installed-second");
+  assert.equal(web.joinedRooms.size, 2);
+  let backgroundPush;
+  web.onMessage = message => { if (message.text === "@installed-web-user background mention") backgroundPush = message; };
+  await alice.send("@installed-web-user background mention");
+  const pushedBy = Date.now() + 3000;
+  while (!backgroundPush) { if (Date.now() > pushedBy) throw new Error("Installed multi-room browser push timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
+  assert.equal(backgroundPush.roomId, firstRoom.id);
+  await web.send("Only in the second room"); assert.deepEqual((await web.history()).map(message => message.text), ["Only in the second room"]);
+  // Collapsing to a legacy single-room join must retain a room owned solely by this browser.
+  await web.join(secondRoom.id); assert.ok((await web.rooms()).some(room => room.id === secondRoom.id));
+  await web.subscribe(firstRoom.id); await web.leave(); assert.deepEqual([...web.joinedRooms.keys()], [secondRoom.id]);
+  web.disconnect();
+  const loggedOutBy = Date.now() + 3000;
+  while ((await alice.listRooms()).some(room => room.id === secondRoom.id)) { if (Date.now() > loggedOutBy) throw new Error("Installed browser memberships did not clean up."); await new Promise(resolve => setTimeout(resolve, 10)); }
+  assert.equal((await alice.members()).length, 2);
+  console.log("Installed npm package: server, pinned TLS, signed push/history, status, browser assets, YAML webhooks, multi-room browser delivery and membership cleanup passed.");
 } finally {
   clearTimeout(timer); await Promise.all(clients.map((client) => client.close())); child.kill();
   await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once("exit", resolve); });

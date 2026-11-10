@@ -62,6 +62,46 @@ for (const tls of [false, true]) test(`browser chat over ${tls ? "HTTPS" : "HTTP
     await resumed.leave(); await resumed.join("new-room"); assert.equal(resumed.room?.name, "new-room");
   } finally { web.disconnect(); other.disconnect(); resumed?.disconnect(); await agent.close(); await server.close(); }
 });
+for (const tls of [false, true]) test(`browser multi-room subscriptions over ${tls ? "HTTPS" : "HTTP"} share one identity and preserve room authorization`, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, graceMs: 3000 });
+  const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, key = crypto.getRandomValues(new Uint8Array(32));
+  const web = browser(server, tls, undefined, "multi-human", key);
+  const a = new RoomClient(profile, "agent-a"), b = new RoomClient(profile, "agent-b"), outside = new RoomClient(profile, "outside");
+  let resumed: BrowserRoomClient | undefined;
+  try {
+    await a.connect(); await b.connect(); await outside.connect(); await web.connect();
+    const alpha = await a.joinRoom("alpha"), beta = await b.joinRoom("beta"), other = await outside.joinRoom("other");
+    await web.subscribe(alpha.id); await web.subscribe(beta.id);
+    assert.equal(web.joinedRooms.size, 2); assert.equal(web.room!.id, beta.id);
+    assert.ok((await a.members()).some(member => member.id === web.identity.id)); assert.ok((await b.members()).some(member => member.id === web.identity.id));
+    const received: SignedMessage[] = []; web.onMessage = message => received.push(message);
+    await a.send("alpha message"); await b.send("beta message");
+    const deadline = Date.now() + 4000;
+    while (received.length !== 2) { if (Date.now() > deadline) throw new Error("Multi-room push timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
+    assert.deepEqual(new Set(received.map(message => message.roomId)), new Set([alpha.id, beta.id])); assert.ok(received.every(browserVerify));
+    assert.deepEqual((await web.history()).map(message => message.text), ["beta message"]);
+    const signed = await web.send("beta reply"); assert.equal(verifyMessage(signed), true);
+    await assert.rejects(web.request("room_history", { room: other.id }), /Join that room first/);
+    await assert.rejects(web.request("room_leave", { room: other.id }), /Join that room first/);
+    await assert.rejects(web.request("room_send", { room: other.id, id: signed.id, text: signed.text, signature: signed.signature }), /Join that room first/);
+    await assert.rejects(web.request("room_send", { room: alpha.id, id: signed.id, text: signed.text, signature: signed.signature }), /signature is invalid/);
+    await assert.rejects((a as any).request("subscribe", { room: beta.id }), /browser clients only/);
+    assert.equal(a.room!.id, alpha.id); assert.equal((await a.members()).length, 2); assert.equal((await b.members()).length, 2);
+    resumed = browser(server, tls, undefined, "multi-human", key); await resumed.connect();
+    assert.deepEqual(new Set(resumed.joinedRooms.keys()), new Set([alpha.id, beta.id])); assert.equal(resumed.room!.id, beta.id);
+    await resumed.leave(); assert.equal(resumed.room, null); assert.deepEqual([...resumed.joinedRooms.keys()], [alpha.id]);
+    assert.equal((await b.members()).length, 1); assert.equal((await a.members()).length, 2);
+    await resumed.subscribe("human-only"); await resumed.leave(); assert.ok(!(await resumed.rooms()).some(room => room.name === "human-only"));
+    // Legacy join still collapses memberships to one room for old clients.
+    await resumed.subscribe(beta.id); await resumed.join(alpha.id);
+    assert.equal(resumed.joinedRooms.size, 1); assert.equal((await a.members()).length, 2); assert.equal((await b.members()).length, 1);
+    await resumed.subscribe(beta.id); resumed.disconnect();
+    // Wait behind logout using a separate connection, rather than assuming the socket has already closed.
+    const end = Date.now() + 4000;
+    while ((await a.members()).length !== 1 || (await b.members()).length !== 1) { if (Date.now() > end) throw new Error("Multi-room logout timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
+  } finally { web.disconnect(); resumed?.disconnect(); await a.close(); await b.close(); await outside.close(); await server.close(); }
+});
+
 test("browser login rejects wrong passwords, certificate identity and duplicate names", async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const good = browser(server, false); const duplicate = browser(server, false);

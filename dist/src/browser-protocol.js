@@ -31,12 +31,14 @@ export class BrowserRoomClient {
     makeSocket;
     identity;
     room = null;
+    joinedRooms = new Map();
     onMessage = () => { };
     onPresence = () => { };
     onClose = () => { };
     onError = () => { };
     socket;
     authenticated = false;
+    multiRoom = false;
     pending = new Map();
     constructor(endpoint, password, name, key = crypto.getRandomValues(new Uint8Array(32)), makeSocket = (url) => new WebSocket(url)) {
         this.endpoint = endpoint;
@@ -71,10 +73,10 @@ export class BrowserRoomClient {
                 else if (this.authenticated && packet.event === "message") {
                     if (!browserVerify(packet.data))
                         throw new Error("Rejected a message with an invalid signature.");
-                    if (packet.data.roomId === this.room?.id && packet.data.sender.id !== this.identity.id)
+                    if (this.joinedRooms.has(packet.data.roomId) && packet.data.sender.id !== this.identity.id)
                         this.onMessage(packet.data);
                 }
-                else if (this.authenticated && packet.event === "presence" && packet.data.roomId === this.room?.id && packet.data.participant.id !== this.identity.id) {
+                else if (this.authenticated && packet.event === "presence" && this.joinedRooms.has(packet.data.roomId) && packet.data.participant.id !== this.identity.id) {
                     this.onPresence(packet.data);
                 }
             }
@@ -114,6 +116,10 @@ export class BrowserRoomClient {
                 throw new Error("Invalid server identity response.");
             this.authenticated = true;
             this.room = login.room;
+            this.joinedRooms.clear();
+            for (const room of login.rooms ?? (login.room ? [login.room] : []))
+                this.joinedRooms.set(room.id, room);
+            this.multiRoom = !!login.rooms?.length;
         }
         catch (error) {
             socket.close();
@@ -134,12 +140,44 @@ export class BrowserRoomClient {
     async join(room) {
         const joined = await this.request("join", { room });
         this.room = joined;
+        this.multiRoom = false;
+        this.joinedRooms.clear();
+        this.joinedRooms.set(joined.id, joined);
         return joined;
     }
-    async leave() { await this.request("leave"); this.room = null; }
+    async subscribe(room) {
+        let joined;
+        try {
+            joined = await this.request("subscribe", { room });
+        }
+        catch (error) {
+            if (error.code === "UNKNOWN_METHOD")
+                throw new Error("Update the Sideband server to support multiple browser rooms.");
+            throw error;
+        }
+        this.multiRoom = true;
+        this.joinedRooms.set(joined.id, joined);
+        this.room = joined;
+        return joined;
+    }
+    async leave() {
+        const room = this.room;
+        if (!room)
+            return;
+        await this.request(this.multiRoom ? "room_leave" : "leave", this.multiRoom ? { room: room.id } : {});
+        if (this.multiRoom)
+            this.joinedRooms.delete(room.id);
+        else
+            this.joinedRooms.clear();
+        if (this.room?.id === room.id)
+            this.room = null;
+    }
     async history() {
-        const messages = await this.request("history");
-        if (!Array.isArray(messages) || !messages.every(message => message.roomId === this.room?.id && browserVerify(message)))
+        const room = this.room;
+        if (!room)
+            throw new Error("Join a room first.");
+        const messages = await this.request(this.multiRoom ? "room_history" : "history", this.multiRoom ? { room: room.id } : {});
+        if (!Array.isArray(messages) || !messages.every(message => message.roomId === room.id && browserVerify(message)))
             throw new Error("Invalid history signatures.");
         return messages;
     }
@@ -150,7 +188,7 @@ export class BrowserRoomClient {
             throw new Error("Message must be nonempty and at most 8192 UTF-8 bytes.");
         const unsigned = { id: randomId(), roomId: this.room.id, sender: this.identity, text };
         const message = { ...unsigned, signature: base64(ed25519.sign(encode(proof(unsigned)), this.key)), createdAt: Date.now() };
-        await this.request("send", { id: message.id, text, signature: message.signature });
+        await this.request(this.multiRoom ? "room_send" : "send", { ...(this.multiRoom ? { room: message.roomId } : {}), id: message.id, text, signature: message.signature });
         return message;
     }
     disconnect() {
@@ -158,6 +196,7 @@ export class BrowserRoomClient {
             this.socket.send(JSON.stringify({ v: 1, id: randomId(), method: "logout", params: {} }));
         this.socket?.close();
         this.room = null;
+        this.joinedRooms.clear();
     }
 }
 //# sourceMappingURL=browser-protocol.js.map
