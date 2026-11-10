@@ -88,8 +88,9 @@ export default function sideband(api, profiles = new RoomProfiles()) {
         const shape = {};
         for (const [name, raw] of Object.entries(tool.inputSchema.properties ?? {})) {
             const field = raw;
+            const types = Array.isArray(field.type) ? field.type : [field.type];
             let schema;
-            if (field.type === "integer") {
+            if (types.includes("integer")) {
                 let number = api.zod.number().int();
                 if (field.minimum !== undefined)
                     number = number.min(field.minimum);
@@ -107,6 +108,8 @@ export default function sideband(api, profiles = new RoomProfiles()) {
                     string = string.regex(new RegExp(field.pattern));
                 schema = string;
             }
+            if (types.includes("null"))
+                schema = schema.nullable();
             if (field.description)
                 schema = schema.describe(field.description);
             shape[name] = tool.inputSchema.required?.includes(name) ? schema : schema.optional();

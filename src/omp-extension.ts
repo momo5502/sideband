@@ -109,9 +109,10 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles()): vo
   for (const tool of sidebandTools) {
     const shape: Record<string, zod.ZodType> = {};
     for (const [name, raw] of Object.entries(tool.inputSchema.properties ?? {})) {
-      const field = raw as { type: string; minLength?: number; maxLength?: number; pattern?: string; minimum?: number; maximum?: number; description?: string };
+      const field = raw as { type: string | string[]; minLength?: number; maxLength?: number; pattern?: string; minimum?: number; maximum?: number; description?: string };
+      const types = Array.isArray(field.type) ? field.type : [field.type];
       let schema: zod.ZodType;
-      if (field.type === "integer") {
+      if (types.includes("integer")) {
         let number = api.zod.number().int();
         if (field.minimum !== undefined) number = number.min(field.minimum);
         if (field.maximum !== undefined) number = number.max(field.maximum);
@@ -123,6 +124,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles()): vo
         if (field.pattern) string = string.regex(new RegExp(field.pattern));
         schema = string;
       }
+      if (types.includes("null")) schema = schema.nullable();
       if (field.description) schema = schema.describe(field.description);
       shape[name] = tool.inputSchema.required?.includes(name) ? schema : schema.optional();
     }

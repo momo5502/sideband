@@ -84,6 +84,18 @@ test("direct MCP joins connect once, create missing rooms, reuse identity and ne
     read(await call("sideband_deactivate"));
     read(await call("sideband_join_room", { room: "again", name: "worker" }));
     assert.notEqual(read(await call("sideband_status")).identity.id, first.identity.id);
+    for (const profile of [undefined, null, "", "only-server"]) {
+      read(await call("sideband_deactivate"));
+      const joined = read(await call("sideband_join_room", { room: "automatic", name: "worker", ...(profile === undefined ? {} : { profile }) }));
+      assert.equal(joined.name, "automatic", `profile=${JSON.stringify(profile)} selects the sole saved server`);
+      assert.equal(read(await call("sideband_rooms", { profile: null, name: null }))[0].id, joined.id);
+      assert.equal(read(await call("sideband_rooms", { profile: "", name: null }))[0].id, joined.id);
+      assert.deepEqual(read(await call("sideband_history", { limit: null })), []);
+    }
+    assert.equal((await call("sideband_join_room", { room: "automatic", name: null, profile: null })).isError, true, "required username cannot be null");
+    assert.equal((await call("sideband_join_room", { room: null, name: "worker", profile: null })).isError, true, "required room cannot be null");
+    assert.equal((await call("sideband_setup", { profile: null, server: null })).isError, true, "creating a profile still requires a real name");
+    assert.equal((await call("sideband_send", { text: null })).isError, true);
   } finally { await client.close(); await observer.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -99,8 +111,12 @@ test("multiple saved servers require selection in the connecting call, without a
   try {
     await client.connect(transport);
     const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args });
-    const ambiguous = await call("sideband_join_room", { room: "work", name: "worker" });
-    assert.equal(ambiguous.isError, true); assert.match(JSON.stringify(ambiguous.content), /Multiple saved servers: first, second/);
+    for (const profile of [undefined, null, ""]) {
+      for (const name of ["sideband_join_room", "sideband_rooms"]) {
+        const ambiguous = await call(name, { ...(name === "sideband_join_room" ? { room: "work" } : {}), name: "worker", ...(profile === undefined ? {} : { profile }) });
+        assert.equal(ambiguous.isError, true); assert.match(JSON.stringify(ambiguous.content), /Multiple saved servers: first, second/);
+      }
+    }
     assert.deepEqual(read(await call("sideband_status")), { state: "off" });
     assert.deepEqual(read(await call("sideband_rooms", { profile: "second", name: "worker" })), []);
     const identity = read(await call("sideband_status")).identity;
@@ -126,6 +142,15 @@ for (const harness of ["codex", "claude"]) {
       assert.ok(listed.tools.every(tool => !("claude_channel_enabled" in (tool.inputSchema.properties ?? {}))));
       assert.ok(listed.tools.every((tool) => !("password" in (tool.inputSchema.properties ?? {}))));
       assert.ok(listed.tools.find(tool => tool.name === "sideband_join_room")!.inputSchema.required!.includes("name"));
+      for (const tool of listed.tools) {
+        for (const [name, property] of Object.entries(tool.inputSchema.properties ?? {})) {
+          const field = property as { type: string | string[] };
+          if (!tool.inputSchema.required?.includes(name)) assert.ok(Array.isArray(field.type) && field.type.includes("null"), `${tool.name}.${name} supports strict harness null defaults`);
+        }
+      }
+      const joinSchema = listed.tools.find(tool => tool.name === "sideband_join_room")!.inputSchema;
+      assert.ok(!joinSchema.required!.includes("profile"), "raw MCP schema still allows profile omission");
+      assert.deepEqual((joinSchema.properties!.profile as { type: string[] }).type, ["string", "null"]);
       assert.equal(client.getServerCapabilities()?.experimental?.["claude/channel"] !== undefined, harness === "claude");
       const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args, _meta: { threadId: "thread-one" } });
       assert.deepEqual((await call("sideband_status")).content, [{ type: "text", text: '{"state":"off"}' }]);

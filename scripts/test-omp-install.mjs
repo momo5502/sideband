@@ -43,7 +43,7 @@ try {
       assert.ok(context.includes("username chosen by the user"), "shared policy reaches the model");
       let delta, finish;
       if (!joined) {
-        joined = true; delta = { role: "assistant", tool_calls: [{ index: 0, id: "join-call", type: "function", function: { name: "sideband_join_room", arguments: JSON.stringify({ room: "omp-smoke", name: "worker" }) } }] }; finish = "tool_calls";
+        joined = true; delta = { role: "assistant", tool_calls: [{ index: 0, id: "join-call", type: "function", function: { name: "sideband_join_room", arguments: JSON.stringify({ room: "omp-smoke", name: "worker", profile: null }) } }] }; finish = "tool_calls";
       } else if (context.includes(marker) && !replied) {
         sawPush = true; replied = true;
         assert.ok(context.includes('<sideband sender=\\"peer\\">'), "native compact envelope reaches the model");
