@@ -8,7 +8,7 @@ import type { ManagedAgent, OutputEvent } from "./orchestration-protocol.js";
 
 export const allRooms = (state: WorkspaceState) => [...new Map([...state.rooms, ...state.joined].map(room => [room.id, room])).values()];
 export const agentStatus = (agent: ManagedAgent) => agent.online ? agent.state : "offline";
-export const repositoryName = (repository: string) => repository.replace(/\/+$/, "").split(/[/:]/).at(-1)?.replace(/\.git$/, "") ?? "";
+export const repositoryName = (repository?: string) => repository ? repository.replace(/\/+$/, "").split(/[/:]/).at(-1)?.replace(/\.git$/, "") ?? "" : "Empty workspace";
 export function Avatar({ identity, small = false }: { identity: AgentIdentity; small?: boolean }) {
   return <span className={clsx("avatar", small && "avatar-small")} style={{ color: identityColor(identity) }} aria-hidden="true">{identityLabel(identity).replace(/^#/, "").slice(0, 2).toUpperCase()}</span>;
 }
@@ -91,7 +91,7 @@ export function AgentOutput({ state, agent }: { state: WorkspaceState; agent: Ma
     <Button variant="ghost" className="toolbar-toggle" aria-pressed={tools} onClick={() => setTools(!tools)}><Wrench size={13} />Tools</Button></div></div>
     <div className="log-wrapper"><div id="agent-output" ref={ref} onScroll={scroll.onScroll} className="output-log" role="log" aria-label="Agent conversation">
       {events[0] && events[0].seq > 1 && <p className="output-gap">Showing recent output. Earlier output has left the buffer.</p>}
-      {!events.length && <div className="empty-view h-full"><div className="empty-icon"><Bot size={26} /></div><h2>{!agent.online ? "Agent offline" : agent.state === "failed" ? "The agent couldn’t start" : agent.state === "stopped" ? "Agent stopped" : agent.state === "preparing" ? "Preparing workspace" : agent.state === "starting" ? "Starting the agent" : "Ready when you are"}</h2><p>{!agent.online ? "Its machine or runner is disconnected. It will return here when it reconnects." : agent.state === "failed" ? "Check the error above. You can remove this agent and launch a new one." : agent.state === "stopped" ? "Resume to continue with the same workspace and history." : agent.state === "preparing" ? "Cloning the repository on your selected machine. Progress will appear here." : "Send private instructions below, or talk to this agent in its room."}</p></div>}
+      {!events.length && <div className="empty-view h-full"><div className="empty-icon"><Bot size={26} /></div><h2>{!agent.online ? "Agent offline" : agent.state === "failed" ? "The agent couldn’t start" : agent.state === "stopped" ? "Agent stopped" : agent.state === "preparing" ? "Preparing workspace" : agent.state === "starting" ? "Starting the agent" : "Ready when you are"}</h2><p>{!agent.online ? "Its machine or runner is disconnected. It will return here when it reconnects." : agent.state === "failed" ? "Check the error above. You can remove this agent and launch a new one." : agent.state === "stopped" ? "Resume to continue with the same workspace and history." : agent.state === "preparing" ? (agent.repository ? "Cloning the repository on your selected machine. Progress will appear here." : "Creating an empty workspace on your selected machine.") : "Send private instructions below, or talk to this agent in its room."}</p></div>}
       {groups.map(group => {
         const { kind, text } = group;
         if (["assistant", "user", "room"].includes(kind)) {
@@ -110,7 +110,7 @@ export function AgentOutput({ state, agent }: { state: WorkspaceState; agent: Ma
     </div>{scroll.jump}</div></>;
 }
 export function AgentDetails({ agent }: { agent: ManagedAgent }) {
-  return <><h2>Agent details</h2><dl className="detail-grid"><div><dt>Machine</dt><dd>{agent.machineName}</dd></div><div><dt>Repository</dt><dd>{agent.repository}</dd></div>{agent.ref && <div><dt>Branch or ref</dt><dd>{agent.ref}</dd></div>}<div><dt>Harness</dt><dd>oh-my-pi</dd></div><div><dt>Model</dt><dd>{agent.model ?? "Harness default"}</dd></div><div><dt>Reasoning</dt><dd>{agent.effort ?? "Harness default"}</dd></div><div><dt>Workspace</dt><dd>Isolated checkout. Stop and resume retain its files and history.</dd></div></dl></>;
+  return <><h2>Agent details</h2><dl className="detail-grid"><div><dt>Machine</dt><dd>{agent.machineName}</dd></div><div><dt>Repository</dt><dd>{agent.repository ?? "None (empty workspace)"}</dd></div>{agent.ref && <div><dt>Branch or ref</dt><dd>{agent.ref}</dd></div>}<div><dt>Harness</dt><dd>oh-my-pi</dd></div><div><dt>Model</dt><dd>{agent.model ?? "Harness default"}</dd></div><div><dt>Reasoning</dt><dd>{agent.effort ?? "Harness default"}</dd></div><div><dt>Workspace</dt><dd>Isolated workspace. Stop and resume retain its files and history.</dd></div></dl></>;
 }
 export function MemberList({ state, openAgent }: { state: WorkspaceState; openAgent(id: string): void }) {
   return <><h2>Participants · {state.members.length}</h2>{state.members.map(identity => {

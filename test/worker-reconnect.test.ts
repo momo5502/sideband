@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { RoomServer } from "../src/room-server.js";
 import { RoomProfiles } from "../src/room-profiles.js";
 import { Worker } from "../src/worker.js";
+import { generate } from "selfsigned";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, timeout = 15000) {
@@ -34,10 +35,12 @@ test("machine identity survives a server address/port migration", async () => {
   } finally { await server.close(); }
 });
 
-test("worker retries a prolonged outage, re-registers after server restart and reports rotated credentials", { timeout: 65000 }, async () => {
+test("worker on shared HTTPS retries a prolonged outage, re-registers after server restart and reports rotated credentials", { timeout: 65000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-worker-reconnect-")), credentialsFile = join(directory, "identity.json");
-  let server = await RoomServer.start({ host: "127.0.0.1", port: 0, credentialsFile });
-  const port = server.port;
+  const certificate = await generate([{ name: "commonName", value: "sideband.example.com" }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
+  const browserHttps = { domain: "sideband.example.com", directory: join(directory, "https"), httpPort: 0, httpsPort: 0, issue: async () => ({ key: certificate.private, cert: certificate.cert }) };
+  let server = await RoomServer.start({ host: "127.0.0.1", port: 0, credentialsFile, browserHttps });
+  const port = server.nativePort; browserHttps.httpsPort = port;
   await new RoomProfiles(directory).save("test", { server: `127.0.0.1:${port}`, password: server.password });
   const process = worker(directory);
   try {
@@ -45,10 +48,12 @@ test("worker retries a prolonged outage, re-registers after server restart and r
     await server.close();
     await until(() => process.log.includes("retrying in 10s"), 25000);
     assert.equal(process.child.exitCode, null, "the worker remains alive through multiple failed attempts");
-    server = await RoomServer.start({ host: "127.0.0.1", port, credentialsFile });
+    server = await RoomServer.start({ host: "127.0.0.1", port: 0, credentialsFile, browserHttps });
+    assert.equal(server.nativePort, port, "the shared HTTPS listener keeps the saved client port across restarts");
     await until(() => process.log.split("connected and registered").length >= 3);
     await server.close();
-    server = await RoomServer.start({ host: "127.0.0.1", port, credentialsFile, rotatePassword: true });
+    server = await RoomServer.start({ host: "127.0.0.1", port: 0, credentialsFile, browserHttps, rotatePassword: true });
+    assert.equal(server.nativePort, port);
     await until(() => process.log.includes("Worker cannot reconnect"));
     assert.match(process.log, /certificate does not match/); assert.match(process.log, /sideband login again/);
     assert.equal(await process.exited, 1, "permanent failures exit nonzero instead of silently abandoning recovery");

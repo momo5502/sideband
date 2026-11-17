@@ -6,11 +6,11 @@ export function launchSpec(input) {
         throw new Error("Choose an agent name.");
     if (value.harness !== "omp")
         throw new Error("This milestone supports OMP; Claude and Codex adapters follow.");
-    const repository = text(value.repository, "repository URL", 2048).trim();
+    const repository = value.repository === undefined || value.repository === "" ? undefined : text(value.repository, "repository URL", 2048).trim() || undefined;
     // Only remote Git URLs, never a local path, option, helper protocol or shell command.
-    const ssh = /^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+:[^\s]+$/.test(repository);
+    const ssh = !!repository && /^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+:[^\s]+$/.test(repository);
     let remote = ssh;
-    if (!ssh)
+    if (repository && !ssh)
         try {
             const url = new URL(repository);
             remote = ["https:", "ssh:"].includes(url.protocol) && !!url.hostname && !url.password && !url.hash && !url.search;
@@ -18,9 +18,9 @@ export function launchSpec(input) {
                 remote = false;
         }
         catch { /* Invalid URL. */ }
-    if (!remote || /[\s\x00-\x1f]/.test(repository))
+    if (repository && (!remote || /[\s\x00-\x1f]/.test(repository)))
         throw new Error("Use an HTTPS or SSH Git repository URL, without embedded credentials.");
-    const result = { name, harness: "omp", repository };
+    const result = { name, harness: "omp", ...(repository ? { repository } : {}) };
     for (const key of ["ref", "model", "effort", "room", "prompt"]) {
         if (value[key] === undefined || value[key] === "")
             continue;
@@ -31,6 +31,8 @@ export function launchSpec(input) {
     }
     if (result.ref?.startsWith("-"))
         throw new Error("Invalid repository ref.");
+    if (result.ref && !repository)
+        throw new Error("A repository is required when specifying a branch or ref.");
     if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"].includes(result.effort))
         throw new Error("Invalid reasoning level.");
     return result;

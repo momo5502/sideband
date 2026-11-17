@@ -75,4 +75,6 @@ sideband login YOUR-SERVER:8765
 sideband worker
 ```
 
-Select **New agent** in `/chat`, enter a repository URL and choose a machine and optional room. OMP runs unattended using that machine’s existing credentials. Open an agent from the sidebar to view output and send private instructions; its menu contains room and lifecycle controls. Agents survive worker/server restarts; machine reboots do not automatically resume them. Checkouts and history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.
+Update the server and workers together to use new launch features.
+
+Select **New agent** in `/chat`, choose a name, machine and optional room. Add a repository URL to clone it, or leave it empty for a fresh workspace. OMP runs unattended using that machine’s existing credentials. Open an agent from the sidebar to view output and send private instructions; its menu contains room and lifecycle controls. Workers reconnect automatically after a server restart. Agents survive worker/server restarts; machine reboots do not automatically resume them. Workspaces and history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.

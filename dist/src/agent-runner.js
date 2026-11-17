@@ -27,7 +27,7 @@ export class AgentRunner {
     desiredRoom;
     directory;
     workspace;
-    checkoutReady = false;
+    workspaceReady = false;
     preparing;
     published = "";
     stopRequested = false;
@@ -39,7 +39,7 @@ export class AgentRunner {
         this.directory = resolve(config.root, config.id);
         if (relative(resolve(config.root), this.directory) !== config.id)
             throw new Error("Invalid workspace path.");
-        this.workspace = join(this.directory, "repo");
+        this.workspace = join(this.directory, spec.repository ? "repo" : "workspace");
         this.desiredRoom = spec.room ?? "";
         const { prompt: _prompt, ...description } = spec;
         this.agent = { ...description, id: config.id, machineId: config.machineId, machineName: config.machineName, room: this.desiredRoom, state: "preparing", online: true, createdAt: Date.now(), canResume: false };
@@ -146,13 +146,19 @@ export class AgentRunner {
     }
     async launch() {
         await mkdir(this.directory, { recursive: true, mode: 0o700 });
-        this.record("git", `Cloning ${this.agent.repository}`);
-        await this.git(["clone", "--", this.agent.repository, "repo"]);
+        if (this.agent.repository) {
+            this.record("git", `Cloning ${this.agent.repository}`);
+            await this.git(["clone", "--", this.agent.repository, "repo"]);
+        }
+        else {
+            this.record("state", "Creating an empty workspace");
+            await mkdir(this.workspace, { recursive: true, mode: 0o700 });
+        }
         if (this.closed || this.stopRequested)
             return;
         if (this.agent.ref)
             await this.git(["-C", "repo", "checkout", "--detach", this.agent.ref]);
-        this.checkoutReady = true;
+        this.workspaceReady = true;
         this.agent.canResume = true;
         await this.startHarness();
         if (this.closed || this.stopRequested)
@@ -259,7 +265,7 @@ export class AgentRunner {
                 return { stopped: true };
             }
             case "resume": {
-                if (!["stopped", "failed"].includes(this.agent.state) || !this.checkoutReady)
+                if (!["stopped", "failed"].includes(this.agent.state) || !this.workspaceReady)
                     throw new Error("This agent cannot be resumed.");
                 if (this.driver)
                     await this.driver.stop();

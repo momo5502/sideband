@@ -12,6 +12,7 @@ import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
 import { BrowserRoomClient } from "../src/browser-protocol.js";
 import { launchSpec, OutputBuffer, type ControlSnapshot, type OutputSnapshot } from "../src/orchestration-protocol.js";
+import { AgentRunner } from "../src/agent-runner.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean | Promise<boolean>, ms = 15000) {
@@ -24,6 +25,8 @@ function browser(server: RoomServer) {
     url => new NodeWebSocket(url, { origin }) as unknown as WebSocket);
 }
 test("launch validation permits remote URLs and treats names, refs, models and prompts as data", () => {
+  for (const repository of [undefined, "", "   "]) assert.equal(launchSpec({ name: "worker", harness: "omp", ...(repository === undefined ? {} : { repository }) }).repository, undefined);
+  assert.throws(() => launchSpec({ name: "worker", harness: "omp", ref: "main" }), /repository is required/);
   for (const repository of ["https://github.com/example/repo.git", "git@github.com:example/repo.git", "ssh://git@example.org/project.git"]) assert.equal(launchSpec({ name: "worker", harness: "omp", repository }).repository, repository);
   for (const repository of ["C:\\work", "/tmp/work", "file:///tmp/work", "ext::evil", "--upload-pack=evil", "https://user:password@example.org/repo", "https://user@example.org/repo", "https://example.org/repo\n--flag"]) {
     assert.throws(() => launchSpec({ name: "worker", harness: "omp", repository }));
@@ -115,6 +118,30 @@ createInterface({input:process.stdin}).on("line", async line => {
     } else out({type:"agent_end",isTerminal:true});
   }
 }).on("close",()=>process.exit(0));`;
+
+test("an agent without a repository gets an empty workspace, joins a room and resumes with its files and history", { timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-empty-workspace-"));
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
+  const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, web = browser(server), peer = new RoomClient(profile, "peer");
+  const fixture = join(directory, "omp.mjs"); await writeFile(fixture, fixtureOmp);
+  const runner = new AgentRunner({ profile, id: randomUUID(), machineId: randomUUID(), machineName: "empty-test", root: directory,
+    spec: { name: "no-repository", harness: "omp", room: "empty-room", prompt: "announce" }, omp: { command: process.execPath, args: [fixture] } });
+  const received: string[] = []; peer.onMessage(message => received.push(message.text));
+  try {
+    await web.connect(); await peer.connect(); await peer.joinRoom("empty-room"); await runner.start();
+    await until(() => received.includes("fixture announcement") && runner.agent.state === "idle");
+    const workspace = join(directory, runner.agent.id, "workspace");
+    assert.equal(runner.agent.repository, undefined); assert.equal(runner.agent.canResume, true);
+    assert.equal((await stat(workspace)).isDirectory(), true); await assert.rejects(stat(join(workspace, ".git")), { code: "ENOENT" });
+    assert.ok(!runner.output.snapshot().events.some(event => event.kind === "git"));
+    await writeFile(join(workspace, "notes.txt"), "keep this workspace");
+    const action = (action: string, params = {}) => web.request("control.action", { agentId: runner.agent.id, action, ...params });
+    await action("stop"); await action("resume"); await action("prompt", { text: "continued after resume" });
+    await until(() => runner.output.snapshot().events.some(event => event.text.includes("continued after resume")));
+    assert.equal(await readFile(join(workspace, "notes.txt"), "utf8"), "keep this workspace");
+    assert.ok(runner.output.snapshot().events.some(event => event.text.includes("Resumed saved history: announce")));
+  } finally { await runner.close(); web.disconnect(); await peer.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-empty-workspace-"))); await rm(directory, { recursive: true, force: true }); }
+});
 
 test("detached OMP runner: remote clone, pushed rooms, output, worker death/restart, controller restart and manual resume", { timeout: 90000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-orchestration-"));

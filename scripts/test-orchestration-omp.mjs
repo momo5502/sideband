@@ -80,7 +80,7 @@ try {
   worker = new Worker({ profile, entry: process.env.SIDEBAND_SMOKE_ENTRY ? resolve(process.env.SIDEBAND_SMOKE_ENTRY) : join(root, "dist/src/cli.js"), name: "real-omp-test", root: join(directory, "workspaces"),
     omp: { command: process.env.OMP_BINARY ?? "omp", args: ["-e", provider, "--no-lsp", "--no-skills", "--no-rules", "--no-tools"] } });
   await worker.start();
-  agentId = (await web.request("control.launch", { machineId: worker.machine.id, name: "managed-omp", harness: "omp", repository: `https://127.0.0.1:${repository.address().port}/repo.git`, model: "sideband-smoke/smoke", room: "omp-orchestration", prompt: "Announce that you are ready." })).id;
+  agentId = (await web.request("control.launch", { machineId: worker.machine.id, name: "managed-omp", harness: "omp", ...(process.env.SIDEBAND_SMOKE_EMPTY ? {} : { repository: `https://127.0.0.1:${repository.address().port}/repo.git` }), model: "sideband-smoke/smoke", room: "omp-orchestration", prompt: "Announce that you are ready." })).id;
   const state = () => web.request("control.list");
   await until(async () => {
     const agent = (await state()).agents.find(agent => agent.id === agentId);
@@ -94,7 +94,7 @@ try {
   await action("stop"); await action("resume"); await action("prompt", { text: "Still here?" });
   await until(async () => (await state()).agents.find(agent => agent.id === agentId)?.state === "idle");
   await action("stop"); await action("dispose"); agentId = undefined;
-  console.log("Real OMP: remote Git clone, browser launch, managed send tool, idle room push/reply, worker independence, output and manual resume passed.");
+  console.log(`Real OMP: ${process.env.SIDEBAND_SMOKE_EMPTY ? "empty workspace" : "remote Git clone"}, browser launch, managed send tool, idle room push/reply, worker independence, output and manual resume passed.`);
 } finally {
   if (agentId) { await action("stop").catch(() => {}); await action("dispose").catch(() => {}); }
   await worker?.close(); web.disconnect(); await peer.close(); await server.close();
