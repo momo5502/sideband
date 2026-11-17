@@ -22,7 +22,8 @@ function CopyCommand({ text }) {
                 }, children: copied ? _jsx(Check, { size: 15 }) : _jsx(Copy, { size: 15 }) })] });
 }
 function WorkerSetup({ state }) {
-    const server = location.protocol === "https:" ? location.host : `${location.hostname}:${state.control.serverPort ?? 8765}`;
+    const port = state.control.serverPort ?? 8765;
+    const server = `${location.hostname}${port === 443 ? "" : `:${port}`}`;
     return _jsxs("div", { className: "setup-box", children: [_jsx("p", { className: "font-medium text-zinc-300", children: "Connect a machine" }), _jsx("p", { className: "mt-1", children: "On a machine with OMP and Sideband installed, sign in once:" }), _jsx(CopyCommand, { text: `sideband login ${server}` }), _jsx("p", { className: "mt-3", children: "Then keep its worker running:" }), _jsx(CopyCommand, { text: "sideband worker" })] });
 }
 export function NewAgent({ state, store, close, initial }) {
@@ -36,7 +37,10 @@ export function NewAgent({ state, store, close, initial }) {
             result = `${base}-${index++}`;
         return result;
     }), [room, setRoom] = useState(initial?.room ?? state.joined.find(room => room.id === state.lastRoom)?.name ?? "");
-    const [machine, setMachine] = useState(() => initial?.machineId ?? state.control.machines.find(machine => machine.online && machine.harnesses.includes("omp"))?.id ?? "");
+    const [machine, setMachine] = useState(() => {
+        const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes("omp"));
+        return eligible.find(machine => machine.id === initial?.machineId)?.id ?? eligible.find(machine => machine.name === initial?.machineName)?.id ?? eligible[0]?.id ?? "";
+    });
     const [busy, setBusy] = useState(false), [error, setError] = useState("");
     const editedName = useRef(false);
     const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes("omp")), selected = eligible.find(candidate => candidate.id === machine);

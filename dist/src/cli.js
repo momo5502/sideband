@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { RoomProfiles, stateDirectory } from "./room-profiles.js";
 import { hiddenInput, terminalLogin } from "./terminal-login.js";
 async function main() {
     const command = process.argv[2];
     if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
-        console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials.");
+        console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n    [--domain HOST] [--email ADDRESS] [--http-port 80] [--https-port 443] [--acme-staging]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials.");
         return;
     }
     if (!command || command === "chat" || command.startsWith("--")) {
@@ -18,7 +18,8 @@ async function main() {
     }
     if (command === "server") {
         const { values } = parseArgs({ args: process.argv.slice(3), options: { host: { type: "string", default: "0.0.0.0" }, port: { type: "string", default: "8765" },
-                "status-port": { type: "string", default: "8766" }, "rotate-password": { type: "boolean", default: false }, "credentials-file": { type: "string" } } });
+                "status-port": { type: "string", default: "8766" }, "rotate-password": { type: "boolean", default: false }, "credentials-file": { type: "string" },
+                domain: { type: "string" }, email: { type: "string" }, "acme-staging": { type: "boolean" }, "http-port": { type: "string" }, "https-port": { type: "string" } } });
         const port = Number(values.port);
         if (!Number.isInteger(port) || port < 0 || port > 65535)
             throw new Error("Invalid port.");
@@ -28,10 +29,26 @@ async function main() {
         if (port !== 0 && port === statusPort)
             throw new Error("HTTP status and HTTPS need different ports. Use --status-port to choose another port.");
         const credentialsFile = resolve(values["credentials-file"] ?? join(stateDirectory, "server-credentials.json"));
+        if (!values.domain && [values.email, values["acme-staging"], values["http-port"], values["https-port"]].some(value => value !== undefined))
+            throw new Error("HTTPS certificate options require --domain.");
+        const httpPort = Number(values["http-port"] ?? 80), httpsPort = Number(values["https-port"] ?? 443);
+        if (values.domain) {
+            if (![httpPort, httpsPort].every(value => Number.isInteger(value) && value >= 0 && value <= 65535))
+                throw new Error("Invalid HTTP/HTTPS port.");
+            const ports = [port, statusPort, httpPort, httpsPort].filter(value => value !== 0);
+            if (new Set(ports).size !== ports.length)
+                throw new Error("Native, status, ACME HTTP and browser HTTPS listeners need different ports.");
+            if (values.email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email))
+                throw new Error("Invalid --email address.");
+        }
         const { RoomServer } = await import("./room-server.js");
         const server = await RoomServer.start({ host: values.host, port, statusPort,
-            credentialsFile, rotatePassword: values["rotate-password"] });
-        console.log(`Sideband listening on ${values.host}:${server.port}\n\nClient address: <your-VPS-IP>:${server.port}\nPassword: ${server.password}\n\nPublic status: http://<your-VPS-IP>:${server.statusPort}/ or https://<your-VPS-IP>:${server.port}/\nTLS and certificate pinning are enabled. Keep this password private.\nCredentials: ${credentialsFile}\nThe password and TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
+            credentialsFile, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
+                    httpPort, httpsPort, email: values.email, staging: values["acme-staging"], log: message => console.log(message) } } : {}) });
+        const address = server.browserUrl ? new URL(server.browserUrl).host : `<your-VPS-IP>:${server.port}`;
+        console.log(`Sideband listening on ${values.host}:${server.nativePort}\n\nClient address: ${address}\nClient login: sideband login ${address}\nPassword: ${server.password}\n\nBrowser: ${server.browserUrl ?? `http://<your-VPS-IP>:${server.statusPort}`}/chat\nCredentials: ${credentialsFile}\nThe password and native TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
+        if (server.browserUrl)
+            console.log(`Native agents and browsers share HTTPS port ${server.nativePort}. Existing ports ${server.port}/${server.statusPort} remain available.\nAutomatic certificates use Let's Encrypt. Setup and renewals require public port 80 to reach --http-port.`);
         let closing = false;
         const close = () => { if (closing)
             return; closing = true; void server.close(); };
@@ -50,9 +67,21 @@ async function main() {
         const { values } = parseArgs({ args: process.argv.slice(3), options: { profile: { type: "string" }, name: { type: "string" }, omp: { type: "string" }, directory: { type: "string" } } });
         const { profile } = await new RoomProfiles().resolve(values.profile);
         const { Worker } = await import("./worker.js");
-        const worker = new Worker({ profile, entry: resolve(process.argv[1]), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}) });
+        const worker = new Worker({ profile, entry: resolve(process.argv[1]), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}),
+            onError: error => console.error(`Worker connection: ${error.message}`),
+            onConnection: change => {
+                if (change.state === "on")
+                    console.error("Worker connected and registered.");
+                else if (change.state === "reconnecting")
+                    console.error(`Worker disconnected; retrying in ${change.retryInMs / 1000}s.`);
+                else if (change.state === "disconnected") {
+                    console.error(`Worker cannot reconnect: ${change.error?.message}\nCheck the server address and proxy settings. If credentials changed, run sideband login again.`);
+                    process.exitCode = 1;
+                    void worker.close();
+                }
+            } });
         await worker.start();
-        console.log(`Sideband worker '${worker.machine.name}' connected. Open /chat on your server and select Agents to launch OMP.\nAgent runners keep running when this worker stops. Stop agents from the web panel.`);
+        console.log(`Sideband worker '${worker.machine.name}' started. Open /chat on your server and select New agent to launch OMP.\nAgent runners keep running when this worker stops. Stop agents from the web panel.`);
         let closing = false;
         const close = () => { if (!closing) {
             closing = true;

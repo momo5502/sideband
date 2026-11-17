@@ -21,7 +21,7 @@ test("streamed output merges snapshots without duplicates and remains bounded by
 for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} workspace: focused launch, agent conversation, private instructions, menus and offline forgetting`, { timeout: 30000 }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
-  const worker = new RoomClient(profile), unavailable = new RoomClient(profile), offline = new RoomClient(profile), runner = new RoomClient(profile, "tools"), peer = new RoomClient(profile, "peer");
+  const worker = new RoomClient(profile), migratedWorker = new RoomClient(profile), unavailable = new RoomClient(profile), offline = new RoomClient(profile), runner = new RoomClient(profile, "tools"), peer = new RoomClient(profile, "peer");
   const machineId = randomUUID(), commands: ControlCommand[] = [], transportErrors: unknown[] = [];
   let agent: ManagedAgent | undefined, page: Awaited<ReturnType<typeof browserPage>> | undefined, launchError = "Repository access failed. Check the machine’s Git credentials.";
   const publish = (events: OutputEvent[] = []) => runner.request("control.publish", { agent, events });
@@ -65,8 +65,11 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} works
     await until(() => p.get("#agent-output").textContent!.includes("Second line"));
     assert.ok(p.get("#agent-output").textContent!.includes("<script>window.hacked=true</script>")); assert.ok(p.doc.querySelector("#agent-output .markdown br")); assert.equal(p.doc.querySelector("#agent-output script"), null);
     assert.equal(p.get<HTMLDetailsElement>('.activity-entry[data-kind="thinking"]').open, false);
+    await worker.close(); await migratedWorker.connect(); const migratedMachineId = randomUUID();
+    await migratedWorker.request("control.worker", { machine: { id: migratedMachineId, name: "workstation", platform: "test", harnesses: ["omp"] } });
     agent!.state = "failed"; agent!.error = "Clone failed"; await publish(); await until(() => !![...p.doc.querySelectorAll("button")].find(button => button.textContent === "Launch again…"));
     p.click(p.button("Launch again…")); await until(() => !!p.doc.querySelector("#new-agent-dialog"));
+    assert.equal(p.get<HTMLSelectElement>("#agent-machine").value, migratedMachineId, "a pre-migration machine id selects the current machine by name");
     assert.equal(p.get<HTMLInputElement>("#agent-repository").value, "https://example.org/_tools.git"); assert.equal(p.get<HTMLInputElement>("#agent-name").value, "tools-2"); assert.equal(p.get<HTMLTextAreaElement>("#launch-prompt").value, "Initial task"); p.click(p.button("Cancel"));
     agent!.error = undefined;
     agent!.state = "idle"; agent!.canResume = true; await publish(); await until(() => !p.get<HTMLTextAreaElement>("#agent-prompt").disabled);
@@ -88,5 +91,5 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} works
     assert.match(p.get("#agent-action-dialog").textContent!, /Files stay on the machine/); p.submit("#agent-room-form");
     await until(() => p.doc.querySelector("#workspace-title")?.textContent === "Workspace" && !p.doc.querySelector("#agent-action-dialog"));
     assert.deepEqual(transportErrors, []); assert.deepEqual(p.errors, []);
-  } finally { await page?.close(); await runner.close(); await worker.close(); await unavailable.close(); await offline.close(); await peer.close(); await server.close(); }
+  } finally { await page?.close(); await runner.close(); await worker.close(); await migratedWorker.close(); await unavailable.close(); await offline.close(); await peer.close(); await server.close(); }
 });

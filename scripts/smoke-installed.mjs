@@ -2,11 +2,12 @@
 import { spawn } from "node:child_process";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { request } from "node:https";
 import { request as httpRequest } from "node:http";
 import assert from "node:assert/strict";
+import { generate } from "selfsigned";
 
 const root = resolve(process.argv[2] ?? ".cache/install-check/node_modules/sideband");
 const entry = process.argv[3] ? resolve(process.argv[3]) : join(root, "dist/src/cli.js");
@@ -14,7 +15,12 @@ const { RoomClient } = await import(pathToFileURL(join(root, "dist/src/room-clie
 const { BrowserRoomClient } = await import(pathToFileURL(join(root, "dist/src/browser-protocol.js")).href);
 const { default: NodeWebSocket } = await import("ws");
 const state = await mkdtemp(join(tmpdir(), "sideband-smoke-server-"));
-const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0"], {
+// Seed a local certificate so Git-install checks cover --domain without contacting a public CA.
+const domain = "sideband.example.com", tls = await generate([{ name: "commonName", value: domain }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
+const certificateDirectory = join(state, "https", "production", domain);
+await mkdir(certificateDirectory, { recursive: true, mode: 0o700 });
+await writeFile(join(certificateDirectory, "certificate.json"), JSON.stringify({ key: tls.private, cert: tls.cert }), { mode: 0o600 });
+const child = spawn(process.execPath, [entry, "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0", "--domain", domain, "--http-port", "0", "--https-port", "0"], {
   env: { ...process.env, SIDEBAND_STATE_DIR: state }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let timer;
 const clients = [];
@@ -28,7 +34,7 @@ try {
       stdout += chunk;
       const port = /listening on 127\.0\.0\.1:(\d+)/.exec(stdout);
       const password = /Password: (sb1\.[A-Za-z0-9_.-]+)/.exec(stdout);
-      const status = /Public status: http:\/\/<your-VPS-IP>:(\d+)\//.exec(stdout);
+      const status = /Existing ports \d+\/(\d+) remain available/.exec(stdout);
       if (port && password && status) { stdout = ""; resolve({ server: `127.0.0.1:${port[1]}`, password: password[1], statusPort: Number(status[1]) }); }
     });
   });

@@ -1,6 +1,6 @@
 {
   "name": "sideband",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "private": true,
   "description": "Push-based chat rooms and verified identities for coding agents.",
   "repository": {
@@ -58,6 +58,7 @@
     "@radix-ui/react-dropdown-menu": "^2.2.1",
     "@radix-ui/react-radio-group": "^1.5.1",
     "@radix-ui/react-tabs": "^1.2.1",
+    "acme-client": "^5.4.0",
     "clsx": "^2.1.1",
     "cross-spawn": "^7.0.6",
     "dompurify": "3.4.17",
@@ -71,6 +72,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
+    "@peculiar/x509": "^1.14.3",
     "@tailwindcss/cli": "^4.3.5",
     "@types/cross-spawn": "^6.0.6",
     "@types/jsdom": "30.0.0",

@@ -3,9 +3,10 @@ import type { TLSSocket } from "node:tls";
 import { Agent as HttpsAgent } from "node:https";
 import WebSocket from "ws";
 import { roomProxyAgent, roomProxyUrl } from "./room-proxy.js";
-import { AgentKeys, RoomError, VERSION, loginProof, messageProof, parsePassword, serverUrl, verifyMessage,
+import { AgentKeys, RoomError, VERSION, NATIVE_TLS_SERVERNAME, loginProof, messageProof, parsePassword, serverUrl, verifyMessage,
   validPresence, type PresenceEvent, type ConnectionProfile, type Login, type Room, type SignedMessage, type AgentIdentity } from "./room-protocol.js";
 
+export type ConnectionChange = { state: "connecting" | "on" | "reconnecting" | "disconnected"; retryInMs?: number; error?: Error };
 export class RoomClient {
   readonly keys: AgentKeys;
   room: Room | null = null;
@@ -26,7 +27,8 @@ export class RoomClient {
   private readonly connectedListeners = new Set<() => Promise<void>>();
   private readonly seen = new Set<string>();
   private readonly endpoint: string;
-  constructor(private readonly profile: ConnectionProfile, name?: string, private readonly options: { reconnectMs?: number; heartbeatTimeoutMs?: number; onError?: (error: Error) => void; proxyEnv?: NodeJS.ProcessEnv; keepAlive?: boolean } = {}) {
+  constructor(private readonly profile: ConnectionProfile, name?: string, private readonly options: { reconnectMs?: number; heartbeatTimeoutMs?: number; onError?: (error: Error) => void; proxyEnv?: NodeJS.ProcessEnv; keepAlive?: boolean;
+    retryInitial?: boolean; onConnection?: (change: ConnectionChange) => void } = {}) {
     this.endpoint = serverUrl(profile.server); parsePassword(profile.password); this.keys = new AgentKeys(name);
   }
   get identity(): AgentIdentity { return this.keys.identity; }
@@ -48,9 +50,15 @@ export class RoomClient {
   async connect(): Promise<void> {
     if (this.wanted) throw new Error("Already connected or connecting.");
     this.wanted = true; this.state = "connecting";
+    this.options.onConnection?.({ state: "connecting" });
     const generation = ++this.generation;
     try { await this.open(generation); }
-    catch (error) { if (generation === this.generation) { this.wanted = false; this.state = "off"; this.socket?.terminate(); } throw error; }
+    catch (error) {
+      if (generation !== this.generation || !this.wanted) throw error;
+      this.socket?.terminate();
+      if (this.options.retryInitial && !this.permanent(error)) { this.error(error); this.scheduleReconnect(); return; }
+      this.wanted = false; this.state = "off"; throw error;
+    }
   }
   private async open(generation: number): Promise<void> {
     const { secret, fingerprint } = parsePassword(this.profile.password);
@@ -67,7 +75,7 @@ export class RoomClient {
     const socket = new WebSocket(this.endpoint, {
       // This isn't unverified TLS: the exact SHA-256 certificate pin is verified below,
       // before any password, public identity or message is sent.
-      rejectUnauthorized: false, handshakeTimeout: proxy ? 10_000 : 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
+      rejectUnauthorized: false, ...{ servername: NATIVE_TLS_SERVERNAME }, handshakeTimeout: proxy ? 10_000 : 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
       // Explicitly bypass Node's global proxy agent when NO_PROXY (or no proxy) selects direct access.
       agent,
     });
@@ -160,6 +168,7 @@ export class RoomClient {
       this.desiredRoom = this.room;
       for (const listener of this.connectedListeners) { await listener(); assertCurrent(); }
       ready = true; this.state = "on"; this.attempts = 0; this.lastError = undefined; resetWatchdog();
+      this.options.onConnection?.({ state: "on" });
     } catch (error) {
       socket.terminate();
       throw fatal ?? error;
@@ -176,6 +185,8 @@ export class RoomClient {
   private scheduleReconnect(): void {
     const delay = this.options.reconnectMs ?? Math.min(10_000, 250 * 2 ** Math.min(this.attempts++, 6));
     const generation = ++this.generation;
+    this.state = "reconnecting";
+    this.options.onConnection?.({ state: "reconnecting", retryInMs: delay });
     this.reconnectTimer = setTimeout(async () => {
       if (!this.wanted || generation !== this.generation) return;
       try { await this.open(generation); }
@@ -183,13 +194,17 @@ export class RoomClient {
         if (generation !== this.generation || !this.wanted) return;
         this.error(error);
         if (generation !== this.generation || !this.wanted) return;
-        if (error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE", "PROXY_CONFIG", "PROXY_AUTH"].includes(error.code)) {
-          this.wanted = false; this.state = "disconnected"; this.room = null; return;
+        if (this.permanent(error)) {
+          this.wanted = false; this.state = "disconnected"; this.room = null;
+          this.options.onConnection?.({ state: "disconnected", error: error instanceof Error ? error : new Error("Connection failed.") }); return;
         }
         if (this.wanted) this.scheduleReconnect();
       }
     }, delay);
     if (!this.options.keepAlive) this.reconnectTimer.unref();
+  }
+  private permanent(error: unknown): boolean {
+    return error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE", "PROXY_CONFIG", "PROXY_AUTH"].includes(error.code);
   }
   request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     const socket = this.socket;

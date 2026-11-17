@@ -8,6 +8,7 @@ import { browserScript } from "./browser-bundle.js";
 import { OrchestrationServer } from "./orchestration-server.js";
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity } from "./server-identity.js";
+import { BrowserHttps } from "./browser-https.js";
 import { VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature, } from "./room-protocol.js";
 /** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
@@ -20,6 +21,7 @@ export class RoomServer {
     webhookBudget = { tokens: 100, updated: Date.now() };
     http;
     plainHttp;
+    browserHttps;
     ws;
     members = new Map();
     names = new Map();
@@ -48,6 +50,10 @@ export class RoomServer {
         // The one copyable password includes the certificate pin. No domain/CA setup or TOFU is needed.
         this.password = `sb1.${this.fingerprint}.${identity.secret}`;
         this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (req, res) => this.httpRequest(req, res));
+        if (options.browserHttps) {
+            this.browserHttps = new BrowserHttps(options.browserHttps, { key: identity.privateKey, cert: identity.certificate }, (req, res) => this.httpRequest(req, res));
+            this.browserHttps.https.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, true));
+        }
         if (options.statusPort !== undefined) {
             this.plainHttp = createHttpServer((req, res) => this.httpRequest(req, res));
             this.plainHttp.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, false));
@@ -86,6 +92,7 @@ export class RoomServer {
                         listener.listen(port, options.host ?? "0.0.0.0", () => { listener.off("error", reject); resolve(); });
                     });
                 }
+            await server.browserHttps?.listen(options.host ?? "0.0.0.0");
         }
         catch (error) {
             await server.close();
@@ -112,11 +119,14 @@ export class RoomServer {
             }
         }, options.heartbeatMs ?? 15_000);
         server.heartbeat.unref();
+        server.browserHttps?.start();
         return server;
     }
     get port() { const address = this.http.address(); if (!address || typeof address === "string")
         throw new Error("Server is not listening."); return address.port; }
     get statusPort() { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
+    get browserUrl() { return this.browserHttps?.url; }
+    get nativePort() { return this.browserHttps?.port ?? this.port; }
     publicStatus() {
         let connectedParticipants = 0;
         for (const member of this.members.values())
@@ -387,7 +397,7 @@ export class RoomServer {
         if (!member || member.socket !== socket)
             throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
         if (method.startsWith("control."))
-            return this.orchestration.request(socket, connection.browser, method, params, member.identity).then(result => method === "control.list" ? { ...result, serverPort: this.port } : result).catch(error => {
+            return this.orchestration.request(socket, connection.browser, method, params, member.identity).then(result => method === "control.list" ? { ...result, serverPort: this.nativePort } : result).catch(error => {
                 if (error instanceof RoomError)
                     throw error;
                 throw new RoomError("CONTROL", error instanceof Error ? error.message : "Control request failed.");
@@ -559,6 +569,7 @@ export class RoomServer {
         this.stopping = true;
         if (this.heartbeat)
             clearInterval(this.heartbeat);
+        await this.browserHttps?.close();
         if (this.roomChangeTimer)
             clearTimeout(this.roomChangeTimer);
         this.orchestration.close();

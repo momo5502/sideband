@@ -10,6 +10,7 @@ import { browserScript } from "./browser-bundle.js";
 import { OrchestrationServer } from "./orchestration-server.js";
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
+import { BrowserHttps, type BrowserHttpsOptions } from "./browser-https.js";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
   type AgentIdentity, type Room, type SignedMessage, type PresenceKind,
@@ -19,7 +20,7 @@ type Member = { identity: AgentIdentity; roomIds: Set<string>; roomId?: string; 
 type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
 type Connection = { browser: boolean; alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
 export type RoomServerOptions = { host?: string; port?: number; statusPort?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
-  credentialsFile?: string; rotatePassword?: boolean };
+  credentialsFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions };
 
 /** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
@@ -31,6 +32,7 @@ export class RoomServer {
   private webhookBudget = { tokens: 100, updated: Date.now() };
   private readonly http: HttpsServer;
   private readonly plainHttp?: HttpServer;
+  private readonly browserHttps?: BrowserHttps;
   private readonly ws: WebSocketServer;
   private readonly members = new Map<string, Member>();
   private readonly names = new Map<string, string>();
@@ -55,6 +57,10 @@ export class RoomServer {
     // The one copyable password includes the certificate pin. No domain/CA setup or TOFU is needed.
     this.password = `sb1.${this.fingerprint}.${identity.secret}`;
     this.http = createServer({ key: identity.privateKey, cert: identity.certificate, minVersion: "TLSv1.2" }, (req, res) => this.httpRequest(req, res));
+    if (options.browserHttps) {
+      this.browserHttps = new BrowserHttps(options.browserHttps, { key: identity.privateKey, cert: identity.certificate }, (req, res) => this.httpRequest(req, res));
+      this.browserHttps.https.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, true));
+    }
     if (options.statusPort !== undefined) {
       this.plainHttp = createHttpServer((req, res) => this.httpRequest(req, res));
       this.plainHttp.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, false));
@@ -89,6 +95,7 @@ export class RoomServer {
           listener.listen(port, options.host ?? "0.0.0.0", () => { listener.off("error", reject); resolve(); });
         });
       }
+      await server.browserHttps?.listen(options.host ?? "0.0.0.0");
     } catch (error) { await server.close(); throw error; }
     // Bind first: a failed second startup must not rotate the credentials of a running server.
     if (options.credentialsFile && !existing) {
@@ -102,10 +109,13 @@ export class RoomServer {
       }
     }, options.heartbeatMs ?? 15_000);
     server.heartbeat.unref();
+    server.browserHttps?.start();
     return server;
   }
   get port(): number { const address = this.http.address(); if (!address || typeof address === "string") throw new Error("Server is not listening."); return address.port; }
   get statusPort(): number | undefined { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
+  get browserUrl(): string | undefined { return this.browserHttps?.url; }
+  get nativePort(): number { return this.browserHttps?.port ?? this.port; }
   private publicStatus(): PublicStatus {
     let connectedParticipants = 0;
     for (const member of this.members.values()) if (member.socket?.readyState === WebSocket.OPEN && !this.orchestration.isWorker(member.socket)) connectedParticipants++;
@@ -280,7 +290,7 @@ export class RoomServer {
     const member = connection.member;
     if (!member || member.socket !== socket) throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
     if (method.startsWith("control.")) return this.orchestration.request(socket, connection.browser, method, params, member.identity).then(result =>
-      method === "control.list" ? { ...(result as object), serverPort: this.port } : result).catch(error => {
+      method === "control.list" ? { ...(result as object), serverPort: this.nativePort } : result).catch(error => {
       if (error instanceof RoomError) throw error;
       throw new RoomError("CONTROL", error instanceof Error ? error.message : "Control request failed.");
     });
@@ -399,6 +409,7 @@ export class RoomServer {
   }
   async close(): Promise<void> {
     this.stopping = true; if (this.heartbeat) clearInterval(this.heartbeat);
+    await this.browserHttps?.close();
     if (this.roomChangeTimer) clearTimeout(this.roomChangeTimer);
     this.orchestration.close();
     for (const member of this.members.values()) if (member.expiry) clearTimeout(member.expiry);

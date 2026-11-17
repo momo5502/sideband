@@ -3,14 +3,15 @@ import { hostname, homedir, platform } from "node:os";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import crossSpawn from "cross-spawn";
-import { RoomClient } from "./room-client.js";
+import { RoomClient, type ConnectionChange } from "./room-client.js";
 import { launchSpec, type ControlCommand, type Machine } from "./orchestration-protocol.js";
 import { stateDirectory } from "./room-profiles.js";
 import type { ConnectionProfile } from "./room-protocol.js";
 import type { RunnerConfig } from "./agent-runner.js";
 import type { Executable } from "./managed-omp.js";
 
-export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable };
+export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable;
+  onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void };
 export class Worker {
   readonly client: RoomClient;
   readonly machine: Machine;
@@ -18,10 +19,11 @@ export class Worker {
   private launches = new Map<string, Promise<object>>();
   constructor(private readonly options: WorkerOptions) {
     this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
-    const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root, options.profile.server])).digest("hex").slice(0, 32);
+    // Machines belong to a server's in-memory registry; changing that server's address must not change the machine.
+    const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root])).digest("hex").slice(0, 32);
     const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
     this.machine = { id, name: options.name ?? hostname(), platform: platform(), harnesses: ["omp"], online: true };
-    this.client = new RoomClient(options.profile, undefined, { keepAlive: true });
+    this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
     this.client.onConnected(async () => { await this.client.request("control.worker", { machine: this.machine }); });
     this.client.onEvent((event, command: ControlCommand) => { if (event === "control.command") void this.command(command); });
   }

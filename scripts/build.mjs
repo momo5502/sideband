@@ -38,6 +38,14 @@ async function packageNotices(metafiles) {
         notices.push(`${manifest.name}@${manifest.version} — LICENSE\n${await readFile(join(root, "scripts/licenses/react-remove-scroll-bar.LICENSE"), "utf8")}`);
         continue;
       }
+      if ((manifest.name === "agent-base" && manifest.version === "6.0.2") || (manifest.name === "https-proxy-agent" && manifest.version === "5.0.1")) {
+        // This version publishes its complete MIT license in README.md, but no LICENSE file.
+        const readme = await readFile(join(directory, "README.md"), "utf8");
+        const license = /\(The MIT License\)[\s\S]*?SOFTWARE\./.exec(readme)?.[0];
+        if (!license) throw new Error(`Missing ${manifest.name} README license.`);
+        notices.push(`${manifest.name}@${manifest.version} — README license\n${license.replace(/&lt;/g, "<").replace(/&gt;/g, ">")}`);
+        continue;
+      }
       throw new Error(`Missing bundled license for ${manifest.name}.`);
     }
     for (const name of licenses.sort()) notices.push(`${manifest.name}@${manifest.version} — ${name}\n${await readFile(join(directory, name), "utf8")}`);

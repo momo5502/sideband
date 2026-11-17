@@ -114,4 +114,6 @@ export function serverUrl(value) {
     url.pathname = "/ws";
     return url.href;
 }
+/** Select the stable agent certificate when native and browser TLS share a listener. */
+export const NATIVE_TLS_SERVERNAME = "sideband.native";
 //# sourceMappingURL=room-protocol.js.map

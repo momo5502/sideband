@@ -14,11 +14,14 @@ import { BrowserRoomClient } from "../dist/src/browser-protocol.js";
 import { Worker } from "../dist/src/worker.js";
 
 const directory = await mkdtemp(join(tmpdir(), "sideband-orchestration-omp-"));
-const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
-const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
+const browserCertificate = await generate([{ name: "commonName", value: "sideband.example.com" }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
+let httpsReady = false;
+const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, browserHttps: { domain: "sideband.example.com", directory: join(directory, "https"), httpPort: 0, httpsPort: 0,
+  issue: async () => ({ key: browserCertificate.private, cert: browserCertificate.cert }), log: line => { if (line.startsWith("HTTPS ready")) httpsReady = true; } } });
+const profile = { server: `127.0.0.1:${server.nativePort}`, password: server.password };
 const peer = new RoomClient(profile, "peer");
-const origin = `http://127.0.0.1:${server.statusPort}`;
-const web = new BrowserRoomClient(`${origin.replace("http:", "ws:")}/browser-ws`, server.password, "human", undefined, url => new WebSocket(url, { origin }));
+const origin = `https://127.0.0.1:${server.nativePort}`;
+const web = new BrowserRoomClient(`${origin.replace("https:", "wss:")}/browser-ws`, server.password, "human", undefined, url => new WebSocket(url, { origin, servername: "sideband.example.com", rejectUnauthorized: false }));
 let worker, model, repository, agentId, failure, announced = false, replied = false;
 const received = [];
 async function until(check) {
@@ -73,7 +76,7 @@ try {
   });
   await new Promise(resolve => repository.listen(0, "127.0.0.1", resolve));
   await peer.connect(); await peer.joinRoom("omp-orchestration"); peer.onMessage(message => received.push(message.text));
-  await web.connect();
+  await until(() => httpsReady); await web.connect();
   worker = new Worker({ profile, entry: process.env.SIDEBAND_SMOKE_ENTRY ? resolve(process.env.SIDEBAND_SMOKE_ENTRY) : join(root, "dist/src/cli.js"), name: "real-omp-test", root: join(directory, "workspaces"),
     omp: { command: process.env.OMP_BINARY ?? "omp", args: ["-e", provider, "--no-lsp", "--no-skills", "--no-rules", "--no-tools"] } });
   await worker.start();

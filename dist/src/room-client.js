@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Agent as HttpsAgent } from "node:https";
 import WebSocket from "ws";
 import { roomProxyAgent, roomProxyUrl } from "./room-proxy.js";
-import { AgentKeys, RoomError, VERSION, loginProof, messageProof, parsePassword, serverUrl, verifyMessage, validPresence } from "./room-protocol.js";
+import { AgentKeys, RoomError, VERSION, NATIVE_TLS_SERVERNAME, loginProof, messageProof, parsePassword, serverUrl, verifyMessage, validPresence } from "./room-protocol.js";
 export class RoomClient {
     profile;
     options;
@@ -56,16 +56,22 @@ export class RoomClient {
             throw new Error("Already connected or connecting.");
         this.wanted = true;
         this.state = "connecting";
+        this.options.onConnection?.({ state: "connecting" });
         const generation = ++this.generation;
         try {
             await this.open(generation);
         }
         catch (error) {
-            if (generation === this.generation) {
-                this.wanted = false;
-                this.state = "off";
-                this.socket?.terminate();
+            if (generation !== this.generation || !this.wanted)
+                throw error;
+            this.socket?.terminate();
+            if (this.options.retryInitial && !this.permanent(error)) {
+                this.error(error);
+                this.scheduleReconnect();
+                return;
             }
+            this.wanted = false;
+            this.state = "off";
             throw error;
         }
     }
@@ -85,7 +91,7 @@ export class RoomClient {
         const socket = new WebSocket(this.endpoint, {
             // This isn't unverified TLS: the exact SHA-256 certificate pin is verified below,
             // before any password, public identity or message is sent.
-            rejectUnauthorized: false, handshakeTimeout: proxy ? 10_000 : 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
+            rejectUnauthorized: false, ...{ servername: NATIVE_TLS_SERVERNAME }, handshakeTimeout: proxy ? 10_000 : 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
             // Explicitly bypass Node's global proxy agent when NO_PROXY (or no proxy) selects direct access.
             agent,
         });
@@ -227,6 +233,7 @@ export class RoomClient {
             this.attempts = 0;
             this.lastError = undefined;
             resetWatchdog();
+            this.options.onConnection?.({ state: "on" });
         }
         catch (error) {
             socket.terminate();
@@ -251,6 +258,8 @@ export class RoomClient {
     scheduleReconnect() {
         const delay = this.options.reconnectMs ?? Math.min(10_000, 250 * 2 ** Math.min(this.attempts++, 6));
         const generation = ++this.generation;
+        this.state = "reconnecting";
+        this.options.onConnection?.({ state: "reconnecting", retryInMs: delay });
         this.reconnectTimer = setTimeout(async () => {
             if (!this.wanted || generation !== this.generation)
                 return;
@@ -263,10 +272,11 @@ export class RoomClient {
                 this.error(error);
                 if (generation !== this.generation || !this.wanted)
                     return;
-                if (error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE", "PROXY_CONFIG", "PROXY_AUTH"].includes(error.code)) {
+                if (this.permanent(error)) {
                     this.wanted = false;
                     this.state = "disconnected";
                     this.room = null;
+                    this.options.onConnection?.({ state: "disconnected", error: error instanceof Error ? error : new Error("Connection failed.") });
                     return;
                 }
                 if (this.wanted)
@@ -275,6 +285,9 @@ export class RoomClient {
         }, delay);
         if (!this.options.keepAlive)
             this.reconnectTimer.unref();
+    }
+    permanent(error) {
+        return error instanceof RoomError && ["SERVER_IDENTITY", "AUTH_FAILED", "NAME_IN_USE", "PROXY_CONFIG", "PROXY_AUTH"].includes(error.code);
     }
     request(method, params = {}) {
         const socket = this.socket;

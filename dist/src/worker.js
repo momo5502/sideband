@@ -15,10 +15,11 @@ export class Worker {
     constructor(options) {
         this.options = options;
         this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
-        const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root, options.profile.server])).digest("hex").slice(0, 32);
+        // Machines belong to a server's in-memory registry; changing that server's address must not change the machine.
+        const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root])).digest("hex").slice(0, 32);
         const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
         this.machine = { id, name: options.name ?? hostname(), platform: platform(), harnesses: ["omp"], online: true };
-        this.client = new RoomClient(options.profile, undefined, { keepAlive: true });
+        this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
         this.client.onConnected(async () => { await this.client.request("control.worker", { machine: this.machine }); });
         this.client.onEvent((event, command) => { if (event === "control.command")
             void this.command(command); });

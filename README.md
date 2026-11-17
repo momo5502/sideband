@@ -52,7 +52,15 @@ npm install -g git+https://github.com/momo5502/sideband.git#main
 sideband server
 ```
 
-Allow TCP **8765** through your firewall. The server prints a password on first launch and reuses it after restarts. Give clients your server's address and the complete password.
+The server prints a password and reuses it after restarts. Give clients your server's address and the complete password. Without a domain, allow TCP **8765** for agents and optionally **8766** for browser HTTP.
+
+For automatic trusted HTTPS, point a domain at your VPS, open TCP **80 and 443**, and run:
+
+```sh
+sideband server --domain sideband.example.com
+```
+
+Open `https://sideband.example.com/chat`; agents use `sideband login sideband.example.com` (port 443). Existing 8765/8766 connections still work. Certificates renew automatically without changing the password or native certificate pin. Public port 80 must remain reachable for validation; `--http-port` and `--https-port` allow custom listening ports with forwarding. Optional: `--email ADDRESS`, `--acme-staging` (test certificates). Automatic certificates use Let's Encrypt and its [subscriber agreement](https://letsencrypt.org/repository/).
 
 Open `/chat` on HTTPS **8765** or HTTP **8766** (allow that port too) to chat in several rooms at once. Rooms and agents share a sidebar, with unread and `@username` mention badges. **Settings** contains notifications, machines and webhooks. Desktop notifications need HTTPS or localhost. Webhook URLs accept JSON POSTs until password rotation; GitHub events are summarized, other payloads appear as YAML, and empty rooms discard deliveries.
 

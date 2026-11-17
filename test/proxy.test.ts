@@ -64,6 +64,21 @@ async function proxy(upstreamPort: number, options: { authorization?: string; st
     async close() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 
+test("shared HTTPS keeps native certificate SNI through HTTP CONNECT and reconnect", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-sni-proxy-"));
+  const tls = await generate([{ name: "commonName", value: "sideband.example.com" }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
+  let ready = false;
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, browserHttps: { domain: "sideband.example.com", directory, httpPort: 0, httpsPort: 0,
+    issue: async () => ({ key: tls.private, cert: tls.cert }), log: line => { if (line.startsWith("HTTPS ready")) ready = true; } } });
+  const tunnel = await proxy(server.nativePort);
+  const client = new RoomClient({ server: `sideband.example.com:${server.nativePort}`, password: server.password }, "proxied-native", { proxyEnv: { HTTPS_PROXY: tunnel.url }, reconnectMs: 20 });
+  try {
+    await until(() => ready); await client.connect(); const room = await client.joinRoom("proxy-sni");
+    client.dropConnection(); await until(() => tunnel.requests.length >= 2 && client.state === "on");
+    assert.equal(client.room?.id, room.id); assert.ok(tunnel.requests.every(request => request.target === `sideband.example.com:${server.nativePort}`));
+  } finally { await client.close(); await tunnel.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-sni-proxy-"))); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("proxy selection honors lowercase, precedence, HTTP fallback and NO_PROXY hosts/ports/IPv6", () => {
   const url = "wss://room.example.com:8765/ws";
   assert.equal(roomProxyUrl(url, {}), undefined);

@@ -22,14 +22,18 @@ function CopyCommand({ text }: { text: string }) {
   }}>{copied ? <Check size={15} /> : <Copy size={15} />}</Button></div>;
 }
 function WorkerSetup({ state }: { state: WorkspaceState }) {
-  const server = location.protocol === "https:" ? location.host : `${location.hostname}:${state.control.serverPort ?? 8765}`;
+  const port = state.control.serverPort ?? 8765;
+  const server = `${location.hostname}${port === 443 ? "" : `:${port}`}`;
   return <div className="setup-box"><p className="font-medium text-zinc-300">Connect a machine</p><p className="mt-1">On a machine with OMP and Sideband installed, sign in once:</p><CopyCommand text={`sideband login ${server}`} /><p className="mt-3">Then keep its worker running:</p><CopyCommand text="sideband worker" /></div>;
 }
 export function NewAgent({ state, store, close, initial }: { state: WorkspaceState; store: BrowserWorkspace; close(): void; initial?: ManagedAgent }) {
   const [repository, setRepository] = useState(initial?.repository ?? ""), [name, setName] = useState(() => {
     if (!initial) return ""; const names = new Set(state.control.agents.map(agent => agent.name.toLowerCase())); const base = initial.name.slice(0, 55); let result = base, index = 2; while (names.has(result.toLowerCase())) result = `${base}-${index++}`; return result;
   }), [room, setRoom] = useState(initial?.room ?? state.joined.find(room => room.id === state.lastRoom)?.name ?? "");
-  const [machine, setMachine] = useState(() => initial?.machineId ?? state.control.machines.find(machine => machine.online && machine.harnesses.includes("omp"))?.id ?? "");
+  const [machine, setMachine] = useState(() => {
+    const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes("omp"));
+    return eligible.find(machine => machine.id === initial?.machineId)?.id ?? eligible.find(machine => machine.name === initial?.machineName)?.id ?? eligible[0]?.id ?? "";
+  });
   const [busy, setBusy] = useState(false), [error, setError] = useState(""); const editedName = useRef(false);
   const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes("omp")), selected = eligible.find(candidate => candidate.id === machine);
   const [recent] = useState<string[]>(() => { try { const values = JSON.parse(localStorage.getItem("sideband.repositories.v1") ?? "[]"); return Array.isArray(values) ? values.filter(value => typeof value === "string").slice(0, 8) : []; } catch { return []; } });
