@@ -7,6 +7,7 @@ import { isIP } from "node:net";
 import { dirname, join } from "node:path";
 import { createSecureContext } from "node:tls";
 import { domainToASCII } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
 import * as acme from "acme-client";
 import { NATIVE_TLS_SERVERNAME } from "./room-protocol.js";
 export function browserDomain(value) {
@@ -32,21 +33,75 @@ acme.axios.interceptors.request.use(config => {
     return config;
 });
 export async function issueBrowserCertificate(request) {
-    return issuanceSignal.run(request.signal, async () => {
+    // Validation from several CA vantage points can take minutes, especially with IPv6 fallback.
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10 * 60_000)]);
+    return issuanceSignal.run(signal, async () => {
         const client = new acme.Client({ directoryUrl: request.directoryUrl ?? (request.staging ? acme.directory.letsencrypt.staging : acme.directory.letsencrypt.production),
-            accountKey: request.accountKey, backoffAttempts: 5, backoffMin: 1000, backoffMax: 5000 });
+            accountKey: request.accountKey });
         const key = await acme.crypto.createPrivateEcdsaKey();
         const [, csr] = await acme.crypto.createCsr({ commonName: request.domain, altNames: [request.domain] }, key);
-        const cert = await client.auto({ csr, email: request.email, termsOfServiceAgreed: true, challengePriority: ["http-01"],
-            challengeCreateFn: async (_authorization, challenge, authorization) => {
-                request.signal.throwIfAborted();
-                if (challenge.type !== "http-01")
+        const pending = new Map();
+        const terminal = (status) => ["valid", "invalid", "deactivated", "expired", "revoked"].includes(status);
+        const poll = async (read, accepted) => {
+            let delay = 2000;
+            while (true) {
+                signal.throwIfAborted();
+                const value = await read();
+                if (accepted.includes(value.status))
+                    return value;
+                if (!["pending", "processing"].includes(value.status))
+                    throw new Error(`ACME validation ${value.status}${value.error ? `: ${JSON.stringify(value.error)}` : "."}`);
+                await sleep(delay, undefined, { signal });
+                delay = Math.min(15_000, delay * 2);
+            }
+        };
+        try {
+            await client.createAccount({ termsOfServiceAgreed: true, ...(request.email ? { contact: [`mailto:${request.email}`] } : {}) });
+            let order = await client.createOrder({ identifiers: [{ type: "dns", value: request.domain }] });
+            for (const authorization of await client.getAuthorizations(order)) {
+                if (authorization.status === "valid")
+                    continue;
+                if (terminal(authorization.status))
+                    throw new Error(`ACME authorization is ${authorization.status}.`);
+                const challenge = authorization.challenges.find(value => value.type === "http-01");
+                if (!challenge)
                     throw new Error("Only HTTP-01 certificate validation is supported.");
-                request.challenges.set(challenge.token, authorization);
-            },
-            challengeRemoveFn: async (_authorization, challenge) => { request.challenges.delete(challenge.token); },
-        });
-        return { key: key.toString(), cert };
+                signal.throwIfAborted();
+                const entry = { authorization, token: challenge.token };
+                request.challenges.set(challenge.token, await client.getChallengeKeyAuthorization(challenge));
+                pending.set(authorization.url, entry);
+                // Let the CA validate reachability. A local probe can fail with hairpin routing or bad IPv6
+                // even when the CA's IPv4 fallback can succeed, and must not shorten its validation window.
+                await client.completeChallenge(challenge);
+                await poll(async () => {
+                    const updated = (await client.getAuthorizations(order)).find(value => value.url === authorization.url);
+                    if (!updated)
+                        throw new Error("Certificate authority omitted the pending authorization.");
+                    entry.authorization = updated;
+                    return updated;
+                }, ["valid"]);
+                request.challenges.delete(challenge.token);
+                pending.delete(authorization.url);
+            }
+            order = await poll(() => client.getOrder(order), ["ready", "valid"]);
+            if (order.status !== "valid")
+                order = await client.finalizeOrder(order, csr);
+            order = await poll(() => client.getOrder(order), ["valid"]);
+            return { key: key.toString(), cert: await client.getCertificate(order) };
+        }
+        finally {
+            // auto() removes tokens on polling failure before the CA finishes. Explicitly deactivate
+            // incomplete authorizations instead; if the CA is unreachable, retain their responses.
+            await issuanceSignal.run(AbortSignal.timeout(5000), async () => {
+                for (const { authorization, token } of pending.values()) {
+                    try {
+                        if (terminal(authorization.status) || terminal((await client.deactivateAuthorization(authorization)).status))
+                            request.challenges.delete(token);
+                    }
+                    catch { /* The listener keeps this token temporarily for any late CA validation. */ }
+                }
+            });
+        }
     });
 }
 async function readJson(path) {
@@ -99,6 +154,7 @@ export class BrowserHttps {
     https;
     domain;
     challenges = new Map();
+    challengeExpiry = new Map();
     sockets = new Set();
     abort = new AbortController();
     directory;
@@ -113,6 +169,7 @@ export class BrowserHttps {
         this.directory = join(options.directory, options.staging ? "staging" : "production", this.domain);
         this.http = createHttpServer((req, res) => {
             const token = /^\/\.well-known\/acme-challenge\/([A-Za-z0-9_-]+)$/.exec(req.url ?? "")?.[1];
+            this.pruneChallenges();
             const authorization = token && this.challenges.get(token);
             const headers = { "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8", Connection: "close" };
             if (token) {
@@ -173,7 +230,7 @@ export class BrowserHttps {
             try {
                 await new Promise((resolve, reject) => {
                     listener.once("error", reject);
-                    listener.listen(port, host, () => { listener.off("error", reject); resolve(); });
+                    listener.listen({ port, ...(host ? { host } : {}), ipv6Only: false }, () => { listener.off("error", reject); resolve(); });
                 });
             }
             catch (error) {
@@ -202,6 +259,9 @@ export class BrowserHttps {
     }
     async update() {
         let delay = 12 * 60 * 60 * 1000;
+        this.pruneChallenges();
+        const previousTokens = new Set(this.challenges.keys());
+        let failed = false;
         try {
             const now = this.options.now?.() ?? Date.now();
             const certificate = this.certificate && new X509Certificate(this.certificate.cert);
@@ -235,6 +295,7 @@ export class BrowserHttps {
         catch (error) {
             if (this.abort.signal.aborted)
                 return;
+            failed = true;
             delay = Math.min(12 * 60 * 60 * 1000, 10 * 60_000 * 2 ** Math.min(this.failures++, 10));
             const retryAfter = error?.response?.headers?.["retry-after"];
             if (typeof retryAfter === "string" || typeof retryAfter === "number") {
@@ -242,14 +303,32 @@ export class BrowserHttps {
                 if (Number.isFinite(requested))
                     delay = Math.max(delay, Math.min(requested, 7 * 86400_000));
             }
-            this.options.log?.(`HTTPS certificate setup failed: ${error instanceof Error ? error.message : "Unknown ACME error"}. Retrying in ${Math.round(delay / 60_000)} min. Native agents and the existing HTTP interface remain available.`);
+            this.options.log?.(`HTTPS certificate setup failed: ${error instanceof Error ? error.message : "Unknown ACME error"}. Retrying in ${Math.round(delay / 60_000)} min. Check that A/AAAA records point to this server and public port 80 is reachable; correct or remove an incorrect AAAA record. Native agents and the existing HTTP interface remain available.`);
         }
         finally {
-            this.challenges.clear();
+            for (const token of this.challenges.keys()) {
+                if (failed && !this.abort.signal.aborted)
+                    this.challengeExpiry.set(token, Date.now() + 60 * 60_000);
+                else if (!previousTokens.has(token))
+                    this.challenges.delete(token);
+            }
+            this.pruneChallenges();
             if (!this.abort.signal.aborted) {
                 this.timer = setTimeout(() => { void this.renew(); }, delay);
                 this.timer.unref();
             }
+        }
+    }
+    pruneChallenges() {
+        for (const [token, expiry] of this.challengeExpiry)
+            if ((!this.running && expiry <= Date.now()) || !this.challenges.has(token)) {
+                this.challenges.delete(token);
+                this.challengeExpiry.delete(token);
+            }
+        while (this.challenges.size > 64) {
+            const token = this.challenges.keys().next().value;
+            this.challenges.delete(token);
+            this.challengeExpiry.delete(token);
         }
     }
     async close() {
@@ -257,6 +336,7 @@ export class BrowserHttps {
         if (this.timer)
             clearTimeout(this.timer);
         this.challenges.clear();
+        this.challengeExpiry.clear();
         for (const socket of this.sockets)
             socket.destroy();
         await Promise.all([this.http, this.https].map(listener => new Promise(resolve => listener.close(() => resolve()))));

@@ -92,10 +92,10 @@ export class RoomServer {
       for (const [listener, port] of [[server.http, options.port ?? 8765], [server.plainHttp, options.statusPort]] as const) if (listener) {
         await new Promise<void>((resolve, reject) => {
           listener.once("error", reject);
-          listener.listen(port, options.host ?? "0.0.0.0", () => { listener.off("error", reject); resolve(); });
+          listener.listen({ port, ...(options.host ? { host: options.host } : {}), ipv6Only: false }, () => { listener.off("error", reject); resolve(); });
         });
       }
-      await server.browserHttps?.listen(options.host ?? "0.0.0.0");
+      await server.browserHttps?.listen(options.host);
     } catch (error) { await server.close(); throw error; }
     // Bind first: a failed second startup must not rotate the credentials of a running server.
     if (options.credentialsFile && !existing) {

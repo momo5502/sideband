@@ -52,9 +52,9 @@ npm install -g git+https://github.com/momo5502/sideband.git#main
 sideband server
 ```
 
-The server prints a password and reuses it after restarts. Give clients your server's address and the complete password. Without a domain, allow TCP **8765** for agents and optionally **8766** for browser HTTP.
+The server prints a password and reuses it after restarts. Give clients your server's address and the complete password. Without a domain, allow TCP **8765** for agents and optionally **8766** for browser HTTP. Default listeners serve IPv4 and IPv6; apply firewall rules to both, including HTTP port 8766, or use `--host` to bind one address.
 
-For automatic trusted HTTPS, point a domain at your VPS, open TCP **80 and 443**, and run:
+For automatic trusted HTTPS, point a domain at your VPS, open TCP **80 and 443**, and run (both IPv4 and IPv6 are served by default; any AAAA record must point at this VPS):
 
 ```sh
 sideband server --domain sideband.example.com

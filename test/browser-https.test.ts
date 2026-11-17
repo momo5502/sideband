@@ -21,9 +21,9 @@ async function certificate(): Promise<BrowserCertificate> {
   const pair = await generate([{ name: "commonName", value: domain }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
   return { key: pair.private, cert: pair.cert };
 }
-async function request(port: number, path: string, secure = true, servername = domain) {
+async function request(port: number, path: string, secure = true, servername = domain, host = "127.0.0.1") {
   return new Promise<{ code: number; body: string; headers: import("node:http").IncomingHttpHeaders; certificate?: string }>((resolve, reject) => {
-    const options = { host: "127.0.0.1", port, path, agent: false as const, ...(secure ? { rejectUnauthorized: false, servername } : {}) };
+    const options = { host, port, path, agent: false as const, ...(secure ? { rejectUnauthorized: false, servername } : {}) };
     const req = (secure ? httpsGet : httpGet)(options, res => {
       let body = ""; const raw = secure ? (res.socket as import("node:tls").TLSSocket).getPeerCertificate().raw : undefined;
       res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; });
@@ -137,4 +137,47 @@ test("corrupt browser cache is recoverable and shutdown cancels pending issuance
     assert.equal(await readFile(path, "utf8"), "broken cache", "late issuance cannot install a certificate after shutdown");
     assert.equal(logs.some(line => line.startsWith("HTTPS ready")), false);
   } finally { await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-certificate-recovery-"))); await rm(directory, { recursive: true, force: true }); }
+});
+async function ipv6Available(): Promise<boolean> {
+  const probe = createServer();
+  try { await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(0, "::1", resolve); }); return true; }
+  catch (error) { if (["EAFNOSUPPORT", "EADDRNOTAVAIL", "EPROTONOSUPPORT"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
+  finally { await new Promise<void>(resolve => probe.close(() => resolve())); }
+}
+test("default browser/ACME listeners support IPv4 and IPv6 and retain unresolved challenges across retries", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-dual-stack-")), identity = await createServerIdentity(), pair = await certificate();
+  let fail = true;
+  const server = new BrowserHttps({ domain, directory, httpPort: 0, httpsPort: 0, issue: async request => {
+    if (fail) { request.challenges.set("still_pending", "late-ca-response"); throw new Error("CA temporarily unavailable"); }
+    return pair;
+  } }, { key: identity.privateKey, cert: identity.certificate }, (_req, res) => res.end("dual stack"));
+  try {
+    await server.listen(); await server.renew();
+    assert.equal((await request(server.httpPort, "/.well-known/acme-challenge/still_pending", false)).body, "late-ca-response");
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    t.mock.timers.tick(59 * 60_000); await server.renew();
+    t.mock.timers.tick(2 * 60_000);
+    assert.equal((await request(server.httpPort, "/.well-known/acme-challenge/still_pending", false)).body, "late-ca-response", "a reused pending token gets a fresh retention window");
+    t.mock.timers.reset();
+    fail = false; await server.renew();
+    assert.equal((await request(server.httpPort, "/.well-known/acme-challenge/still_pending", false)).body, "late-ca-response", "another issuance must not clear an unresolved older challenge");
+    assert.equal((await request(server.port, "/chat")).body, "dual stack");
+    if (await ipv6Available()) {
+      assert.equal((await request(server.httpPort, "/.well-known/acme-challenge/still_pending", false, domain, "::1")).body, "late-ca-response");
+      assert.equal((await request(server.port, "/chat", true, domain, "::1")).body, "dual stack");
+    } else t.diagnostic("IPv6 is unavailable on this host; the default IPv4 fallback was verified.");
+  } finally { await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-dual-stack-"))); await rm(directory, { recursive: true, force: true }); }
+});
+test("default room and status listeners support native clients on both address families", async t => {
+  const server = await RoomServer.start({ port: 0, statusPort: 0 });
+  const clients = [new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "v4")];
+  try {
+    await clients[0]!.connect(); const room = await clients[0]!.joinRoom("dual-stack");
+    assert.equal((await request(server.statusPort!, "/status.json", false)).code, 200);
+    if (await ipv6Available()) {
+      const v6 = new RoomClient({ server: `[::1]:${server.port}`, password: server.password }, "v6"); clients.push(v6);
+      await v6.connect(); await v6.joinRoom(room.id); assert.equal((await v6.members()).length, 2);
+      assert.equal((await request(server.statusPort!, "/status.json", false, domain, "::1")).code, 200);
+    } else t.diagnostic("IPv6 is unavailable on this host; the default IPv4 fallback was verified.");
+  } finally { await Promise.all(clients.map(client => client.close())); await server.close(); }
 });

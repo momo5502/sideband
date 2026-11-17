@@ -1,16 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, get } from "node:http";
 import { webcrypto, X509Certificate, createPrivateKey, randomUUID } from "node:crypto";
 import { Pkcs10CertificateRequest, X509CertificateGenerator, SubjectAlternativeNameExtension } from "@peculiar/x509";
 import * as acme from "acme-client";
 import { issueBrowserCertificate } from "../src/browser-https.js";
 
-test("real ACME client completes HTTP-01 and finalizes its CSR against a local CA", { timeout: 10000 }, async () => {
+for (const mode of ["fast", "slow", "abort", "cancel-fails", "invalid"] as const) test(`real ACME lifecycle: ${mode}`, { timeout: 45000 }, async () => {
   const challenges = new Map<string, string>(), requests: string[] = [], domain = "127.0.0.1";
-  let challengeValid = false, certificate = "", origin = "";
+  let challengeValid = false, certificate = "", origin = "", validationStarted = 0, deactivated = false;
+  const controller = new AbortController();
+  const probe = () => new Promise<string>((resolve, reject) => {
+    get(`${origin}/.well-known/acme-challenge/local_test_token`, res => {
+      let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; }); res.on("end", () => res.statusCode === 200 ? resolve(body) : reject(new Error("Challenge response disappeared")));
+    }).on("error", reject);
+  });
   const authority = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  const authorization = () => ({ identifier: { type: "dns", value: domain }, status: challengeValid ? "valid" : "pending",
+  const authorization = () => ({ identifier: { type: "dns", value: domain }, status: deactivated ? "deactivated" : validationStarted && mode === "invalid" ? "invalid" : challengeValid ? "valid" : "pending",
     challenges: [{ type: "http-01", token: "local_test_token", url: `${origin}/challenge`, status: challengeValid ? "valid" : "pending" }] });
   const order = () => ({ status: certificate ? "valid" : "ready", identifiers: [{ type: "dns", value: domain }],
     authorizations: [`${origin}/authorization`], finalize: `${origin}/finalize`, ...(certificate ? { certificate: `${origin}/certificate` } : {}) });
@@ -28,10 +34,22 @@ test("real ACME client completes HTTP-01 and finalizes its CSR against a local C
       const jws = JSON.parse(encoded), body = jws.payload ? JSON.parse(Buffer.from(jws.payload, "base64url").toString()) : {};
       if (req.url === "/account") { assert.equal(body.termsOfServiceAgreed, true); assert.deepEqual(body.contact, ["mailto:owner@example.com"]); res.statusCode = 201; res.setHeader("Location", `${origin}/account/1`); res.end(JSON.stringify({ status: "valid" })); }
       else if (req.url === "/order") { res.statusCode = 201; res.setHeader("Location", `${origin}/order/1`); res.end(JSON.stringify(order())); }
-      else if (req.url === "/authorization") res.end(JSON.stringify(authorization()));
+      else if (req.url === "/authorization") {
+        if (body.status === "deactivated") {
+          assert.ok(challenges.has("local_test_token"), "the CA must be told to stop before removing its challenge response");
+          if (mode === "cancel-fails") { res.statusCode = 503; res.end(JSON.stringify({ detail: "Cancellation temporarily unavailable" })); return; }
+          deactivated = true;
+        }
+        if (mode === "slow" && validationStarted && Date.now() - validationStarted >= 18_000) {
+          assert.match(await probe(), /^local_test_token\./); challengeValid = true;
+        }
+        res.end(JSON.stringify(authorization()));
+      }
       else if (req.url === "/challenge") {
         assert.match(challenges.get("local_test_token") ?? "", /^local_test_token\.[A-Za-z0-9_-]+$/);
-        challengeValid = true; res.end(JSON.stringify(authorization().challenges[0]));
+        assert.match(await probe(), /^local_test_token\./); validationStarted = Date.now();
+        challengeValid = mode === "fast"; res.end(JSON.stringify(authorization().challenges[0]));
+        if (mode === "abort" || mode === "cancel-fails") setImmediate(() => controller.abort());
       } else if (req.url === "/finalize") {
         assert.equal(challengeValid, true);
         const csr = new Pkcs10CertificateRequest(Buffer.from(body.csr, "base64url"));
@@ -47,14 +65,20 @@ test("real ACME client completes HTTP-01 and finalizes its CSR against a local C
   });
   await new Promise<void>(resolve => server.listen(0, domain, resolve));
   const port = (server.address() as import("node:net").AddressInfo).port; origin = `http://${domain}:${port}`;
-  const settings = (acme.axios.defaults as typeof acme.axios.defaults & { acmeSettings: { httpChallengePort: number } }).acmeSettings;
-  const previousPort = settings.httpChallengePort; settings.httpChallengePort = port;
   try {
-    const pair = await issueBrowserCertificate({ domain, accountKey: (await acme.crypto.createPrivateEcdsaKey()).toString(), email: "owner@example.com",
-      signal: new AbortController().signal, challenges, directoryUrl: `${origin}/directory` });
+    const issuance = issueBrowserCertificate({ domain, accountKey: (await acme.crypto.createPrivateEcdsaKey()).toString(), email: "owner@example.com",
+      signal: controller.signal, challenges, directoryUrl: `${origin}/directory` });
+    if (mode === "abort" || mode === "cancel-fails" || mode === "invalid") {
+      await assert.rejects(issuance);
+      assert.equal(challenges.size, mode === "cancel-fails" ? 1 : 0);
+      if (mode !== "invalid") assert.ok(requests.includes("POST /authorization"), "cancel the CA authorization even when the caller's signal is aborted");
+      return;
+    }
+    const pair = await issuance;
     const leaf = new X509Certificate(pair.cert); assert.ok(leaf.checkPrivateKey(createPrivateKey(pair.key))); assert.equal(leaf.issuer, "CN=Local test CA");
-    assert.ok(requests.some(value => value.includes("/.well-known/acme-challenge/")), "the library actually verifies the exposed challenge over HTTP");
+    assert.ok(requests.some(value => value.includes("/.well-known/acme-challenge/")), "the CA actually verifies the exposed challenge over HTTP");
     assert.ok(requests.includes("POST /challenge") && requests.includes("POST /finalize") && requests.includes("POST /certificate"));
     assert.equal(challenges.size, 0);
-  } finally { settings.httpChallengePort = previousPort; server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+    if (mode === "slow") assert.ok(Date.now() - validationStarted >= 18_000, "validation succeeds beyond the old polling budget without discarding its token");
+  } finally { controller.abort(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
