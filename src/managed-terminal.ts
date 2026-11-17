@@ -1,5 +1,6 @@
 import { createServer, type Socket, connect } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import spawn from "cross-spawn";
@@ -37,7 +38,10 @@ export class ManagedTerminal implements ManagedHarness {
   private runtime: object = {};
   private pending = new Map<string, { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   constructor(private readonly executable: Executable, private readonly cwd: string, private readonly sessions: string, private readonly host: OmpHost,
-    private readonly entry: string, private readonly openTerminal = launchTerminal, private readonly detectTerminal = terminalLauncher) {}
+    private readonly entry: string, private readonly openTerminal = launchTerminal, private readonly detectTerminal = terminalLauncher) {
+    // npm's Unix bin is a symlink; companion assets belong beside the actual CLI module.
+    this.entry = realpathSync(entry);
+  }
   async start(options: { model?: string; effort?: string; resume?: string }): Promise<void> {
     const launcher = this.detectTerminal();
     if (!launcher) throw new Error("No terminal launcher is available. Install tmux on a headless machine, or choose Background mode.");

@@ -1,5 +1,6 @@
 import { createServer, connect } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import spawn from "cross-spawn";
@@ -42,6 +43,8 @@ export class ManagedTerminal {
         this.entry = entry;
         this.openTerminal = openTerminal;
         this.detectTerminal = detectTerminal;
+        // npm's Unix bin is a symlink; companion assets belong beside the actual CLI module.
+        this.entry = realpathSync(entry);
     }
     async start(options) {
         const launcher = this.detectTerminal();

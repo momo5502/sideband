@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { ManagedTerminal } from "../src/managed-terminal.js";
 
@@ -10,10 +10,11 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 10000; while (!(await check())) { if (Date.now() > end) throw new Error("Terminal fixture timed out."); await pause(20); } }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const fixtureCode = `import {connect} from "node:net";
-import {writeFile} from "node:fs/promises";
+import {writeFile,access} from "node:fs/promises";
 import {join} from "node:path";
 import {readLocal,writeLocal} from ${JSON.stringify(new URL("../src/local-wire.js", import.meta.url).href)};
 await writeFile("pid.txt",String(process.pid));
+await access(process.argv[process.argv.indexOf("-e")+1]);
 if(process.argv.includes("--no-plugin")){setInterval(()=>{},1000)} else {
  const bootstrap=JSON.parse(process.env.SIDEBAND_MANAGED_BRIDGE);const socket=connect(bootstrap.port,"127.0.0.1");
  const sessionFile=join(process.argv[process.argv.indexOf("--session-dir")+1],"fixture.jsonl");let seq=0;
@@ -25,8 +26,9 @@ if(process.argv.includes("--no-plugin")){setInterval(()=>{},1000)} else {
  });
 }
 `;
-async function fixture(args: string[] = []) {
-  const directory = await mkdtemp(join(tmpdir(), "sideband-native-terminal-")), entry = resolve("dist/src/cli.js");
+async function fixture(args: string[] = [], linked = false) {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-native-terminal-")); let entry = resolve("dist/src/cli.js");
+  if (linked) { const link = join(directory, "linked-cli"); await symlink(dirname(entry), link, process.platform === "win32" ? "junction" : "dir"); entry = join(link, "cli.js"); }
   const code = join(directory, "omp.mjs"); await writeFile(code, fixtureCode);
   const events: { kind: string; text: string }[] = []; let exits = 0;
   const driver = new ManagedTerminal({ command: process.execPath, args: [code, ...args] }, directory, join(directory, "sessions"), {
@@ -47,6 +49,11 @@ test("native driver sends private instructions/asides and cleans up after a loca
     await until(async () => !(await readdir(f.directory)).some(name => /^terminal-.*\.(cmd|command|sh|json)$/.test(name)));
     assert.ok(f.driver.sessionFile?.endsWith("fixture.jsonl"));
   } finally { await f.close(); }
+});
+test("native launch resolves companion plugin assets through an npm-style linked CLI", { timeout: 20000 }, async () => {
+  const f = await fixture([], true);
+  try { await f.driver.start({}); await f.driver.prompt("linked entry works"); await until(() => f.events.some(event => event.text === "linked entry works")); }
+  finally { await f.close(); }
 });
 for (const flag of ["--no-plugin", "--ignore-shutdown"]) test(`stop waits for actual OMP termination when ${flag}`, { timeout: 20000 }, async () => {
   const f = await fixture([flag]); let startup: Promise<void> | undefined;
