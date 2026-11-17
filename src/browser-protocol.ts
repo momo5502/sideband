@@ -27,9 +27,10 @@ export class BrowserRoomClient {
   readonly joinedRooms = new Map<string, Room>();
   onMessage: (message: SignedMessage) => void = () => {};
   onPresence: (event: PresenceEvent) => void = () => {};
-  onClose: () => void = () => {};
+  onClose: (event?: CloseEvent) => void = () => {};
   onError: (error: Error) => void = () => {};
   onControl: (event: string, data: any) => void = () => {};
+  onRoomsChanged: () => void = () => {};
   private socket?: WebSocket;
   private authenticated = false;
   private multiRoom = false;
@@ -58,14 +59,16 @@ export class BrowserRoomClient {
           this.onPresence(packet.data);
         } else if (this.authenticated && typeof packet.event === "string" && packet.event.startsWith("control.")) {
           this.onControl(packet.event, packet.data);
+        } else if (this.authenticated && packet.event === "rooms.changed") {
+          this.onRoomsChanged();
         }
       } catch (error) { this.onError(error instanceof Error ? error : new Error("Invalid server message.")); }
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", event => {
       if (this.socket !== socket) return;
       this.socket = undefined; this.authenticated = false;
       for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(new Error("Connection lost. Check history before resending.")); }
-      this.pending.clear(); this.onClose();
+      this.pending.clear(); this.onClose(event);
     });
     try {
       await new Promise<void>((resolve, reject) => {

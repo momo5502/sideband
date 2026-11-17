@@ -3,6 +3,7 @@ import { join, resolve, relative } from "node:path";
 import spawn from "cross-spawn";
 import { RoomClient } from "./room-client.js";
 import { formatDelivery } from "./protocol.js";
+import { RoomError } from "./room-protocol.js";
 import { ManagedOmp } from "./managed-omp.js";
 import { OutputBuffer, launchSpec } from "./orchestration-protocol.js";
 import { terminateTree } from "./process-tree.js";
@@ -41,9 +42,18 @@ export class AgentRunner {
         this.workspace = join(this.directory, "repo");
         this.desiredRoom = spec.room ?? "";
         const { prompt: _prompt, ...description } = spec;
-        this.agent = { ...description, id: config.id, machineId: config.machineId, machineName: config.machineName, room: this.desiredRoom, state: "preparing", online: true, createdAt: Date.now() };
+        this.agent = { ...description, id: config.id, machineId: config.machineId, machineName: config.machineName, room: this.desiredRoom, state: "preparing", online: true, createdAt: Date.now(), canResume: false };
         this.client = new RoomClient(config.profile, spec.name, { onError: error => this.record("connection", error.message) });
-        this.client.onConnected(async () => { await this.client.request("control.runner", { agent: this.agent }); });
+        this.client.onConnected(async () => {
+            try {
+                await this.client.request("control.runner", { agent: this.agent });
+            }
+            catch (error) {
+                if (error instanceof RoomError && error.code === "AGENT_FORGOTTEN")
+                    await this.close();
+                throw error;
+            }
+        });
         this.client.onEvent((event, data) => { if (event === "control.command")
             this.command(data); });
         this.client.onMessage(message => this.deliver(formatDelivery({ messageId: message.id, channelId: message.roomId, sender: message.sender, senderAccountId: message.sender.id,
@@ -143,6 +153,7 @@ export class AgentRunner {
         if (this.agent.ref)
             await this.git(["-C", "repo", "checkout", "--detach", this.agent.ref]);
         this.checkoutReady = true;
+        this.agent.canResume = true;
         await this.startHarness();
         if (this.closed || this.stopRequested)
             return;

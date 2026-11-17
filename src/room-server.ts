@@ -39,6 +39,15 @@ export class RoomServer {
   private readonly tcpSockets = new Set<Duplex>();
   private heartbeat?: NodeJS.Timeout;
   private stopping = false;
+  private roomChangeTimer?: NodeJS.Timeout;
+  private roomsChanged(): void {
+    if (this.stopping || this.roomChangeTimer) return;
+    this.roomChangeTimer = setTimeout(() => {
+      this.roomChangeTimer = undefined;
+      for (const [socket, connection] of this.connections) if (connection.browser && connection.member?.socket === socket) this.send(socket, { event: "rooms.changed", data: {} });
+    }, 40);
+    this.roomChangeTimer.unref();
+  }
   private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions) {
     this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
     this.secret = createHash("sha256").update(identity.secret).digest();
@@ -270,7 +279,9 @@ export class RoomServer {
     }
     const member = connection.member;
     if (!member || member.socket !== socket) throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
-    if (method.startsWith("control.")) return this.orchestration.request(socket, connection.browser, method, params, member.identity).catch(error => {
+    if (method.startsWith("control.")) return this.orchestration.request(socket, connection.browser, method, params, member.identity).then(result =>
+      method === "control.list" ? { ...(result as object), serverPort: this.port } : result).catch(error => {
+      if (error instanceof RoomError) throw error;
       throw new RoomError("CONTROL", error instanceof Error ? error.message : "Control request failed.");
     });
     if (["subscribe", "room_leave", "room_history", "room_send"].includes(method) && !connection.browser) throw new RoomError("UNKNOWN_METHOD", "This operation is available to browser clients only.");
@@ -356,6 +367,7 @@ export class RoomServer {
     member.roomId = room.id;
     if (member.roomIds.has(room.id)) return;
     member.roomIds.add(room.id); room.members.add(member.identity.id);
+    this.roomsChanged();
     this.presence(member, "joined", room.id);
   }
   private presence(member: Member, kind: PresenceKind, roomId?: string): void {
@@ -377,6 +389,7 @@ export class RoomServer {
       const room = this.rooms.get(id); room?.members.delete(member.identity.id);
       if (room?.members.size === 0) this.rooms.delete(room.id);
       member.roomIds.delete(id); if (member.roomId === id) member.roomId = undefined;
+      this.roomsChanged();
     }
   }
   private remove(member: Member): void {
@@ -386,6 +399,7 @@ export class RoomServer {
   }
   async close(): Promise<void> {
     this.stopping = true; if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.roomChangeTimer) clearTimeout(this.roomChangeTimer);
     this.orchestration.close();
     for (const member of this.members.values()) if (member.expiry) clearTimeout(member.expiry);
     for (const socket of this.connections.keys()) socket.terminate();

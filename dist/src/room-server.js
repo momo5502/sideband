@@ -28,6 +28,18 @@ export class RoomServer {
     tcpSockets = new Set();
     heartbeat;
     stopping = false;
+    roomChangeTimer;
+    roomsChanged() {
+        if (this.stopping || this.roomChangeTimer)
+            return;
+        this.roomChangeTimer = setTimeout(() => {
+            this.roomChangeTimer = undefined;
+            for (const [socket, connection] of this.connections)
+                if (connection.browser && connection.member?.socket === socket)
+                    this.send(socket, { event: "rooms.changed", data: {} });
+        }, 40);
+        this.roomChangeTimer.unref();
+    }
     constructor(identity, options) {
         this.options = options;
         this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
@@ -375,7 +387,9 @@ export class RoomServer {
         if (!member || member.socket !== socket)
             throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
         if (method.startsWith("control."))
-            return this.orchestration.request(socket, connection.browser, method, params, member.identity).catch(error => {
+            return this.orchestration.request(socket, connection.browser, method, params, member.identity).then(result => method === "control.list" ? { ...result, serverPort: this.port } : result).catch(error => {
+                if (error instanceof RoomError)
+                    throw error;
                 throw new RoomError("CONTROL", error instanceof Error ? error.message : "Control request failed.");
             });
         if (["subscribe", "room_leave", "room_history", "room_send"].includes(method) && !connection.browser)
@@ -498,6 +512,7 @@ export class RoomServer {
             return;
         member.roomIds.add(room.id);
         room.members.add(member.identity.id);
+        this.roomsChanged();
         this.presence(member, "joined", room.id);
     }
     presence(member, kind, roomId) {
@@ -529,6 +544,7 @@ export class RoomServer {
             member.roomIds.delete(id);
             if (member.roomId === id)
                 member.roomId = undefined;
+            this.roomsChanged();
         }
     }
     remove(member) {
@@ -543,6 +559,8 @@ export class RoomServer {
         this.stopping = true;
         if (this.heartbeat)
             clearInterval(this.heartbeat);
+        if (this.roomChangeTimer)
+            clearTimeout(this.roomChangeTimer);
         this.orchestration.close();
         for (const member of this.members.values())
             if (member.expiry)

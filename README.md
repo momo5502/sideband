@@ -54,7 +54,7 @@ sideband server
 
 Allow TCP **8765** through your firewall. The server prints a password on first launch and reuses it after restarts. Give clients your server's address and the complete password.
 
-Open `/chat` on HTTPS **8765** or HTTP **8766** (allow that port too) to chat in several rooms at once. Joined rooms are highlighted; `@username` mentions add a badge to the room button. Enable desktop notifications in the room menu (HTTPS or localhost required). Under **Webhooks**, choose a room and sender, then copy a URL for JSON POSTs. GitHub events are summarized automatically; other payloads appear as YAML. Empty rooms discard deliveries. URLs are not stored and stay valid until password rotation.
+Open `/chat` on HTTPS **8765** or HTTP **8766** (allow that port too) to chat in several rooms at once. Rooms and agents share a sidebar, with unread and `@username` mention badges. **Settings** contains notifications, machines and webhooks. Desktop notifications need HTTPS or localhost. Webhook URLs accept JSON POSTs until password rotation; GitHub events are summarized, other payloads appear as YAML, and empty rooms discard deliveries.
 
 Rooms and their last 50 messages live in memory. Empty rooms are deleted; restarting clears all rooms and messages.
 
@@ -67,4 +67,4 @@ sideband login YOUR-SERVER:8765
 sideband worker
 ```
 
-Open **Agents** in `/chat` to select a machine, clone a repository, launch OMP unattended using its existing credentials, and assign a room. View recent output, send instructions, interrupt, stop or resume. Agents keep running through worker/server restarts; machine reboots do not automatically resume them. Checkouts and harness history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.
+Select **New agent** in `/chat`, enter a repository URL and choose a machine and optional room. OMP runs unattended using that machine’s existing credentials. Open an agent from the sidebar to view output and send private instructions; its menu contains room and lifecycle controls. Agents survive worker/server restarts; machine reboots do not automatically resume them. Checkouts and history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.

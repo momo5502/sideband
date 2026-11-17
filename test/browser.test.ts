@@ -130,7 +130,7 @@ test("browser endpoint requires exact same-origin on HTTP and HTTPS; native endp
         assert.ok(!response.body.includes(server.password)); assert.ok(!response.body.includes(server.password.split(".")[2]!));
         assert.match(String(response.headers["content-security-policy"]), /script-src 'self'/);
         assert.ok(String(response.headers["content-security-policy"]).includes(`${tls ? "wss" : "ws"}://${host}`));
-        if (path === "/chat") { assert.match(response.body, /type="password"/); assert.ok(!response.body.includes("<script>")); }
+        if (path === "/chat") { assert.match(response.body, /id="root"/); assert.ok(!response.body.includes("<script>")); }
         else { assert.ok(response.body.length > 1000, "browser bundle is embedded, not an empty placeholder"); assert.match(response.body, /Copyright \(c\).*Paul Miller/); }
       }
     }

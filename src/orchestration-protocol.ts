@@ -3,11 +3,11 @@ import { agentName, fields, text } from "./room-protocol.js";
 export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
 export type LaunchSpec = { name: string; harness: "omp"; repository: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string };
-export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string };
+export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
 export type ControlCommand = { id: string; method: string; params: Record<string, unknown> };
-export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[] };
+export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number };
 
 export function launchSpec(input: unknown): LaunchSpec {
   const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt"]);

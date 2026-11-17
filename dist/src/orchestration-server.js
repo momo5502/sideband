@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
-import { fields, text } from "./room-protocol.js";
+import { fields, text, RoomError } from "./room-protocol.js";
 import { launchSpec } from "./orchestration-protocol.js";
 const uuid = (value) => { const id = text(value, "ID", 64); if (!/^[a-f0-9-]{36}$/.test(id))
     throw new Error("Invalid ID."); return id; };
@@ -13,6 +13,24 @@ export class OrchestrationServer {
     machines = new Map();
     agents = new Map();
     runnerOwners = new Map();
+    forgotten = new Set();
+    legacyRemoval = new WeakSet();
+    async stopLegacyRunner(peer) {
+        try {
+            await this.dispatch(peer, "stop", {});
+            await this.dispatch(peer, "dispose", {});
+        }
+        catch {
+            peer.socket.terminate();
+        }
+    }
+    forget(id) {
+        this.forgotten.add(id);
+        if (this.forgotten.size > 10000)
+            this.forgotten.delete(this.forgotten.values().next().value);
+        this.agents.delete(id);
+        this.changed();
+    }
     browsers = new Map();
     pending = new Map();
     constructor(send) {
@@ -35,12 +53,14 @@ export class OrchestrationServer {
         });
     }
     agent(input) {
-        const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "id", "machineId", "machineName", "state", "online", "createdAt", "error"]);
-        const { id, machineId, machineName, state, createdAt, error, online, ...spec } = value;
+        const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume"]);
+        const { id, machineId, machineName, state, createdAt, error, online, canResume, ...spec } = value;
+        if (canResume !== undefined && typeof canResume !== "boolean")
+            throw new Error("Invalid resume capability.");
         if (!["preparing", "starting", "idle", "busy", "stopped", "failed"].includes(state) || !Number.isFinite(createdAt))
             throw new Error("Invalid agent state.");
         return { ...launchSpec(spec), id: uuid(id), machineId: uuid(machineId), machineName: text(machineName, "machine name", 100), state: state, createdAt: createdAt,
-            room: typeof spec.room === "string" ? spec.room : "", online: true, ...(error ? { error: text(error, "error", 2048) } : {}) };
+            room: typeof spec.room === "string" ? spec.room : "", online: true, ...(error ? { error: text(error, "error", 2048) } : {}), ...(canResume !== undefined ? { canResume: canResume } : {}) };
     }
     async request(socket, browser, method, params, identity) {
         if (method === "control.worker" || method === "control.runner") {
@@ -71,6 +91,20 @@ export class OrchestrationServer {
                 const owner = this.runnerOwners.get(agent.id);
                 if (owner && owner !== identity.id)
                     throw new Error("This agent ID belongs to another verified identity.");
+                if (this.forgotten.has(agent.id)) {
+                    if (agent.canResume === undefined) {
+                        // Runners from 0.16 don't understand AGENT_FORGOTTEN. Their existing stop/dispose
+                        // commands still let a new server retire them without upgrading a live process.
+                        const peer = { socket, kind, id: agent.id };
+                        this.peers.set(socket, peer);
+                        if (!this.legacyRemoval.has(socket)) {
+                            this.legacyRemoval.add(socket);
+                            setTimeout(() => { void this.stopLegacyRunner(peer); }, 0).unref();
+                        }
+                        return { registered: true, removed: true };
+                    }
+                    throw new RoomError("AGENT_FORGOTTEN", "This agent was removed. Its runner must shut down.");
+                }
                 if (existing && (existing.kind !== kind || existing.id !== agent.id))
                     throw new Error("Connection already registered.");
                 const prior = this.runners.get(agent.id);
@@ -79,7 +113,7 @@ export class OrchestrationServer {
                 const peer = { socket, kind, id: agent.id };
                 this.peers.set(socket, peer);
                 this.runners.set(agent.id, peer);
-                this.agents.set(agent.id, agent);
+                this.agents.set(agent.id, { ...agent, identityId: identity.id });
                 this.runnerOwners.set(agent.id, identity.id);
                 if (!this.machines.has(agent.machineId))
                     this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
@@ -103,6 +137,8 @@ export class OrchestrationServer {
             const peer = this.peers.get(socket);
             if (peer?.kind !== "runner")
                 throw new Error("Only an agent runner can publish output.");
+            if (this.forgotten.has(peer.id))
+                return { removed: true };
             const args = fields(params, ["agent", "events"]), agent = this.agent(args.agent);
             if (agent.id !== peer.id || agent.machineId !== this.agents.get(peer.id)?.machineId || agent.name !== identity.name)
                 throw new Error("Invalid runner identity.");
@@ -115,7 +151,7 @@ export class OrchestrationServer {
                 return { seq: event.seq, at: event.at, kind: text(event.kind, "event kind", 64), text: typeof event.text === "string" && event.text.length <= 8192 ? event.text : text(event.text, "event text", 8192) };
             });
             const previous = this.agents.get(peer.id);
-            this.agents.set(peer.id, agent);
+            this.agents.set(peer.id, { ...agent, identityId: identity.id });
             if (previous.state !== agent.state || previous.room !== agent.room || previous.error !== agent.error)
                 this.changed();
             if (events.length)
@@ -165,11 +201,13 @@ export class OrchestrationServer {
                 text(args.text, "instructions", 16000);
             if (action === "room" && (typeof args.room !== "string" || args.room.length > 100))
                 throw new Error("Invalid room name.");
-            const result = await this.dispatch(this.runners.get(id), action, { ...(action === "prompt" ? { text: args.text } : {}), ...(action === "room" ? { room: args.room } : {}) });
-            if (action === "dispose") {
-                this.agents.delete(id);
-                this.changed();
+            if (action === "dispose" && this.agents.has(id) && !this.online(this.runners.get(id))) {
+                this.forget(id);
+                return { removed: true, offline: true, workspaceRetained: true };
             }
+            const result = await this.dispatch(this.runners.get(id), action, { ...(action === "prompt" ? { text: args.text } : {}), ...(action === "room" ? { room: args.room } : {}) });
+            if (action === "dispose")
+                this.forget(id);
             return result;
         }
         throw new Error("Unknown orchestration operation.");
@@ -201,6 +239,6 @@ export class OrchestrationServer {
         this.changed();
     }
     close() { for (const socket of [...this.peers.keys(), ...this.browsers.keys()])
-        this.disconnect(socket); this.machines.clear(); this.agents.clear(); this.runnerOwners.clear(); }
+        this.disconnect(socket); this.machines.clear(); this.agents.clear(); this.runnerOwners.clear(); this.forgotten.clear(); }
 }
 //# sourceMappingURL=orchestration-server.js.map

@@ -1,172 +1,84 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { JSDOM, VirtualConsole } from "jsdom";
-import NodeWebSocket from "ws";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
+import { browserPage, until } from "./browser-fixture.js";
 
-async function until(check: () => boolean) {
-  const deadline = Date.now() + 5000;
-  while (!check()) { if (Date.now() > deadline) throw new Error("Web UI did not reach the expected state."); await new Promise(resolve => setTimeout(resolve, 10)); }
-}
-for (const mobile of [false, true]) test(`served ${mobile ? "mobile" : "desktop"} web UI: login, menu, storage, signed chat, safe text, room switching, tab reload and forget`, { timeout: 20000 }, async () => {
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} React chat: signed messages, grouped Markdown, navigation, members, drafts, settings and saved login`, { timeout: 30000 }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const agent = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "agent-peer");
-  const sockets = new Set<NodeWebSocket>(); const pages: JSDOM[] = []; const errors: Error[] = [];
-  const open = async (saved?: string | null, identity?: string | null, forgetOnOpen = false) => {
-    const console = new VirtualConsole(); console.on("jsdomError", error => errors.push(error));
-    // Only our locally served test app executes. No user pages or external scripts are loaded.
-    const dom = await JSDOM.fromURL(`http://127.0.0.1:${server.statusPort}/chat`, {
-      resources: "usable", runScripts: "dangerously", virtualConsole: console,
-      beforeParse(window) {
-        Object.assign(window, { TextEncoder, TextDecoder, matchMedia: () => Object.assign(new window.EventTarget(), { matches: mobile }) });
-        assert.equal(window.crypto.subtle, undefined, "exercise HTTP without Web Crypto signing");
-        window.WebSocket = class extends NodeWebSocket {
-          constructor(url: string | URL) {
-            super(String(url), { origin: `http://127.0.0.1:${server.statusPort}` }); sockets.add(this); this.once("close", () => sockets.delete(this));
-            if (forgetOnOpen) this.once("open", () => window.document.getElementById("forget")!.click());
-          }
-        } as unknown as typeof window.WebSocket;
-        if (saved) window.localStorage.setItem("sideband.login.v1", saved);
-        if (identity) window.sessionStorage.setItem("sideband.identity.v1", identity);
-      },
-    });
-    pages.push(dom); await until(() => dom.window.document.readyState === "complete");
-    if (mobile) {
-      // jsdom has no viewport/media-query layout engine. Apply the app's actual narrow-screen
-      // rules so visibility/focus checks exercise the same CSS branch as the matchMedia stub.
-      const rules = [...dom.window.document.styleSheets].flatMap(sheet => [...sheet.cssRules]).filter(rule => rule.type === 4);
-      const style = dom.window.document.createElement("style");
-      style.textContent = rules.flatMap(rule => [...(rule as CSSMediaRule).cssRules].map(child => child.cssText)).join("\n");
-      dom.window.document.head.append(style);
-    }
-    return dom;
-  };
+  const pages: Awaited<ReturnType<typeof browserPage>>[] = [];
   try {
-    await agent.connect(); await agent.joinRoom("agents-room"); await agent.send("Before the human joined\nHistory newline\n\n**history**");
-    const dom = await open(); const doc = dom.window.document;
-    assert.equal(doc.title, "Sideband chat"); assert.equal(sockets.size, 0, "first visit waits for credentials");
-    const input = (id: string) => doc.getElementById(id) as HTMLInputElement;
-    input("username").value = "human"; input("password").value = server.password;
-    doc.getElementById("login-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
-    await until(() => !!doc.querySelector("#room-list button"));
-    assert.equal(doc.getElementById("login-panel")!.hidden, true); assert.match(doc.getElementById("connection")!.textContent!, /HTTP \(unencrypted\)/);
-    assert.equal(doc.body.classList.contains("chatting"), true);
-    assert.equal(doc.body.classList.contains("menu-open"), mobile, "mobile opens room selection at login; desktop keeps its normal sidebar");
-    assert.equal(doc.querySelector("main")!.inert, mobile);
-    if (mobile) {
-      assert.equal(doc.getElementById("room-menu")!.getAttribute("role"), "dialog");
-      assert.equal(doc.getElementById("menu-toggle")!.getAttribute("aria-expanded"), "true");
-      assert.equal(doc.activeElement?.id, "menu-close");
-      doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true }));
-      assert.equal(doc.activeElement, doc.querySelector("#room-menu a"));
-      doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", cancelable: true }));
-      assert.equal(doc.activeElement?.id, "menu-close");
-      doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
-      assert.equal(doc.body.classList.contains("menu-open"), false); assert.equal(doc.getElementById("room-menu")!.inert, true);
-      assert.equal(doc.activeElement?.id, "menu-toggle");
-      doc.getElementById("menu-toggle")!.click(); doc.getElementById("menu-backdrop")!.click();
-      assert.equal(doc.getElementById("menu-toggle")!.getAttribute("aria-expanded"), "false");
-      doc.getElementById("menu-toggle")!.click(); doc.getElementById("menu-close")!.click();
-      assert.equal(doc.body.classList.contains("menu-open"), false);
-      doc.getElementById("menu-toggle")!.click();
-    }
-    const saved = dom.window.localStorage.getItem("sideband.login.v1"); const identity = dom.window.sessionStorage.getItem("sideband.identity.v1");
-    assert.ok(JSON.parse(saved!).password === server.password); assert.equal(JSON.parse(saved!).name, "human");
-    (doc.querySelector("#room-list button") as HTMLButtonElement).click();
-    await until(() => doc.getElementById("messages")!.textContent!.includes("Before the human joined"));
-    assert.equal(doc.title, "agents-room — Sideband");
-    await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
-    const historyBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "history")!;
-    assert.equal(historyBody.querySelectorAll("br").length, 1); assert.equal(historyBody.querySelectorAll("p").length, 2);
-    assert.equal(doc.body.classList.contains("menu-open"), false, "selecting a room closes the drawer");
-    assert.equal(doc.querySelector("main")!.inert, false);
-    assert.equal(doc.getElementById("room-menu")!.inert, mobile);
-    if (mobile) {
-      assert.equal(dom.window.getComputedStyle(doc.querySelector("header")!).display, "none");
-      assert.equal(dom.window.getComputedStyle(doc.getElementById("room-menu")!).visibility, "hidden");
-      assert.equal(dom.window.getComputedStyle(doc.getElementById("room-menu")!).position, "fixed");
-      assert.equal(dom.window.getComputedStyle(doc.getElementById("app")!).height, "100dvh");
-      assert.equal(dom.window.getComputedStyle(doc.getElementById("leave")!).display, "none");
-    }
-    if (mobile) doc.getElementById("menu-toggle")!.click();
-    (doc.getElementById("webhook-panel") as HTMLDetailsElement).open = true;
-    assert.equal(input("webhook-room").value, "agents-room"); input("webhook-sender").value = "github";
-    doc.getElementById("webhook-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
-    await until(() => !doc.getElementById("webhook-result")!.hidden);
-    const webhook = input("webhook-url").value;
-    assert.equal(new URL(webhook).origin, dom.window.location.origin); assert.ok(new URL(webhook).searchParams.get("token"));
-    assert.ok(!dom.window.localStorage.getItem("sideband.login.v1")!.includes("wh1."));
-    const posted = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "opened", number: 7 }) });
-    assert.equal(posted.status, 204); if (mobile) doc.getElementById("menu-close")!.click();
-    await until(() => !!doc.querySelector("#messages pre code"));
-    assert.equal(doc.querySelector("#messages pre code")!.textContent, "action: opened\nnumber: 7\n");
-    assert.ok([...doc.querySelectorAll("#messages .sender")].some(element => element.textContent === "github"));
-    input("webhook-sender").value = "another"; input("webhook-sender").dispatchEvent(new dom.window.Event("input"));
-    assert.equal(input("webhook-url").value, ""); assert.equal(doc.getElementById("webhook-result")!.hidden, true);
+    await agent.connect(); const room = await agent.joinRoom("project"); await agent.send("Before you joined\nSecond line\n\n**history**");
+    const page = await browserPage(server, { mobile }); pages.push(page);
+    assert.equal(page.sockets.size, 0); await page.login(); await page.view(room.id, "project");
+    await until(() => !!page.doc.querySelector("#messages strong"));
+    assert.equal(page.doc.title, "project — Sideband"); assert.equal(page.doc.querySelectorAll(".pane-header").length, 1);
+    assert.equal(page.doc.querySelector("#navigation-dialog"), null, "mobile chat uses the full screen after selecting a room");
+    const history = page.get("#messages .message-body"); assert.equal(history.querySelectorAll("br").length, 1); assert.equal(history.querySelectorAll("p").length, 2);
     const received: string[] = []; agent.onMessage(message => received.push(message.text));
-    const outgoing = "Browser to agent\nSecond line\n\n**bold**";
-    input("message").value = outgoing; doc.getElementById("compose")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
-    await until(() => received.length > 0 || !!doc.getElementById("notice")!.textContent);
-    assert.equal(doc.getElementById("notice")!.textContent, ""); assert.equal(received[0], outgoing, "Markdown display never changes the signed message sent to agents");
-    await until(() => input("message").value === "");
-    const ownBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "bold")!;
-    assert.equal(ownBody.querySelectorAll("br").length, 1); assert.equal(ownBody.querySelectorAll("p").length, 2);
-    const hostile = '<img src=x onerror="window.hacked=true">\n<script>window.hacked=true</script>';
-    input("message").value = "Unsent draft"; await agent.send(hostile);
-    await until(() => doc.getElementById("messages")!.textContent!.includes("<script>window.hacked=true</script>"));
-    assert.equal(doc.querySelector("#messages img, #messages script"), null); assert.equal((dom.window as any).hacked, undefined);
-    assert.equal(input("message").value, "Unsent draft", "push must preserve the draft");
-    await agent.send("**Incoming**\r\nSecond line\r\n\r\n- first\r\n- second");
-    await until(() => !![...doc.querySelectorAll("#messages strong")].find(element => element.textContent === "Incoming"));
-    const incomingBody = [...doc.querySelectorAll("#messages .message-body")].find(body => body.querySelector("strong")?.textContent === "Incoming")!;
-    assert.equal(incomingBody.querySelectorAll("br").length, 1); assert.equal(incomingBody.querySelectorAll("li").length, 2);
-    if (mobile) doc.getElementById("menu-toggle")!.click();
-    input("room-name").value = "another-room"; doc.getElementById("join-form")!.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
-    await until(() => doc.getElementById("room-title")!.textContent === "another-room");
-    assert.equal(doc.title, "another-room — Sideband");
-    await until(() => !(doc.getElementById("send") as HTMLButtonElement).disabled);
-    assert.equal(doc.body.classList.contains("menu-open"), false, "creating a room closes the drawer too");
-    assert.ok(!doc.getElementById("messages")!.textContent!.includes("<script>window.hacked=true</script>"));
-    const previousKey = JSON.parse(identity!).key;
-    // A real reload retains per-origin localStorage and this tab's sessionStorage.
-    const reloaded = await open(saved, identity); const next = reloaded.window.document;
-    assert.ok((next.getElementById("password") as HTMLInputElement).value === server.password);
-    assert.equal((next.getElementById("username") as HTMLInputElement).value, "human");
-    await until(() => next.getElementById("room-title")!.textContent === "another-room");
-    assert.equal(next.title, "another-room — Sideband", "saved login connects and restores the room without clicking Connect");
-    assert.equal(next.body.classList.contains("menu-open"), false, "restoring a room starts with full-screen chat, not the drawer");
-    assert.equal(JSON.parse(reloaded.window.sessionStorage.getItem("sideband.identity.v1")!).key, previousKey);
-    if (mobile) {
-      next.getElementById("menu-toggle")!.click(); next.getElementById("menu-leave")!.click();
-      await until(() => next.getElementById("room-title")!.textContent === "Choose a room");
-      assert.equal(next.title, "Sideband chat");
-      assert.equal(next.body.classList.contains("menu-open"), true, "leaving a room keeps room selection accessible");
-      assert.equal(next.getElementById("menu-leave")!.hidden, true);
-    }
-    next.getElementById("logout")!.click(); await until(() => !next.getElementById("login-panel")!.hidden);
-    assert.equal(next.title, "Sideband chat");
-    assert.equal(next.body.classList.contains("chatting"), false); assert.equal(next.body.classList.contains("menu-open"), false);
-    next.getElementById("forget")!.click();
-    assert.equal(reloaded.window.localStorage.getItem("sideband.login.v1"), null); assert.equal(reloaded.window.sessionStorage.getItem("sideband.identity.v1"), null);
-    assert.equal((next.getElementById("password") as HTMLInputElement).value, "");
-    const badPassword = server.password.slice(0, -1) + (server.password.endsWith("A") ? "B" : "A");
-    const failed = await open(JSON.stringify({ name: "retry-human", password: badPassword })); const retry = failed.window.document;
-    await until(() => !!retry.getElementById("login-error")!.textContent && !(retry.getElementById("login-button") as HTMLButtonElement).disabled);
-    assert.equal(retry.getElementById("login-panel")!.hidden, false); assert.equal(retry.title, "Sideband chat");
-    (retry.getElementById("password") as HTMLInputElement).value = server.password;
-    retry.getElementById("login-form")!.dispatchEvent(new failed.window.Event("submit", { cancelable: true }));
-    retry.getElementById("login-form")!.dispatchEvent(new failed.window.Event("submit", { cancelable: true }));
-    await until(() => !retry.getElementById("app")!.hidden);
-    assert.equal(retry.getElementById("login-error")!.textContent, "", "manual retry works and duplicate submissions do not start competing connections");
-    const connectedBeforeCancel = sockets.size;
-    const cancelled = await open(JSON.stringify({ name: "cancel-human", password: server.password }), undefined, true);
-    const cancel = cancelled.window.document;
-    await until(() => sockets.size === connectedBeforeCancel && cancel.getElementById("login-error")!.textContent === "Saved login removed.");
-    assert.equal(cancel.getElementById("app")!.hidden, true); assert.equal(cancel.title, "Sideband chat");
-    assert.equal(cancelled.window.localStorage.getItem("sideband.login.v1"), null, "cancelled auto-login cannot save forgotten credentials again");
-    assert.equal(cancelled.window.sessionStorage.getItem("sideband.identity.v1"), null);
-    assert.equal((cancel.getElementById("password") as HTMLInputElement).value, ""); assert.equal((cancel.getElementById("login-button") as HTMLButtonElement).disabled, false);
-    assert.deepEqual(errors, []);
-  } finally { for (const socket of sockets) socket.terminate(); for (const page of pages) page.window.close(); await agent.close(); await server.close(); }
+    page.fill("#message", "My message\n**bold**"); page.submit("#compose"); await until(() => received.length === 1);
+    assert.equal(received[0], "My message\n**bold**"); await until(() => page.get<HTMLTextAreaElement>("#message").value === "");
+    page.fill("#message", "Unsent draft"); await agent.send('<img src=x onerror="window.hacked=true">\n<script>window.hacked=true</script>');
+    await until(() => page.get("#messages").textContent!.includes("window.hacked=true"));
+    assert.equal(page.doc.querySelector("#messages img, #messages script"), null); assert.equal((page.dom.window as any).hacked, undefined);
+    assert.equal(page.get<HTMLTextAreaElement>("#message").value, "Unsent draft");
+    await agent.send("Another message"); await until(() => page.get("#messages").textContent!.includes("Another message"));
+    assert.ok(page.doc.querySelector(".message-continuation"), "consecutive messages group the sender header");
+    page.click('button[aria-label="Room members"]'); await until(() => page.doc.body.textContent!.includes("Participants · 2"));
+    assert.ok([...page.doc.querySelectorAll(".member-row .sender")].some(node => node.textContent === "agent-peer"));
+    if (page.doc.querySelector("#details-dialog")) page.click('#details-dialog button[aria-label="Close dialog"]'); else page.click('button[aria-label="Room members"]');
+    await page.settings(); page.click(page.button("Webhooks", "tab")); await until(() => !!page.doc.querySelector("#webhook-form"));
+    assert.equal(page.get<HTMLSelectElement>("#webhook-room").value, "project"); page.fill("#webhook-sender", "github"); page.submit("#webhook-form");
+    await until(() => !!page.doc.querySelector("#webhook-url")); const webhook = page.get<HTMLTextAreaElement>("#webhook-url").value;
+    assert.equal(new URL(webhook).origin, page.dom.window.location.origin); assert.ok(new URL(webhook).searchParams.get("token"));
+    page.click('#settings-dialog button[aria-label="Close dialog"]');
+    const posted = await fetch(webhook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: "completed", result: "ok" }) });
+    assert.equal(posted.status, 204); await until(() => !!page.doc.querySelector("#messages pre"));
+    assert.equal(page.get("#messages pre code").textContent, "task: completed\nresult: ok\n");
+    await page.navigation(); page.click('button[aria-label="Join or create a room"]'); await until(() => !!page.doc.querySelector("#join-room-dialog"));
+    page.fill("#room-name", "another"); page.submit("#join-form"); await until(() => page.doc.querySelector("#room-title")?.textContent === "another" && !page.doc.querySelector("#join-room-dialog"));
+    const saved = page.save(); assert.deepEqual(new Set(JSON.parse(saved.rooms!).rooms), new Set(["project", "another"]));
+    await page.view(room.id, "project"); assert.equal(page.get<HTMLTextAreaElement>("#message").value, "Unsent draft", "drafts are per conversation");
+    const reloadState = page.save(), key = JSON.parse(reloadState.identity!).key; await page.close();
+    const reloaded = await browserPage(server, { mobile, saved: reloadState }); pages.push(reloaded);
+    await until(() => reloaded.doc.querySelector("#room-title")?.textContent === "project");
+    assert.equal(JSON.parse(reloaded.save().identity!).key, key); assert.equal(reloaded.doc.title, "project — Sideband");
+    await reloaded.settings(); reloaded.click("#logout"); await until(() => !!reloaded.doc.querySelector("#login-form"));
+    reloaded.click("#forget"); await until(() => !reloaded.save().login);
+    assert.equal(reloaded.save().identity, null); assert.equal(reloaded.get<HTMLInputElement>("#password").value, "");
+    assert.deepEqual(page.errors, []); assert.deepEqual(reloaded.errors, []);
+  } finally { for (const page of pages) await page.close(); await agent.close(); await server.close(); }
+});
+
+test("browser automatically reconnects and rejoins after a lost socket, preserving identity, draft and bfcache navigation", { timeout: 15000 }, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, graceMs: 60 });
+  const peer = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "peer");
+  const pages: Awaited<ReturnType<typeof browserPage>>[] = [];
+  try {
+    await peer.connect(); const room = await peer.joinRoom("reconnect"); const page = await browserPage(server); pages.push(page); await page.login(); await page.view(room.id, room.name);
+    const identity = JSON.parse(page.save().identity!).key; page.fill("#message", "Preserve my draft");
+    for (const socket of page.sockets) socket.terminate();
+    await until(() => page.get("#connection").textContent!.includes("Reconnecting"));
+    await until(async () => page.get("#connection").textContent!.includes("Connected") && (await peer.members()).length === 2);
+    assert.equal(JSON.parse(page.save().identity!).key, identity); assert.equal(page.get<HTMLTextAreaElement>("#message").value, "Preserve my draft");
+    page.dom.window.dispatchEvent(new page.dom.window.PageTransitionEvent("pagehide", { persisted: true }));
+    page.dom.window.dispatchEvent(new page.dom.window.PageTransitionEvent("pageshow", { persisted: true }));
+    await peer.send("After browser restore"); await until(() => page.get("#messages").textContent!.includes("After browser restore"));
+    const sent: string[] = []; peer.onMessage(message => sent.push(message.text)); page.key("#message", "Enter"); await until(() => sent.length === 1);
+    assert.equal(sent[0], "Preserve my draft"); assert.deepEqual(page.errors, []);
+  } finally { for (const page of pages) await page.close(); await peer.close(); await server.close(); }
+});
+
+test("failed auto-login can be retried; forgetting during a connection cancels it without restoring credentials", async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }); const pages: Awaited<ReturnType<typeof browserPage>>[] = [];
+  try {
+    const bad = server.password.slice(0, -1) + (server.password.endsWith("A") ? "B" : "A");
+    const page = await browserPage(server, { saved: { login: JSON.stringify({ name: "retry", password: bad }) } }); pages.push(page);
+    await until(() => !!page.doc.querySelector("#login-error") && !page.get<HTMLButtonElement>("#login-button").disabled);
+    await page.login("retry"); assert.equal(page.doc.querySelector("#login-error"), null);
+    const cancelled = await browserPage(server, { saved: { login: JSON.stringify({ name: "cancel", password: server.password }) }, onOpen: window => window.document.getElementById("forget")?.click() }); pages.push(cancelled);
+    await until(() => cancelled.doc.querySelector("#login-error")?.textContent === "Saved login removed." && cancelled.sockets.size === 0);
+    assert.equal(cancelled.save().login, null); assert.equal(cancelled.save().identity, null); assert.equal(cancelled.doc.querySelector("#app"), null);
+  } finally { for (const page of pages) await page.close(); await server.close(); }
 });

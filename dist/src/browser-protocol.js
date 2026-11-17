@@ -37,6 +37,7 @@ export class BrowserRoomClient {
     onClose = () => { };
     onError = () => { };
     onControl = () => { };
+    onRoomsChanged = () => { };
     socket;
     authenticated = false;
     multiRoom = false;
@@ -83,12 +84,15 @@ export class BrowserRoomClient {
                 else if (this.authenticated && typeof packet.event === "string" && packet.event.startsWith("control.")) {
                     this.onControl(packet.event, packet.data);
                 }
+                else if (this.authenticated && packet.event === "rooms.changed") {
+                    this.onRoomsChanged();
+                }
             }
             catch (error) {
                 this.onError(error instanceof Error ? error : new Error("Invalid server message."));
             }
         });
-        socket.addEventListener("close", () => {
+        socket.addEventListener("close", event => {
             if (this.socket !== socket)
                 return;
             this.socket = undefined;
@@ -98,7 +102,7 @@ export class BrowserRoomClient {
                 item.reject(new Error("Connection lost. Check history before resending."));
             }
             this.pending.clear();
-            this.onClose();
+            this.onClose(event);
         });
         try {
             await new Promise((resolve, reject) => {

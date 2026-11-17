@@ -53,7 +53,7 @@ test("control registration requires authentication; native room agents cannot la
     await assert.rejects(web.request("control.worker", { machine: {} }), /native connection/);
     await assert.rejects(client.request("control.publish", { agent: {}, events: [] }), /Only an agent runner/);
     await assert.rejects(client.request("control.reply", { id: randomUUID(), result: {} }), /Unknown control command/);
-    assert.deepEqual(await web.request("control.list"), { machines: [], agents: [] });
+    assert.deepEqual(await web.request("control.list"), { machines: [], agents: [], serverPort: server.port });
     await owner.connect(); await impostor.connect();
     const id = randomUUID(), machineId = randomUUID();
     const agent = { id, machineId, machineName: "fixture", name: "owner", harness: "omp", repository: "https://example.org/repo", state: "idle", room: "", createdAt: Date.now(), online: true };
@@ -68,6 +68,26 @@ test("control registration requires authentication; native room agents cannot la
     await assert.rejects(impostor.request("control.reply", { id: commandId, result: {} }), /Unknown control command/);
     await client.request("control.reply", { id: commandId, result: {} }); await launch;
   } finally { web.disconnect(); await client.close(); await owner.close(); await impostor.close(); await server.close(); }
+});
+
+test("forgetting an offline legacy runner uses its existing stop/dispose commands when it reconnects", async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
+  const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, legacy = new RoomClient(profile, "legacy", { reconnectMs: 250 });
+  const web = browser(server), id = randomUUID(), commands: string[] = [];
+  const agent = { id, machineId: randomUUID(), machineName: "machine", name: "legacy", harness: "omp", repository: "https://example.org/repo", room: "", state: "idle", createdAt: Date.now(), online: true };
+  legacy.onConnected(async () => { await legacy.request("control.runner", { agent }); });
+  legacy.onEvent((event, command) => {
+    if (event !== "control.command") return;
+    commands.push(command.method);
+    void legacy.request("control.reply", { id: command.id, result: {} }).then(() => { if (command.method === "dispose") setTimeout(() => { void legacy.close(); }, 20); }).catch(() => {});
+  });
+  try {
+    await legacy.connect(); await web.connect(); legacy.dropConnection();
+    await until(async () => !(await web.request<ControlSnapshot>("control.list")).agents[0]?.online);
+    await web.request("control.action", { agentId: id, action: "dispose" });
+    await until(() => legacy.state === "off"); assert.deepEqual(commands, ["stop", "dispose"]);
+    assert.equal((await web.request<ControlSnapshot>("control.list")).agents.length, 0);
+  } finally { await legacy.close(); web.disconnect(); await server.close(); }
 });
 
 // A deterministic harness fixture, not a model API call. Exercises the actual process/RPC boundary.
@@ -170,8 +190,15 @@ const worker=new Worker(JSON.parse(data));await worker.start();console.log("read
     await action("prompt", { text: "after resume" });
     await until(async () => (await logs()).events.some(event => event.text.includes("after resume") && event.kind === "assistant"));
     const retained = join(root, agentId, "repo", "hello.txt");
-    await action("stop"); await action("dispose"); agentId = "";
+    const finalOutput = await logs(), processId = Number(finalOutput.events.filter(event => event.kind === "assistant" && /PID=\d+/.test(event.text)).at(-1)!.text.match(/PID=(\d+)/)![1]);
+    const identityId = (await list()).agents[0]!.identityId;
+    const internals = server as unknown as { members: Map<string, { socket?: NodeWebSocket }> };
+    internals.members.get(identityId!)!.socket!.terminate();
+    await until(async () => (await list()).agents[0]?.online === false);
+    const forgotten = await action("dispose") as { offline: boolean }; assert.equal(forgotten.offline, true); agentId = "";
     await until(async () => !(await list()).agents.length);
+    await until(() => { try { process.kill(processId, 0); return false; } catch { return true; } });
+    assert.equal((await list()).agents.length, 0, "forgotten runner shuts its harness down instead of re-registering");
     assert.ok((await stat(retained)).isFile(), "removing a runner does not delete its checkout");
   } finally {
     if (agentId) { await action("stop").catch(() => {}); await action("dispose").catch(() => {}); }
