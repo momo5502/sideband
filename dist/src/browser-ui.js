@@ -1,5 +1,6 @@
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
 import { messageMarkdown } from "./browser-markdown.js";
+import { orchestrationPanel } from "./browser-orchestration.js";
 const $ = (id) => document.getElementById(id);
 const user = $("username"), password = $("password"), message = $("message");
 const savedKey = "sideband.login.v1", tabKey = "sideband.identity.v1", roomsKey = "sideband.rooms.v1";
@@ -10,6 +11,7 @@ let historyGeneration = 0;
 let availableRooms = [];
 const mentions = new Map(), pinged = new Set(), notifications = new Map();
 const mobile = window.matchMedia?.("(max-width:650px)");
+const orchestration = orchestrationPanel(() => setMenu(false));
 function setMenu(open, restoreFocus = false) {
     const expanded = !!mobile?.matches && !!client && open;
     document.body.classList.toggle("menu-open", expanded);
@@ -17,6 +19,7 @@ function setMenu(open, restoreFocus = false) {
     const drawer = $("room-menu");
     drawer.inert = !!mobile?.matches && !expanded;
     document.querySelector("main").inert = expanded;
+    $("agents-view").inert = expanded;
     if (expanded) {
         drawer.setAttribute("role", "dialog");
         drawer.setAttribute("aria-modal", "true");
@@ -26,7 +29,7 @@ function setMenu(open, restoreFocus = false) {
         drawer.removeAttribute("role");
         drawer.removeAttribute("aria-modal");
         if (restoreFocus && mobile?.matches && client)
-            $("menu-toggle").focus();
+            $($("agents-view").hidden ? "menu-toggle" : "agents-menu").focus();
     }
     if (mobile?.matches && !expanded)
         drawer.setAttribute("aria-hidden", "true");
@@ -277,6 +280,7 @@ function drawRooms() {
     }
 }
 async function join(room) {
+    orchestration.close();
     if (!client || joining)
         return;
     joining = true;
@@ -354,6 +358,7 @@ async function login() {
             return;
         }
         client = candidate;
+        orchestration.connect(candidate);
         ++historyGeneration;
         loadingHistory = false;
         backlog = [];
@@ -405,6 +410,7 @@ async function login() {
             setRoom();
             $("app").hidden = true;
             $("login-panel").hidden = false;
+            orchestration.disconnect();
             document.body.classList.remove("chatting");
             setMenu(false);
             connection("Disconnected");
@@ -421,6 +427,7 @@ async function login() {
     catch (value) {
         if (candidate && connecting !== candidate)
             return;
+        orchestration.disconnect();
         if (client === candidate)
             client = undefined;
         candidate?.disconnect();
@@ -441,6 +448,7 @@ async function login() {
 }
 $("login-form").addEventListener("submit", event => { event.preventDefault(); void login(); });
 $("forget").addEventListener("click", () => {
+    orchestration.disconnect();
     const pending = connecting;
     connecting = undefined;
     if (pending && client === pending) {
@@ -480,6 +488,7 @@ $("notifications").addEventListener("click", () => {
     void Notification.requestPermission().then(updateNotifications).catch(value => { updateNotifications(); error(value); });
 });
 $("logout").addEventListener("click", () => {
+    orchestration.disconnect();
     const previous = client;
     client = undefined;
     setRoom();

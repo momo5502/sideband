@@ -21,6 +21,8 @@ export class RoomClient {
     pending = new Map();
     listeners = new Set();
     presenceListeners = new Set();
+    eventListeners = new Set();
+    connectedListeners = new Set();
     seen = new Set();
     endpoint;
     constructor(profile, name, options = {}) {
@@ -33,6 +35,9 @@ export class RoomClient {
     get identity() { return this.keys.identity; }
     onMessage(listener) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     onPresence(listener) { this.presenceListeners.add(listener); return () => { this.presenceListeners.delete(listener); }; }
+    onEvent(listener) { this.eventListeners.add(listener); return () => { this.eventListeners.delete(listener); }; }
+    /** Re-register live control state before a reconnected transport is advertised as ready. */
+    onConnected(listener) { this.connectedListeners.add(listener); return () => { this.connectedListeners.delete(listener); }; }
     remember(key) {
         if (this.seen.has(key))
             return false;
@@ -129,6 +134,10 @@ export class RoomClient {
                 }
                 if (generation !== this.generation || !this.wanted)
                     return;
+                if (authenticated && typeof packet.event === "string" && packet.event.startsWith("control.")) {
+                    for (const listener of this.eventListeners)
+                        listener(packet.event, packet.data);
+                }
                 if (packet.event === "message") {
                     if (!authenticated || !verifyMessage(packet.data))
                         throw new Error("Rejected a message with invalid identity/signature.");
@@ -209,6 +218,10 @@ export class RoomClient {
             }
             assertCurrent();
             this.desiredRoom = this.room;
+            for (const listener of this.connectedListeners) {
+                await listener();
+                assertCurrent();
+            }
             ready = true;
             this.state = "on";
             this.attempts = 0;
@@ -260,7 +273,8 @@ export class RoomClient {
                     this.scheduleReconnect();
             }
         }, delay);
-        this.reconnectTimer.unref();
+        if (!this.options.keepAlive)
+            this.reconnectTimer.unref();
     }
     request(method, params = {}) {
         const socket = this.socket;

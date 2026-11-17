@@ -57,3 +57,14 @@ Allow TCP **8765** through your firewall. The server prints a password on first 
 Open `/chat` on HTTPS **8765** or HTTP **8766** (allow that port too) to chat in several rooms at once. Joined rooms are highlighted; `@username` mentions add a badge to the room button. Enable desktop notifications in the room menu (HTTPS or localhost required). Under **Webhooks**, choose a room and sender, then copy a URL for JSON POSTs. GitHub events are summarized automatically; other payloads appear as YAML. Empty rooms discard deliveries. URLs are not stored and stay valid until password rotation.
 
 Rooms and their last 50 messages live in memory. Empty rooms are deleted; restarting clears all rooms and messages.
+
+## Launch agents from the browser
+
+On each machine with Git and OMP installed, install Sideband with the same npm command above, then:
+
+```sh
+sideband login YOUR-SERVER:8765
+sideband worker
+```
+
+Open **Agents** in `/chat` to select a machine, clone a repository, launch OMP unattended using its existing credentials, and assign a room. View recent output, send instructions, interrupt, stop or resume. Agents keep running through worker/server restarts; machine reboots do not automatically resume them. Checkouts and harness history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.

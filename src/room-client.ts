@@ -22,14 +22,19 @@ export class RoomClient {
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private readonly listeners = new Set<(message: SignedMessage) => void>();
   private readonly presenceListeners = new Set<(event: PresenceEvent) => void>();
+  private readonly eventListeners = new Set<(event: string, data: any) => void>();
+  private readonly connectedListeners = new Set<() => Promise<void>>();
   private readonly seen = new Set<string>();
   private readonly endpoint: string;
-  constructor(private readonly profile: ConnectionProfile, name?: string, private readonly options: { reconnectMs?: number; heartbeatTimeoutMs?: number; onError?: (error: Error) => void; proxyEnv?: NodeJS.ProcessEnv } = {}) {
+  constructor(private readonly profile: ConnectionProfile, name?: string, private readonly options: { reconnectMs?: number; heartbeatTimeoutMs?: number; onError?: (error: Error) => void; proxyEnv?: NodeJS.ProcessEnv; keepAlive?: boolean } = {}) {
     this.endpoint = serverUrl(profile.server); parsePassword(profile.password); this.keys = new AgentKeys(name);
   }
   get identity(): AgentIdentity { return this.keys.identity; }
   onMessage(listener: (message: SignedMessage) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   onPresence(listener: (event: PresenceEvent) => void): () => void { this.presenceListeners.add(listener); return () => { this.presenceListeners.delete(listener); }; }
+  onEvent(listener: (event: string, data: any) => void): () => void { this.eventListeners.add(listener); return () => { this.eventListeners.delete(listener); }; }
+  /** Re-register live control state before a reconnected transport is advertised as ready. */
+  onConnected(listener: () => Promise<void>): () => void { this.connectedListeners.add(listener); return () => { this.connectedListeners.delete(listener); }; }
   private remember(key: string): boolean {
     if (this.seen.has(key)) return false;
     this.seen.add(key);
@@ -96,6 +101,9 @@ export class RoomClient {
           return;
         }
         if (generation !== this.generation || !this.wanted) return;
+        if (authenticated && typeof packet.event === "string" && packet.event.startsWith("control.")) {
+          for (const listener of this.eventListeners) listener(packet.event, packet.data);
+        }
         if (packet.event === "message") {
           if (!authenticated || !verifyMessage(packet.data)) throw new Error("Rejected a message with invalid identity/signature.");
           const message: SignedMessage = packet.data;
@@ -150,6 +158,7 @@ export class RoomClient {
       }
       assertCurrent();
       this.desiredRoom = this.room;
+      for (const listener of this.connectedListeners) { await listener(); assertCurrent(); }
       ready = true; this.state = "on"; this.attempts = 0; this.lastError = undefined; resetWatchdog();
     } catch (error) {
       socket.terminate();
@@ -180,7 +189,7 @@ export class RoomClient {
         if (this.wanted) this.scheduleReconnect();
       }
     }, delay);
-    this.reconnectTimer.unref();
+    if (!this.options.keepAlive) this.reconnectTimer.unref();
   }
   request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     const socket = this.socket;

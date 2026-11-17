@@ -1,5 +1,6 @@
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
 import { messageMarkdown } from "./browser-markdown.js";
+import { orchestrationPanel } from "./browser-orchestration.js";
 import type { AgentIdentity, Room, SignedMessage, PresenceEvent } from "./room-protocol.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -12,14 +13,16 @@ let historyGeneration = 0;
 let availableRooms: Room[] = [];
 const mentions = new Map<string, number>(), pinged = new Set<string>(), notifications = new Map<string, Notification>();
 const mobile = window.matchMedia?.("(max-width:650px)");
+const orchestration = orchestrationPanel(() => setMenu(false));
 function setMenu(open: boolean, restoreFocus = false) {
   const expanded = !!mobile?.matches && !!client && open;
   document.body.classList.toggle("menu-open", expanded);
   $("menu-toggle").setAttribute("aria-expanded", String(expanded));
   const drawer = $("room-menu"); drawer.inert = !!mobile?.matches && !expanded;
   document.querySelector("main")!.inert = expanded;
+  $("agents-view").inert = expanded;
   if (expanded) { drawer.setAttribute("role", "dialog"); drawer.setAttribute("aria-modal", "true"); $("menu-close").focus(); }
-  else { drawer.removeAttribute("role"); drawer.removeAttribute("aria-modal"); if (restoreFocus && mobile?.matches && client) $("menu-toggle").focus(); }
+  else { drawer.removeAttribute("role"); drawer.removeAttribute("aria-modal"); if (restoreFocus && mobile?.matches && client) $($("agents-view").hidden ? "menu-toggle" : "agents-menu").focus(); }
   if (mobile?.matches && !expanded) drawer.setAttribute("aria-hidden", "true"); else drawer.removeAttribute("aria-hidden");
 }
 function connection(text: string) { $("connection").textContent = text; $("menu-connection").textContent = text; }
@@ -156,6 +159,7 @@ function drawRooms() {
   if (!list.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "No rooms yet. Enter a name below to join."; $("room-list").append(empty); }
 }
 async function join(room: string) {
+  orchestration.close();
   if (!client || joining) return; joining = true; setRoom(); notice("");
   const owner = client;
   try {
@@ -189,6 +193,7 @@ async function login() {
     await candidate.connect();
     if (connecting !== candidate) { candidate.disconnect(); return; }
     client = candidate;
+    orchestration.connect(candidate);
     ++historyGeneration; loadingHistory = false; backlog = []; seen.clear(); $("messages").replaceChildren();
     availableRooms = []; mentions.clear(); pinged.clear();
     for (const notification of notifications.values()) notification.close(); notifications.clear();
@@ -214,18 +219,21 @@ async function login() {
     connection(location.protocol === "https:" ? "Connected · HTTPS" : "Connected · HTTP (unencrypted)");
     candidate.onClose = () => {
       if (client !== candidate) return; saveRooms(candidate); client = undefined; setRoom(); $("app").hidden = true; $("login-panel").hidden = false;
+      orchestration.disconnect();
       document.body.classList.remove("chatting"); setMenu(false);
       connection("Disconnected"); $("login-error").textContent = "Connection closed. Connect again to rejoin.";
     };
     setRoom(); if (client.room) { await history(); if (client === candidate && candidate.room) markRead(candidate.room.id); } await rooms();
   } catch (value) {
     if (candidate && connecting !== candidate) return;
+    orchestration.disconnect();
     if (client === candidate) client = undefined; candidate?.disconnect(); setRoom(); $("app").hidden = true; $("login-panel").hidden = false;
     document.body.classList.remove("chatting"); setMenu(false); connection("Disconnected"); error(value, true);
   } finally { if (!candidate || connecting === candidate) { connecting = undefined; loginButton.disabled = false; } }
 }
 $("login-form").addEventListener("submit", event => { event.preventDefault(); void login(); });
 $("forget").addEventListener("click", () => {
+  orchestration.disconnect();
   const pending = connecting; connecting = undefined;
   if (pending && client === pending) {
     client = undefined; setRoom(); $("app").hidden = true; $("login-panel").hidden = false; document.body.classList.remove("chatting"); setMenu(false); connection("Disconnected");
@@ -247,6 +255,7 @@ $("notifications").addEventListener("click", () => {
   void Notification.requestPermission().then(updateNotifications).catch(value => { updateNotifications(); error(value); });
 });
 $("logout").addEventListener("click", () => {
+  orchestration.disconnect();
   const previous = client; client = undefined; setRoom(); previous?.disconnect(); storage("sessionStorage", "remove", tabKey);
   storage("sessionStorage", "remove", roomsKey); mentions.clear(); pinged.clear();
   for (const notification of notifications.values()) notification.close(); notifications.clear();

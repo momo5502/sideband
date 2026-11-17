@@ -7,7 +7,7 @@ import { hiddenInput, terminalLogin } from "./terminal-login.js";
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
-    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
+    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host 0.0.0.0] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
   }
   if (!command || command === "chat" || command.startsWith("--")) {
     const { values } = parseArgs({ args: process.argv.slice(command === "chat" ? 3 : 2),
@@ -33,6 +33,18 @@ async function main(): Promise<void> {
     if (values.harness !== "codex" && values.harness !== "claude") throw new Error("Use --harness codex or --harness claude.");
     await (await import("./room-mcp.js")).runMcp(values.harness); return;
   }
+  if (command === "worker") {
+    const { values } = parseArgs({ args: process.argv.slice(3), options: { profile: { type: "string" }, name: { type: "string" }, omp: { type: "string" }, directory: { type: "string" } } });
+    const { profile } = await new RoomProfiles().resolve(values.profile);
+    const { Worker } = await import("./worker.js");
+    const worker = new Worker({ profile, entry: resolve(process.argv[1]!), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}) });
+    await worker.start();
+    console.log(`Sideband worker '${worker.machine.name}' connected. Open /chat on your server and select Agents to launch OMP.\nAgent runners keep running when this worker stops. Stop agents from the web panel.`);
+    let closing = false;
+    const close = () => { if (!closing) { closing = true; void worker.close(); } };
+    process.once("SIGINT", close); process.once("SIGTERM", close); return;
+  }
+  if (command === "agent-runner") { await (await import("./agent-runner.js")).runAgentRunner(); return; }
   if (command === "login") {
     const { values, positionals } = parseArgs({ args: process.argv.slice(3), allowPositionals: true,
       options: { profile: { type: "string", default: "default" } } });

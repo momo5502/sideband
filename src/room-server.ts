@@ -7,6 +7,7 @@ import { createServer as createHttpServer, type Server as HttpServer, type Incom
 import { statusPage, type PublicStatus } from "./status-page.js";
 import { webPage } from "./web-page.js";
 import { browserScript } from "./browser-bundle.js";
+import { OrchestrationServer } from "./orchestration-server.js";
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
 import {
@@ -26,6 +27,7 @@ export class RoomServer {
   readonly fingerprint: string;
   private readonly secret: Buffer;
   private readonly webhooks: Webhooks;
+  private readonly orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet));
   private webhookBudget = { tokens: 100, updated: Date.now() };
   private readonly http: HttpsServer;
   private readonly plainHttp?: HttpServer;
@@ -54,7 +56,7 @@ export class RoomServer {
       listener.maxConnections = (options.maxClients ?? 1024) * 2;
       listener.on("connection", socket => { this.tcpSockets.add(socket); socket.once("close", () => this.tcpSockets.delete(socket)); });
     }
-    this.ws = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024, perMessageDeflate: false });
+    this.ws = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024, perMessageDeflate: false });
     this.http.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, true));
   }
   private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, encrypted: boolean): void {
@@ -97,7 +99,7 @@ export class RoomServer {
   get statusPort(): number | undefined { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
   private publicStatus(): PublicStatus {
     let connectedParticipants = 0;
-    for (const member of this.members.values()) if (member.socket?.readyState === WebSocket.OPEN) connectedParticipants++;
+    for (const member of this.members.values()) if (member.socket?.readyState === WebSocket.OPEN && !this.orchestration.isWorker(member.socket)) connectedParticipants++;
     return { rooms: this.rooms.size, connectedParticipants };
   }
   private httpRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -198,6 +200,7 @@ export class RoomServer {
     socket.on("close", () => {
       clearTimeout(connection.authTimer);
       this.connections.delete(socket);
+      this.orchestration.disconnect(socket);
       const member = connection.member;
       if (!member || member.socket !== socket) return;
       member.socket = undefined;
@@ -206,7 +209,7 @@ export class RoomServer {
       member.expiry = setTimeout(() => this.remove(member), this.options.graceMs ?? 15_000);
       member.expiry.unref();
     });
-    socket.on("message", (raw, binary) => {
+    socket.on("message", async (raw, binary) => {
       let id: string | undefined;
       try {
         if (binary) throw new RoomError("INVALID_REQUEST", "Text JSON requests only.");
@@ -219,7 +222,7 @@ export class RoomServer {
         if (connection.tokens < 1) throw new RoomError("RATE_LIMIT", "Too many requests; slow down.");
         connection.tokens--;
         const method = text(request.method, "method", 32);
-        const result = this.request(socket, connection, method, request.params ?? {});
+        const result = await this.request(socket, connection, method, request.params ?? {});
         this.send(socket, { id, result });
         if (method === "logout") socket.close(1000, "Logged out");
       } catch (error) {
@@ -267,6 +270,9 @@ export class RoomServer {
     }
     const member = connection.member;
     if (!member || member.socket !== socket) throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
+    if (method.startsWith("control.")) return this.orchestration.request(socket, connection.browser, method, params, member.identity).catch(error => {
+      throw new RoomError("CONTROL", error instanceof Error ? error.message : "Control request failed.");
+    });
     if (["subscribe", "room_leave", "room_history", "room_send"].includes(method) && !connection.browser) throw new RoomError("UNKNOWN_METHOD", "This operation is available to browser clients only.");
     switch (method) {
       case "webhook": {
@@ -380,6 +386,7 @@ export class RoomServer {
   }
   async close(): Promise<void> {
     this.stopping = true; if (this.heartbeat) clearInterval(this.heartbeat);
+    this.orchestration.close();
     for (const member of this.members.values()) if (member.expiry) clearTimeout(member.expiry);
     for (const socket of this.connections.keys()) socket.terminate();
     // Also close incomplete TLS/HTTP handshakes; shutdown must not wait on unauthenticated clients.

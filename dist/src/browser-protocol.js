@@ -36,6 +36,7 @@ export class BrowserRoomClient {
     onPresence = () => { };
     onClose = () => { };
     onError = () => { };
+    onControl = () => { };
     socket;
     authenticated = false;
     multiRoom = false;
@@ -78,6 +79,9 @@ export class BrowserRoomClient {
                 }
                 else if (this.authenticated && packet.event === "presence" && this.joinedRooms.has(packet.data.roomId) && packet.data.participant.id !== this.identity.id) {
                     this.onPresence(packet.data);
+                }
+                else if (this.authenticated && typeof packet.event === "string" && packet.event.startsWith("control.")) {
+                    this.onControl(packet.event, packet.data);
                 }
             }
             catch (error) {
@@ -131,7 +135,7 @@ export class BrowserRoomClient {
             return Promise.reject(new Error("Disconnected."));
         const id = randomId();
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timed out. Check history before resending.")); }, 7000);
+            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timed out. Check history before resending.")); }, method.startsWith("control.") ? 35000 : 7000);
             this.pending.set(id, { resolve, reject, timer });
             this.socket.send(JSON.stringify({ v: 1, id, method, params }));
         });
