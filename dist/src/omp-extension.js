@@ -4,6 +4,7 @@ import { RoomSession } from "./room-session.js";
 import { agentName, serverUrl } from "./room-protocol.js";
 import { formatDelivery } from "./protocol.js";
 import { loginAndSave } from "./terminal-login.js";
+import { managedOmp } from "./omp-managed.js";
 export class OmpAdapter {
     api;
     isCurrent;
@@ -31,6 +32,8 @@ function unwrap(result) {
 }
 /** Each factory binding owns its own client. Subagents never inherit a connection. */
 export default function sideband(api, profiles = new RoomProfiles()) {
+    if (managedOmp(api))
+        return;
     let active;
     let epoch = 0;
     let stopped = false;

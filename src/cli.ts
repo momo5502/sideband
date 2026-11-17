@@ -66,6 +66,7 @@ async function main(): Promise<void> {
     process.once("SIGINT", close); process.once("SIGTERM", close); return;
   }
   if (command === "agent-runner") { await (await import("./agent-runner.js")).runAgentRunner(); return; }
+  if (command === "terminal-agent") { if (process.argv.length !== 4) throw new Error("Invalid private terminal launch."); await (await import("./managed-terminal.js")).runTerminalAgent(process.argv[3]!); return; }
   if (command === "login") {
     const { values, positionals } = parseArgs({ args: process.argv.slice(3), allowPositionals: true,
       options: { profile: { type: "string", default: "default" } } });

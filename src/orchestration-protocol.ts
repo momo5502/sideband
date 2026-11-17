@@ -1,8 +1,8 @@
 import { agentName, fields, text } from "./room-protocol.js";
 
-export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean };
+export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; terminal?: "window" | "tmux" | "none" };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
-export type LaunchSpec = { name: string; harness: "omp"; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string };
+export type LaunchSpec = { name: string; harness: "omp"; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
 export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
@@ -10,7 +10,7 @@ export type ControlCommand = { id: string; method: string; params: Record<string
 export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number };
 
 export function launchSpec(input: unknown): LaunchSpec {
-  const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt"]);
+  const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
   const name = agentName(value.name); if (!name) throw new Error("Choose an agent name.");
   if (value.harness !== "omp") throw new Error("This milestone supports OMP; Claude and Codex adapters follow.");
   const repository = value.repository === undefined || value.repository === "" ? undefined : text(value.repository, "repository URL", 2048).trim() || undefined;
@@ -24,6 +24,7 @@ export function launchSpec(input: unknown): LaunchSpec {
   } catch { /* Invalid URL. */ }
   if (repository && (!remote || /[\s\x00-\x1f]/.test(repository))) throw new Error("Use an HTTPS or SSH Git repository URL, without embedded credentials.");
   const result: LaunchSpec = { name, harness: "omp", ...(repository ? { repository } : {}) };
+  if (value.terminal !== undefined) { if (typeof value.terminal !== "boolean") throw new Error("Invalid terminal mode."); result.terminal = value.terminal; }
   for (const key of ["ref", "model", "effort", "room", "prompt"] as const) {
     if (value[key] === undefined || value[key] === "") continue;
     const content = text(value[key], key, key === "prompt" ? 16000 : key === "room" ? 100 : 256);

@@ -77,4 +77,6 @@ sideband worker
 
 Update the server and workers together to use new launch features.
 
+New agents open the normal OMP terminal on the selected machine by default when a launcher is available. The web panel remains connected through the existing OMP plugin. On headless Linux, install tmux and use the attach command shown in the agent output. Uncheck **Open OMP on the machine** for background operation. Run desktop workers in your interactive user session; a system service cannot open a desktop window. Closing the OMP window stops the agent; **Resume** opens it again with its saved history.
+
 Select **New agent** in `/chat`, choose a name, machine and optional room. Add a repository URL to clone it, or leave it empty for a fresh workspace. OMP runs unattended using that machine’s existing credentials. Open an agent from the sidebar to view output and send private instructions; its menu contains room and lifecycle controls. Workers reconnect automatically after a server restart. Agents survive worker/server restarts; machine reboots do not automatically resume them. Workspaces and history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.

@@ -90,23 +90,7 @@ export class ManagedOmp {
         .catch(error => { try { this.send({ type: "host_tool_result", id: frame.id, isError: true, result: { content: [{ type: "text", text: error instanceof Error ? error.message : "Tool failed." }] } }); } catch { /* Process already ended. */ } });
       return;
     }
-    if (frame.type === "agent_start") this.host.state("busy");
-    if (frame.type === "session_settled" || (frame.type === "agent_end" && frame.isTerminal !== false && !frame.awaitingAsyncWork)) this.host.state("idle");
-    if (frame.type === "message_update") {
-      const event = frame.assistantMessageEvent;
-      if (event?.type === "text_delta" || event?.type === "thinking_delta") this.host.event(event.type === "thinking_delta" ? "thinking" : "assistant", String(event.delta ?? ""));
-      return;
-    }
-    if (frame.type === "message_end" && frame.message?.role === "assistant") {
-      // Streamed text is already captured. Report any harness-side failure carried by the final message.
-      if (frame.message.errorMessage) this.host.event("error", frame.message.errorMessage);
-      return;
-    }
-    if (frame.type === "tool_execution_start") this.host.event("tool", `${frame.toolName}\n${JSON.stringify(frame.args ?? frame.arguments ?? {})}`);
-    else if (["tool_execution_end", "tool_execution_update", "tool_stream_update"].includes(frame.type)) {
-      const result = frame.result ?? frame.partialResult ?? frame.output ?? frame;
-      this.host.event(frame.isError ? "error" : "tool-output", typeof result === "string" ? result : JSON.stringify(result));
-    } else if (["notice", "extension_error", "auto_compaction_start", "auto_compaction_end", "auto_retry_start", "auto_retry_end", "prompt_result"].includes(frame.type)) this.host.event(frame.type, JSON.stringify(frame));
+    emitOmpEvent(this.host, frame);
   }
   request(type: string, params: Record<string, unknown> = {}): Promise<any> {
     const id = `sb-${++this.nextId}`;
@@ -128,4 +112,25 @@ export class ManagedOmp {
       child.stdin.end();
     });
   }
+}
+
+/** Shared by RPC and the native OMP plugin. */
+export function emitOmpEvent(host: Pick<OmpHost, "event" | "state">, frame: any): void {
+    if (frame.type === "agent_start") host.state("busy");
+    if (frame.type === "session_settled" || (frame.type === "agent_end" && frame.isTerminal !== false && !frame.awaitingAsyncWork)) host.state("idle");
+    if (frame.type === "message_update") {
+      const event = frame.assistantMessageEvent;
+      if (event?.type === "text_delta" || event?.type === "thinking_delta") host.event(event.type === "thinking_delta" ? "thinking" : "assistant", String(event.delta ?? ""));
+      return;
+    }
+    if (frame.type === "message_end" && frame.message?.role === "assistant") {
+      // Streamed text is already captured. Report any harness-side failure carried by the final message.
+      if (frame.message.errorMessage) host.event("error", frame.message.errorMessage);
+      return;
+    }
+    if (frame.type === "tool_execution_start") host.event("tool", `${frame.toolName}\n${JSON.stringify(frame.args ?? frame.arguments ?? {})}`);
+    else if (["tool_execution_end", "tool_execution_update", "tool_stream_update"].includes(frame.type)) {
+      const result = frame.result ?? frame.partialResult ?? frame.output ?? frame;
+      host.event(frame.isError ? "error" : "tool-output", typeof result === "string" ? result : JSON.stringify(result));
+    } else if (["notice", "extension_error", "auto_compaction_start", "auto_compaction_end", "auto_retry_start", "auto_retry_end", "prompt_result"].includes(frame.type)) host.event(frame.type, JSON.stringify(frame));
 }

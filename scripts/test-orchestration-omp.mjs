@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve, relative } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 import { createServer as httpServer } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { generate } from "selfsigned";
@@ -43,6 +43,7 @@ try {
       let raw = ""; for await (const chunk of req) raw += chunk;
       const request = JSON.parse(raw), context = JSON.stringify(request.messages);
       assert.ok(request.tools.some(tool => tool.function.name === "sideband_room_send"), "managed host tool reaches the real model interface");
+      if (process.env.SIDEBAND_SMOKE_LEGACY) assert.ok(!request.tools.some(tool => tool.function.name === "sideband_send"), "legacy room tools are hidden in managed mode");
       let delta, finish;
       if (!announced) {
         announced = true; finish = "tool_calls";
@@ -77,10 +78,12 @@ try {
   await new Promise(resolve => repository.listen(0, "127.0.0.1", resolve));
   await peer.connect(); await peer.joinRoom("omp-orchestration"); peer.onMessage(message => received.push(message.text));
   await until(() => httpsReady); await web.connect();
+  const extra = [];
+  if (process.env.SIDEBAND_SMOKE_LEGACY) { const legacy = join(directory, "old-sideband.cjs"); await writeFile(legacy, execFileSync("git", ["show", `${process.env.SIDEBAND_SMOKE_LEGACY_REF ?? "c9b9c7d"}:dist/sideband-omp.cjs`], { cwd: root, windowsHide: true })); extra.push("-e", legacy); }
   worker = new Worker({ profile, entry: process.env.SIDEBAND_SMOKE_ENTRY ? resolve(process.env.SIDEBAND_SMOKE_ENTRY) : join(root, "dist/src/cli.js"), name: "real-omp-test", root: join(directory, "workspaces"),
-    omp: { command: process.env.OMP_BINARY ?? "omp", args: ["-e", provider, "--no-lsp", "--no-skills", "--no-rules", "--no-tools"] } });
+    omp: { command: process.env.OMP_BINARY ?? "omp", args: [...extra, "-e", provider, "--no-lsp", "--no-skills", "--no-rules", "--no-tools"] } });
   await worker.start();
-  agentId = (await web.request("control.launch", { machineId: worker.machine.id, name: "managed-omp", harness: "omp", ...(process.env.SIDEBAND_SMOKE_EMPTY ? {} : { repository: `https://127.0.0.1:${repository.address().port}/repo.git` }), model: "sideband-smoke/smoke", room: "omp-orchestration", prompt: "Announce that you are ready." })).id;
+  agentId = (await web.request("control.launch", { machineId: worker.machine.id, name: "managed-omp", harness: "omp", ...(process.env.SIDEBAND_SMOKE_EMPTY ? {} : { repository: `https://127.0.0.1:${repository.address().port}/repo.git` }), ...(process.env.SIDEBAND_SMOKE_TERMINAL ? { terminal: true } : {}), model: "sideband-smoke/smoke", room: "omp-orchestration", prompt: "Announce that you are ready." })).id;
   const state = () => web.request("control.list");
   await until(async () => {
     const agent = (await state()).agents.find(agent => agent.id === agentId);
@@ -89,6 +92,7 @@ try {
   });
   await worker.close(); // Independent runner must still receive room messages and wake the idle harness.
   await peer.send("wake-real-omp"); await until(() => received.includes("Real OMP reply"));
+  await until(async () => (await web.request("control.watch", { agentId })).events.some(event => event.kind === "assistant" && event.text.includes("Idle and ready.")));
   const output = await web.request("control.watch", { agentId });
   assert.ok(output.events.some(event => event.kind === "assistant" && event.text.includes("Idle and ready.")), "real streamed output is available in the panel");
   await action("stop"); await action("resume"); await action("prompt", { text: "Still here?" });

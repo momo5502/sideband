@@ -8,6 +8,7 @@ import { RoomServer } from "../src/room-server.js";
 import { RoomProfiles } from "../src/room-profiles.js";
 import { Worker } from "../src/worker.js";
 import { generate } from "selfsigned";
+import { RoomError } from "../src/room-protocol.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, timeout = 15000) {
@@ -33,6 +34,17 @@ test("machine identity survives a server address/port migration", async () => {
     assert.equal(first.machine.id, next.machine.id);
     await first.close(); await next.close();
   } finally { await server.close(); }
+});
+test("an updated worker still registers with a server that rejects terminal capability fields", async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0 }); const warnings: string[] = [], fields: boolean[] = [];
+  const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, entry: resolve("dist/src/cli.js"), omp: { command: process.execPath }, onError: error => warnings.push(error.message) });
+  const request = worker.client.request.bind(worker.client);
+  worker.client.request = async (method, params) => {
+    if (method === "control.worker") { const present = Object.hasOwn((params!.machine as object), "terminal"); fields.push(present); if (present) throw new RoomError("INVALID_ARGUMENT", "Unexpected field."); }
+    return request(method, params) as never;
+  };
+  try { await worker.start(); assert.equal(worker.client.state, "on"); assert.deepEqual(fields, [true, false]); assert.match(warnings[0]!, /Update the server/); }
+  finally { await worker.close(); await server.close(); }
 });
 
 test("worker on shared HTTPS retries a prolonged outage, re-registers after server restart and reports rotated credentials", { timeout: 65000 }, async () => {

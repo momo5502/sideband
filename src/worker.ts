@@ -6,9 +6,10 @@ import crossSpawn from "cross-spawn";
 import { RoomClient, type ConnectionChange } from "./room-client.js";
 import { launchSpec, type ControlCommand, type Machine } from "./orchestration-protocol.js";
 import { stateDirectory } from "./room-profiles.js";
-import type { ConnectionProfile } from "./room-protocol.js";
+import { RoomError, type ConnectionProfile } from "./room-protocol.js";
 import type { RunnerConfig } from "./agent-runner.js";
 import type { Executable } from "./managed-omp.js";
+import { terminalLauncher } from "./terminal-launch.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void };
@@ -24,13 +25,22 @@ export class Worker {
     const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
     this.machine = { id, name: options.name ?? hostname(), platform: platform(), harnesses: ["omp"], online: true };
     this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
-    this.client.onConnected(async () => { await this.client.request("control.worker", { machine: this.machine }); });
+    this.client.onConnected(async () => {
+      try { await this.client.request("control.worker", { machine: this.machine }); }
+      catch (error) {
+        if (!(error instanceof RoomError) || error.code !== "INVALID_ARGUMENT" || !this.machine.terminal) throw error;
+        const { terminal: _terminal, ...legacy } = this.machine;
+        await this.client.request("control.worker", { machine: legacy });
+        options.onError?.(new Error("Server does not support terminal launch yet. Update the server to enable native OMP windows."));
+      }
+    });
     this.client.onEvent((event, command: ControlCommand) => { if (event === "control.command") void this.command(command); });
   }
   async start(): Promise<void> {
     const executable = this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" };
     const probe = crossSpawn.sync(executable.command, [...(executable.args ?? []), "--version"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
     this.machine.harnesses = probe.status === 0 ? ["omp"] : [];
+    this.machine.terminal = terminalLauncher()?.kind ?? "none";
     await this.client.connect();
   }
   private async command(command: ControlCommand): Promise<void> {
@@ -42,7 +52,7 @@ export class Worker {
       let launched = this.launches.get(id);
       if (!launched) {
         const config: RunnerConfig = { profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec,
-          omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" } };
+          omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" }, entry: this.options.entry };
         launched = this.spawnRunner(config); this.launches.set(id, launched);
         if (this.launches.size > 1000) this.launches.delete(this.launches.keys().next().value!);
       }

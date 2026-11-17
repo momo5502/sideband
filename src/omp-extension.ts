@@ -6,12 +6,16 @@ import { agentName, serverUrl } from "./room-protocol.js";
 import { formatDelivery, type Delivery } from "./protocol.js";
 import type { DeliveryAdapter } from "./adapters/codex.js";
 import { loginAndSave } from "./terminal-login.js";
+import { managedOmp } from "./omp-managed.js";
 
 /** The host API subset used here. Schema builders come from OMP, with no runtime host imports. */
 export interface OmpContext {
   mode: string;
   hasUI: boolean;
-  sessionManager: { getSessionId(): string };
+  isIdle?(): boolean;
+  abort?(): void;
+  shutdown?(): void;
+  sessionManager: { getSessionId(): string; getSessionFile?(): string | undefined };
   ui: {
     input(title: string, placeholder?: string, options?: { secret?: boolean; signal?: AbortSignal }): Promise<string | undefined>;
     select(title: string, options: string[], dialog?: { signal?: AbortSignal }): Promise<string | undefined>;
@@ -32,6 +36,10 @@ export interface OmpApi {
   registerCommand(name: string, command: { description: string; handler(args: string, ctx: OmpContext): Promise<void> }): void;
   on(event: string, handler: (event: { systemPrompt?: string[] }, ctx: OmpContext) => unknown): void;
   sendMessage(message: { customType: string; content: string; display: boolean; attribution: "agent" }, options: { deliverAs: "aside"; triggerTurn: boolean }): void;
+  sendUserMessage?(content: string, options?: { deliverAs: "steer"; attribution: "user" }): Promise<void>;
+  getActiveTools?(): string[];
+  getAllTools?(): { name: string; sourceInfo?: { source?: string; path?: string } }[];
+  setActiveTools?(names: string[]): Promise<void>;
 }
 
 export class OmpAdapter implements DeliveryAdapter {
@@ -57,6 +65,7 @@ function unwrap(result: ToolResult): any {
 
 /** Each factory binding owns its own client. Subagents never inherit a connection. */
 export default function sideband(api: OmpApi, profiles = new RoomProfiles()): void {
+  if (managedOmp(api)) return;
   type Binding = { id: string; context: OmpContext; tools: RoomTools };
   let active: Binding | undefined;
   let epoch = 0;

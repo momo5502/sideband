@@ -53,7 +53,7 @@ export class OrchestrationServer {
         });
     }
     agent(input) {
-        const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume"]);
+        const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume"]);
         const { id, machineId, machineName, state, createdAt, error, online, canResume, ...spec } = value;
         if (canResume !== undefined && typeof canResume !== "boolean")
             throw new Error("Invalid resume capability.");
@@ -70,7 +70,9 @@ export class OrchestrationServer {
             const existing = this.peers.get(socket);
             const args = fields(params, [kind === "worker" ? "machine" : "agent"]);
             if (kind === "worker") {
-                const machine = fields(args.machine, ["id", "name", "platform", "harnesses", "online"]);
+                const machine = fields(args.machine, ["id", "name", "platform", "harnesses", "online", "terminal"]);
+                if (machine.terminal !== undefined && !["window", "tmux", "none"].includes(String(machine.terminal)))
+                    throw new Error("Invalid terminal capability.");
                 const id = uuid(machine.id);
                 if (existing && (existing.kind !== kind || existing.id !== id))
                     throw new Error("Connection already registered.");
@@ -82,7 +84,7 @@ export class OrchestrationServer {
                 const peer = { socket, kind, id };
                 this.peers.set(socket, peer);
                 this.workers.set(id, peer);
-                this.machines.set(id, { id, name: text(machine.name, "machine name", 100), platform: text(machine.platform, "platform", 32), harnesses: machine.harnesses, online: true });
+                this.machines.set(id, { id, name: text(machine.name, "machine name", 100), platform: text(machine.platform, "platform", 32), harnesses: machine.harnesses, online: true, ...(machine.terminal ? { terminal: machine.terminal } : {}) });
             }
             else {
                 const agent = this.agent(args.agent);
@@ -169,13 +171,15 @@ export class OrchestrationServer {
             return { machines: [...this.machines.values()], agents: [...this.agents.values()] };
         }
         if (method === "control.launch") {
-            const { machineId, ...specInput } = fields(params, ["machineId", "name", "harness", "repository", "ref", "model", "effort", "room", "prompt"]);
+            const { machineId, ...specInput } = fields(params, ["machineId", "name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
             const machine = this.machines.get(uuid(machineId));
             if (!machine?.online)
                 throw new Error("Select an online machine.");
             const spec = launchSpec(specInput);
             if (!machine.harnesses.includes(spec.harness))
                 throw new Error("This harness is not available on that machine.");
+            if (spec.terminal && (!machine.terminal || machine.terminal === "none"))
+                throw new Error("This worker cannot open a terminal. Update it, add a terminal launcher, or choose Background mode.");
             const id = randomUUID();
             await this.dispatch(this.workers.get(machine.id), "launch", { id, spec });
             return { id };

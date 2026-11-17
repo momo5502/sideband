@@ -1,6 +1,6 @@
 import { agentName, fields, text } from "./room-protocol.js";
 export function launchSpec(input) {
-    const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt"]);
+    const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
     const name = agentName(value.name);
     if (!name)
         throw new Error("Choose an agent name.");
@@ -21,6 +21,11 @@ export function launchSpec(input) {
     if (repository && (!remote || /[\s\x00-\x1f]/.test(repository)))
         throw new Error("Use an HTTPS or SSH Git repository URL, without embedded credentials.");
     const result = { name, harness: "omp", ...(repository ? { repository } : {}) };
+    if (value.terminal !== undefined) {
+        if (typeof value.terminal !== "boolean")
+            throw new Error("Invalid terminal mode.");
+        result.terminal = value.terminal;
+    }
     for (const key of ["ref", "model", "effort", "room", "prompt"]) {
         if (value[key] === undefined || value[key] === "")
             continue;

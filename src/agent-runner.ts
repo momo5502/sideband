@@ -4,11 +4,12 @@ import spawn from "cross-spawn";
 import { RoomClient } from "./room-client.js";
 import { formatDelivery } from "./protocol.js";
 import { RoomError, type ConnectionProfile } from "./room-protocol.js";
-import { ManagedOmp, type Executable } from "./managed-omp.js";
+import { ManagedOmp, type Executable, type OmpHost } from "./managed-omp.js";
+import { ManagedTerminal, type ManagedHarness } from "./managed-terminal.js";
 import { OutputBuffer, launchSpec, type ControlCommand, type ManagedAgent, type OutputEvent } from "./orchestration-protocol.js";
 import { terminateTree } from "./process-tree.js";
 
-export type RunnerConfig = { profile: ConnectionProfile; id: string; machineId: string; machineName: string; root: string; spec: unknown; omp: Executable };
+export type RunnerConfig = { profile: ConnectionProfile; id: string; machineId: string; machineName: string; root: string; spec: unknown; omp: Executable; entry?: string };
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "Operation failed.").slice(0, 2048);
 
 /** Independent of the worker: owns the harness, room identity, and bounded output. */
@@ -16,7 +17,7 @@ export class AgentRunner {
   readonly client: RoomClient;
   readonly output = new OutputBuffer();
   readonly agent: ManagedAgent;
-  private driver?: ManagedOmp;
+  private driver?: ManagedHarness;
   private sessionFile?: string;
   private timer?: NodeJS.Timeout;
   private flushing = false;
@@ -91,7 +92,7 @@ export class AgentRunner {
     const epoch = this.roomEpoch; this.inboxSize++;
     this.inbox = this.inbox.then(async () => {
       if (this.closed || epoch !== this.roomEpoch || this.client.room?.id !== roomId || !this.driver) return;
-      this.record("room", text); await this.driver.prompt(text);
+      this.record("room", text); if (this.driver.deliver) await this.driver.deliver(text); else await this.driver.prompt(text);
     }).catch(error => this.record("error", errorText(error))).finally(() => { this.inboxSize--; });
   }
   async start(): Promise<void> {
@@ -129,7 +130,7 @@ export class AgentRunner {
     if (this.closed || this.stopRequested) return;
     if (this.desiredRoom) await this.changeRoom(this.desiredRoom);
     const prompt = launchSpec(this.config.spec).prompt;
-    if (prompt) { this.record("user", prompt); await this.driver!.prompt(prompt); }
+    if (prompt) { if (!this.agent.terminal) this.record("user", prompt); await this.driver!.prompt(prompt); }
   }
   private async tool(name: string, args: unknown): Promise<unknown> {
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Invalid tool arguments.");
@@ -146,14 +147,21 @@ export class AgentRunner {
   private async startHarness(): Promise<void> {
     if (this.closed || this.stopRequested) throw new Error("Runner is stopped.");
     this.state("starting");
-    const driver = new ManagedOmp(this.config.omp, this.workspace, join(this.directory, "sessions"), {
+    const host: OmpHost = {
       event: (kind, text) => this.record(kind, text), state: state => { if (this.driver === driver && !this.closed && !this.stopRequested) this.agent.state = state; },
-      exit: error => { if (this.driver === driver && !this.closed && !this.stopRequested) this.state("failed", error); },
+      exit: error => {
+        if (this.driver !== driver || this.closed || this.stopRequested) return;
+        this.sessionFile = driver.sessionFile ?? this.sessionFile;
+        this.state(this.agent.terminal ? "stopped" : "failed", error); ++this.roomEpoch;
+        if (this.agent.terminal && this.client.room) void this.client.leaveRoom().catch(() => {});
+      },
       tool: (name, args) => this.tool(name, args),
-    });
+    };
+    const driver: ManagedHarness = this.agent.terminal ? new ManagedTerminal(this.config.omp, this.workspace, join(this.directory, "sessions"), host, this.config.entry ?? resolve(process.argv[1]!))
+      : new ManagedOmp(this.config.omp, this.workspace, join(this.directory, "sessions"), host);
     this.driver = driver;
     try { await driver.start({ model: this.agent.model, effort: this.agent.effort, resume: this.sessionFile }); }
-    catch (error) { if (!this.closed && !this.stopRequested) this.state("failed", error); throw error; }
+    catch (error) { await driver.stop().catch(() => {}); if (!this.closed && !this.stopRequested) this.state("failed", error); throw error; }
     this.sessionFile = driver.sessionFile;
     if (!this.closed && !this.stopRequested) this.state("idle");
   }
@@ -170,7 +178,7 @@ export class AgentRunner {
       case "prompt": {
         if (!this.driver || !["idle", "busy"].includes(this.agent.state)) throw new Error("Resume the agent before sending instructions.");
         const text = params.text; if (typeof text !== "string" || !text.trim() || text.length > 16000) throw new Error("Invalid instructions.");
-        this.record("user", text); await this.driver.prompt(text); return { accepted: true };
+        if (!this.agent.terminal) this.record("user", text); await this.driver.prompt(text); return { accepted: true };
       }
       case "interrupt": if (!this.driver) throw new Error("Agent is not running."); await this.driver.interrupt(); return { interrupted: true };
       case "room": if (typeof params.room !== "string" || params.room.length > 100) throw new Error("Invalid room."); await this.changeRoom(params.room); return { room: this.agent.room };
