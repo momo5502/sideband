@@ -352,6 +352,9 @@ export class BrowserWorkspace {
     } catch (error) { if (generation === this.watchGeneration) { this.watched = ""; this.update({ error: errorText(error) }); } }
     finally { if (generation === this.watchGeneration) this.update({ loading: false }); }
   }
+  trustClaude(machineId: string): Promise<{ root: string }> {
+    return this.requireClient().request("control.claude_trust", { machineId, confirm: true });
+  }
   async launch(spec: LaunchSpec & { machineId: string }) {
     const result = await this.requireClient().request<{ id: string }>("control.launch", spec);
     const { machineId, prompt: _prompt, ...description } = spec;

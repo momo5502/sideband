@@ -12,6 +12,7 @@ import type { RunnerConfig } from "./agent-runner.js";
 import type { Executable } from "./managed-omp.js";
 import { terminalLauncher } from "./terminal-launch.js";
 import type { RuntimeUpdater } from "./updater.js";
+import { trustClaudeWorkspaces } from "./claude-trust.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable; codex?: Executable; claude?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
@@ -66,6 +67,11 @@ export class Worker {
   }
   private async command(command: ControlCommand): Promise<void> {
     try {
+      if (command.method === "claude-trust") {
+        if (Object.keys(command.params).length || !this.machine.harnesses.includes("claude")) throw new Error("Claude is not available on this worker.");
+        const result = await trustClaudeWorkspaces(this.root);
+        await this.client.request("control.reply", { id: command.id, result }); return;
+      }
       if (command.method === "update") {
         if (!this.options.updater || typeof command.params.target !== "string" || Object.keys(command.params).length !== 1) throw new Error("This worker cannot perform automatic updates.");
         this.options.updater.start(command.params.target);

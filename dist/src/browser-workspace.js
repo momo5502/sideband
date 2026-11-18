@@ -542,6 +542,9 @@ export class BrowserWorkspace {
                 this.update({ loading: false });
         }
     }
+    trustClaude(machineId) {
+        return this.requireClient().request("control.claude_trust", { machineId, confirm: true });
+    }
     async launch(spec) {
         const result = await this.requireClient().request("control.launch", spec);
         const { machineId, prompt: _prompt, ...description } = spec;

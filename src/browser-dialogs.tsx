@@ -6,7 +6,7 @@ import { BrowserWorkspace, identityLabel, type WorkspaceState } from "./browser-
 import { Button, ErrorMessage, Field, Modal, Spinner } from "./browser-components.js";
 import { allRooms, Brand, repositoryName, Status } from "./browser-views.js";
 import type { Room } from "./room-protocol.js";
-import type { ManagedAgent, LaunchSpec, HarnessName } from "./orchestration-protocol.js";
+import type { ManagedAgent, LaunchSpec, HarnessName, Machine } from "./orchestration-protocol.js";
 import { Updates } from "./browser-updates.js";
 
 function RoomPicker({ rooms, value, onChange, id, allowNone = true }: { rooms: Room[]; value: string; onChange(value: string): void; id: string; allowNone?: boolean }) {
@@ -27,6 +27,18 @@ function WorkerSetup({ state }: { state: WorkspaceState }) {
   const server = `${location.hostname}${port === 443 ? "" : `:${port}`}`;
   return <div className="setup-box"><p className="font-medium text-zinc-300">Connect a machine</p><p className="mt-1">On a machine with OMP and Sideband installed, sign in once:</p><CopyCommand text={`sideband login ${server}`} /><p className="mt-3">Then keep its worker running:</p><CopyCommand text="sideband worker" /></div>;
 }
+function ClaudeTrust({ machine, store, onBusyChange }: { machine: Machine; store: BrowserWorkspace; onBusyChange?(busy: boolean): void }) {
+  const [busy, setBusy] = useState(false), [root, setRoot] = useState(""), [error, setError] = useState("");
+  return <div className="setup-box mb-5" data-claude-trust={machine.id}>
+    <p className="font-medium text-zinc-300">Claude workspace trust (one-time setup)</p>
+    <p className="mt-1">Trust all current and future agent folders under this machine's Sideband workspace root. Claude can read, edit and execute files there. This saves the trust decision in Claude's configuration.</p>
+    <Button className="mt-3" disabled={busy || !machine.online || !!root} onClick={() => {
+      setBusy(true); onBusyChange?.(true); setError(""); void store.trustClaude(machine.id).then(result => setRoot(result.root)).catch(error => setError(error instanceof Error ? error.message : "Could not record trust.")).finally(() => { setBusy(false); onBusyChange?.(false); });
+    }}>{busy ? <Spinner /> : root ? <Check size={14} /> : null}{root ? "Workspaces trusted" : busy ? "Recording trust..." : "Trust Claude workspaces"}</Button>
+    {root && <p className="field-hint mt-2" role="status">Trusted: {root}. Start or resume the agent to apply it. An already-open trust prompt still needs local confirmation or a restart.</p>}
+    <ErrorMessage text={error} />
+  </div>;
+}
 export function NewAgent({ state, store, close, initial }: { state: WorkspaceState; store: BrowserWorkspace; close(): void; initial?: ManagedAgent }) {
   const [repository, setRepository] = useState(initial?.repository ?? ""), [name, setName] = useState(() => {
     if (!initial) return ""; const names = new Set(state.control.agents.map(agent => agent.name.toLowerCase())); const base = initial.name.slice(0, 55); let result = base, index = 2; while (names.has(result.toLowerCase())) result = `${base}-${index++}`; return result;
@@ -37,7 +49,7 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
     const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes(harness));
     return eligible.find(machine => machine.id === initial?.machineId)?.id ?? eligible.find(machine => machine.name === initial?.machineName)?.id ?? eligible[0]?.id ?? "";
   });
-  const [busy, setBusy] = useState(false), [error, setError] = useState(""); const editedName = useRef(false);
+  const [busy, setBusy] = useState(false), [trustBusy, setTrustBusy] = useState(false), [error, setError] = useState(""); const editedName = useRef(false);
   const [terminal, setTerminal] = useState(initial ? initial.terminal === true : harness !== "claude");
   const editedHarness = useRef(false);
   const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes(harness)), selected = eligible.find(candidate => candidate.id === machine);
@@ -49,9 +61,9 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
     const candidate = (["omp", "codex", "claude"] as const).find(name => state.control.machines.some(machine => machine.online && machine.harnesses.includes(name)));
     if (candidate && candidate !== harness) { setHarness(candidate); setTerminal(candidate !== "claude"); }
   }, [harness, state.control.machines, eligible.length, initial]);
-  return <Modal id="new-agent-dialog" open onOpenChange={open => { if (!open && !busy) close(); }} title="New agent" description="Choose a machine and an optional repository. Your agent gets its own workspace and stays available for new work.">
+  return <Modal id="new-agent-dialog" open onOpenChange={open => { if (!open && !busy && !trustBusy) close(); }} title="New agent" description="Choose a machine and an optional repository. Your agent gets its own workspace and stays available for new work.">
     <form id="agent-launch-form" onSubmit={event => {
-      event.preventDefault(); if (busy || !selected) return; setBusy(true); setError(""); const form = new FormData(event.currentTarget);
+      event.preventDefault(); if (busy || trustBusy || !selected) return; setBusy(true); setError(""); const form = new FormData(event.currentTarget);
       const spec: LaunchSpec & { machineId: string } = { machineId: machine, ...(repository.trim() ? { repository: repository.trim() } : {}), name: name.trim(), harness };
       if (native && terminal && selected.terminal && selected.terminal !== "none") spec.terminal = true;
       for (const key of ["ref", "model", "effort", "prompt"] as const) { const value = String(form.get(key) ?? "").trim(); if (value) spec[key] = value; } if (room.trim()) spec.room = room.trim();
@@ -68,12 +80,13 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
       {!eligible.length && <div className="mb-5">{state.control.machines.length > 0 && <p className="field-hint mb-3">No connected machine can run {harnessLabel} yet. Bring a machine online, or install {harnessLabel} and restart its worker.</p>}<WorkerSetup state={state} /></div>}
       <span className="field-label" id="harness-label">Harness</span><RadioGroup.Root id="agent-harness" className="harness-picker" value={harness} onValueChange={value => { editedHarness.current = true; setHarness(value as HarnessName); setTerminal(value !== "claude"); }} aria-labelledby="harness-label">{(["omp", "claude", "codex"] as const).map(name => <RadioGroup.Item key={name} type="button" className="harness-option" value={name}>{name === "omp" ? "oh-my-pi" : name === "claude" ? "Claude" : "Codex"}</RadioGroup.Item>)}</RadioGroup.Root>
       <Field label="Local terminal" htmlFor="agent-terminal" hint={!native ? "Native Claude control needs Windows or tmux. Background mode supports all web controls." : harness === "claude" ? "Experimental console input. Complete startup/trust prompts locally. Avoid local typing while sending from the web panel. Background mode is more reliable." : selected?.terminal === "window" ? `Opens the normal ${harnessLabel} terminal on ${selected.name}. Uncheck to run in the background.` : selected?.terminal === "tmux" ? `Starts ${harnessLabel} in tmux. The agent output shows the local attach command.` : "Background only. Update the worker or install a terminal launcher to open locally."}><label className="flex items-center gap-2"><input id="agent-terminal" type="checkbox" checked={native && terminal && !!selected?.terminal && selected.terminal !== "none"} disabled={!native || !selected?.terminal || selected.terminal === "none"} onChange={event => setTerminal(event.target.checked)} />Open {harnessLabel} on the machine{harness === "claude" ? " (experimental)" : ""}</label></Field>
+      {harness === "claude" && native && terminal && selected && <ClaudeTrust key={selected.id} machine={selected} store={store} onBusyChange={setTrustBusy} />}
       <Field label="Room" htmlFor="launch-room" hint="Optional. The agent joins this room automatically."><RoomPicker id="launch-room" rooms={allRooms(state)} value={room} onChange={setRoom} /></Field>
       <Field label="What should it work on?" htmlFor="launch-prompt"><textarea id="launch-prompt" className="textarea" name="prompt" rows={3} maxLength={16000} defaultValue={initial?.prompt ?? ""} placeholder="Give it a task, or leave this empty and send instructions later." /></Field>
       <details className="advanced-section"><summary><ChevronRight size={14} />Advanced</summary><Field label="Branch or ref" htmlFor="launch-ref"><input id="launch-ref" className="input" name="ref" maxLength={256} disabled={!repository.trim()} defaultValue={initial?.ref ?? ""} placeholder={repository.trim() ? "Repository default" : "Requires a repository"} /></Field>
         <div className="form-grid"><Field label="Model" htmlFor="launch-model"><input id="launch-model" className="input" name="model" maxLength={256} defaultValue={initial?.model ?? ""} placeholder="Harness default" /></Field><Field label="Reasoning effort" htmlFor="launch-effort"><select id="launch-effort" className="select" name="effort" defaultValue={initial?.effort ?? ""}><option value="">Harness default</option>{(harness === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]).map(value => <option key={value}>{value}</option>)}</select></Field></div>
         <p className="field-hint">Agents run unattended, using this machine’s existing harness credentials.</p></details>
-      <ErrorMessage text={error || state.controlError} id="launch-error" /><div className="form-actions"><Button onClick={close} disabled={busy} variant="ghost">Cancel</Button><Button id="agent-launch" variant="primary" type="submit" disabled={busy || !selected}>{busy ? <Spinner /> : <Plus size={15} />}{busy ? "Starting…" : "Launch agent"}</Button></div>
+      <ErrorMessage text={error || state.controlError} id="launch-error" /><div className="form-actions"><Button onClick={close} disabled={busy || trustBusy} variant="ghost">Cancel</Button><Button id="agent-launch" variant="primary" type="submit" disabled={busy || trustBusy || !selected}>{busy ? <Spinner /> : <Plus size={15} />}{busy ? "Starting…" : "Launch agent"}</Button></div>
     </form>
   </Modal>;
 }
@@ -88,8 +101,8 @@ export function JoinRoom({ state, store, close }: { state: WorkspaceState; store
       <ErrorMessage text={error} /><div className="form-actions"><Button onClick={close} variant="ghost" disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !name.trim()}>{busy ? <Spinner /> : <Hash size={14} />}{exact ? "Join room" : "Create room"}</Button></div>
     </form></Modal>;
 }
-function MachineList({ state }: { state: WorkspaceState }) {
-  return <div className="machine-list">{state.control.machines.map(machine => <div key={machine.id} className="machine-card"><Monitor size={17} className="text-zinc-500" /><div className="machine-copy"><strong>{machine.name}</strong><small>{machine.platform} · {machine.harnesses.length ? machine.harnesses.join(", ").toUpperCase() : "No supported harness detected"}</small></div><Status state={machine.online ? "on" : "offline"} label /></div>)}</div>;
+function MachineList({ state, store }: { state: WorkspaceState; store: BrowserWorkspace }) {
+  return <div className="machine-list">{state.control.machines.map(machine => <div key={machine.id}><div className="machine-card"><Monitor size={17} className="text-zinc-500" /><div className="machine-copy"><strong>{machine.name}</strong><small>{machine.platform} · {machine.harnesses.length ? machine.harnesses.join(", ").toUpperCase() : "No supported harness detected"}</small></div><Status state={machine.online ? "on" : "offline"} label /></div>{machine.harnesses.includes("claude") && <ClaudeTrust machine={machine} store={store} />}</div>)}</div>;
 }
 export function Settings({ state, store, close }: { state: WorkspaceState; store: BrowserWorkspace; close(): void }) {
   const [tab, setTab] = useState("general"), [room, setRoom] = useState(state.joined.find(room => room.id === state.lastRoom)?.name ?? ""), [sender, setSender] = useState(""), [url, setUrl] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false), [toast, setToast] = useState("");
@@ -101,7 +114,7 @@ export function Settings({ state, store, close }: { state: WorkspaceState; store
     <Tabs.Content value={tab}>
       {tab === "general" && <><div className="settings-section"><h3>Notifications</h3><p id="notification-status">{notificationStatus}</p><Button id="notifications" className="mt-3" disabled={!secure || !notificationAvailable || permission !== "default" || !state.identity?.name} onClick={() => { void Notification.requestPermission().then(() => rerender(value => value + 1)).catch(() => setError("Notifications could not be enabled.")); }}>{permission === "granted" ? <Check size={14} /> : <Activity size={14} />}{permission === "granted" ? "Notifications enabled" : "Enable desktop notifications"}</Button></div>
         <div className="settings-section"><h3>Connection</h3><p>{location.host} · {location.protocol === "https:" ? "HTTPS" : "HTTP (unencrypted)"}</p><p className="mt-2">Signed in as {state.identity ? identityLabel(state.identity) : "guest"}. Your login is remembered in this browser.</p><div className="mt-4 flex flex-wrap gap-2"><Button id="logout" onClick={() => { close(); store.logout(); }}><LogOut size={14} />Disconnect</Button><Button variant="ghost" onClick={() => window.open("/", "_blank", "noopener")}><ArrowUpRight size={14} />Server status</Button></div></div></>}
-      {tab === "machines" && <><MachineList state={state} /><div className="mt-5"><WorkerSetup state={state} /></div></>}
+      {tab === "machines" && <><MachineList state={state} store={store} /><div className="mt-5"><WorkerSetup state={state} /></div></>}
       {tab === "updates" && <Updates state={state} store={store} />}
       {tab === "webhooks" && <form id="webhook-form" onSubmit={event => {
         event.preventDefault(); if (busy || !room.trim()) return; setBusy(true); setUrl(""); setError("");

@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { ManagedCodex } from "../dist/src/managed-codex.js";
 import { ManagedClaude } from "../dist/src/managed-claude.js";
 import { ManagedClaudeNative } from "../dist/src/managed-claude-native.js";
+import { trustClaudeWorkspaces } from "../dist/src/claude-trust.js";
 process.chdir(fileURLToPath(new URL("..", import.meta.url)));
 const directory = await mkdtemp(join(tmpdir(), "sideband-real-clis-"));
 let sequence = 0, requests = 0, holds = 0, cancellations = 0;
@@ -74,7 +75,7 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const base = "http://127.0.0.1:" + server.address().port;
 Object.assign(process.env, { CODEX_HOME: join(directory, "codex-home"), CLAUDE_CONFIG_DIR: join(directory, "claude-home"), ANTHROPIC_BASE_URL: base, ANTHROPIC_API_KEY: "sideband-local-fixture", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", ENABLE_TOOL_SEARCH: "false", SIDEBAND_STATE_DIR: join(directory, "state") });
-for (const key of ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) delete process.env[key];
+for (const key of ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_CUSTOM_OAUTH_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]) delete process.env[key];
 await mkdir(process.env.CODEX_HOME, { recursive: true });
 await mkdir(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
 await writeFile(join(process.env.CODEX_HOME, "config.toml"), 'model="sideband-smoke"\nmodel_provider="sideband_test"\n[model_providers.sideband_test]\nname="Sideband smoke"\nbase_url="' + base + '/v1"\nwire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\n');
@@ -85,7 +86,9 @@ try {
     await mkdir(cwd);
     if (name === "claude-native") {
       await writeFile(join(process.env.CLAUDE_CONFIG_DIR, "settings.json"), JSON.stringify({ skipDangerousModePermissionPrompt: true }));
-      await writeFile(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", numStartups: 5, projects: Object.fromEntries([cwd, cwd.replaceAll("\\", "/"), cwd.replaceAll("\\", "/").replace(/^C:/, "c:")].map((path) => [path, { hasTrustDialogAccepted: true }])), customApiKeyResponses: { approved: ["sideband-local-fixture", "sideband-local-fixture".slice(-20)], rejected: [] } }));
+      await writeFile(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", numStartups: 5, projects: {}, customApiKeyResponses: { approved: ["sideband-local-fixture", "sideband-local-fixture".slice(-20)], rejected: [] } }));
+      await trustClaudeWorkspaces(directory, join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"));
+      assert.equal(JSON.parse(await readFile(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), "utf8")).projects[cwd], undefined, "native startup must inherit trust from the workspace root");
     }
     const events = [], calls = [];
     let state = "starting", failure;

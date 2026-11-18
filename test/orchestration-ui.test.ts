@@ -8,6 +8,31 @@ import { boundedOutput, mentionsUsername } from "../src/browser-workspace.js";
 import type { ManagedAgent, ControlCommand, OutputEvent } from "../src/orchestration-protocol.js";
 import { browserPage, until } from "./browser-fixture.js";
 
+test("native Claude setup is explicit, survives an error and blocks launch while trust is being recorded", { timeout: testTimeout(30000) }, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
+  const worker = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }), machineId = randomUUID(), commands: ControlCommand[] = [];
+  let page: Awaited<ReturnType<typeof browserPage>> | undefined;
+  worker.onEvent((event, command) => { if (event === "control.command") commands.push(command); });
+  try {
+    await worker.connect(); await worker.request("control.worker", { machine: { id: machineId, name: "claude-machine", platform: "win32", terminal: "window", harnesses: ["claude"] } });
+    page = await browserPage(server); const p = page; await p.login(); await p.navigation(); p.click("#new-agent");
+    await until(() => p.doc.querySelector<HTMLSelectElement>("#agent-machine")?.value === machineId && p.button("Claude", "radio").getAttribute("data-state") === "checked" && !p.get<HTMLInputElement>("#agent-terminal").disabled);
+    assert.equal(p.doc.querySelector("[data-claude-trust]"), null, "background mode needs no trust setup");
+    p.click("#agent-terminal"); await until(() => !!p.doc.querySelector("[data-claude-trust]"));
+    assert.equal(commands.length, 0, "opening native setup must not change trust");
+    p.fill("#agent-name", "native-test"); p.click(p.button("Trust Claude workspaces"));
+    await until(() => commands.length === 1); assert.equal(commands[0]!.method, "claude-trust"); assert.deepEqual(commands[0]!.params, {});
+    assert.equal(p.get<HTMLButtonElement>("#agent-launch").disabled, true);
+    await worker.request("control.reply", { id: commands[0]!.id, error: "Run Claude once on this machine, then retry recording trust." });
+    await until(() => p.get("[data-claude-trust]").textContent!.includes("Run Claude once"));
+    p.click(p.button("Trust Claude workspaces")); await until(() => commands.length === 2);
+    await worker.request("control.reply", { id: commands[1]!.id, result: { root: "C:/sideband/workspaces" } });
+    await until(() => !!p.doc.querySelector("[data-claude-trust] [role=status]"));
+    assert.equal(p.get<HTMLButtonElement>("#agent-launch").disabled, false); assert.equal(p.get<HTMLInputElement>("#agent-name").value, "native-test");
+    assert.equal(commands.length, 2, "trust is a separate action, not a form submission"); assert.deepEqual(p.errors, []);
+  } finally { await page?.close(); await worker.close(); await server.close(); }
+});
+
 test("streamed output merges snapshots without duplicates and remains bounded by count and UTF-8 bytes", () => {
   const event = (seq: number, text = "message"): OutputEvent => ({ seq, at: seq, kind: "assistant", text });
   const input = Array.from({ length: 1200 }, (_, i) => event(i + 1));

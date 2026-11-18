@@ -9,6 +9,7 @@ import { launchSpec } from "./orchestration-protocol.js";
 import { stateDirectory } from "./room-profiles.js";
 import { RoomError } from "./room-protocol.js";
 import { terminalLauncher } from "./terminal-launch.js";
+import { trustClaudeWorkspaces } from "./claude-trust.js";
 export class Worker {
     options;
     client;
@@ -88,6 +89,13 @@ export class Worker {
     }
     async command(command) {
         try {
+            if (command.method === "claude-trust") {
+                if (Object.keys(command.params).length || !this.machine.harnesses.includes("claude"))
+                    throw new Error("Claude is not available on this worker.");
+                const result = await trustClaudeWorkspaces(this.root);
+                await this.client.request("control.reply", { id: command.id, result });
+                return;
+            }
             if (command.method === "update") {
                 if (!this.options.updater || typeof command.params.target !== "string" || Object.keys(command.params).length !== 1)
                     throw new Error("This worker cannot perform automatic updates.");

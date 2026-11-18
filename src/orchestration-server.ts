@@ -139,6 +139,13 @@ export class OrchestrationServer {
       fields(params, []); if (!this.updates) throw new Error("Automatic updates require a supervised Sideband server. Install the latest CLI manually once.");
       return method === "control.updates.check" ? this.updates.check() : this.updates.start();
     }
+    if (method === "control.claude_trust") {
+      const args = fields(params, ["machineId", "confirm"]);
+      if (args.confirm !== true) throw new Error("Confirm trusting this machine's Sideband workspace root first.");
+      const machine = this.machines.get(uuid(args.machineId));
+      if (!machine?.online || !machine.harnesses.includes("claude")) throw new Error("Select an online machine with Claude installed.");
+      return this.dispatch(this.workers.get(machine.id), "claude-trust", {});
+    }
     if (method === "control.launch") {
       const { machineId, ...specInput } = fields(params, ["machineId", "name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
       const machine = this.machines.get(uuid(machineId)); if (!machine?.online) throw new Error("Select an online machine.");
