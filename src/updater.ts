@@ -10,6 +10,7 @@ export class RuntimeUpdater {
   readonly build: BuildInfo;
   state: LocalUpdate = { phase: "idle", message: "Ready", plugins: [], at: Date.now() };
   private busy = false;
+  private task?: Promise<void>;
   private listeners = new Set<() => void>();
   private readonly abort = new AbortController();
   constructor(readonly role: "server" | "worker", readonly entry: string, readonly directory: string, private readonly restart: () => Promise<void>,
@@ -19,6 +20,8 @@ export class RuntimeUpdater {
   }
   latest() { return latestBuild(this.run); }
   close(): void { this.abort.abort(); }
+  /** Wait for the current update's writes, lock release and restart callback to settle. */
+  idle(): Promise<void> { return this.task ?? Promise.resolve(); }
   onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async restore(): Promise<void> {
     try {
@@ -39,7 +42,7 @@ export class RuntimeUpdater {
     if (!validCommit(target)) throw new Error("Invalid update commit.");
     if (this.busy) throw new Error("An update is already running on this machine.");
     this.busy = true; this.state = { target, attempt: randomUUID(), phase: "installing", message: "Installing Sideband", plugins: [], at: Date.now() };
-    void this.perform(target).catch(async error => {
+    this.task = this.perform(target).catch(async error => {
       try { await this.set("failed", error instanceof Error ? error.message.slice(0, 2048) : "Update failed."); }
       catch { for (const listener of this.listeners) listener(); }
     }).finally(() => { this.busy = false; });

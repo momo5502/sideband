@@ -16,6 +16,7 @@ export class RuntimeUpdater {
     build;
     state = { phase: "idle", message: "Ready", plugins: [], at: Date.now() };
     busy = false;
+    task;
     listeners = new Set();
     abort = new AbortController();
     constructor(role, entry, directory, restart, run = runUpdateCommand, install = installRuntime, plugins = updateHarnessPlugins) {
@@ -33,6 +34,8 @@ export class RuntimeUpdater {
     }
     latest() { return latestBuild(this.run); }
     close() { this.abort.abort(); }
+    /** Wait for the current update's writes, lock release and restart callback to settle. */
+    idle() { return this.task ?? Promise.resolve(); }
     onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
     async restore() {
         try {
@@ -61,7 +64,7 @@ export class RuntimeUpdater {
             throw new Error("An update is already running on this machine.");
         this.busy = true;
         this.state = { target, attempt: randomUUID(), phase: "installing", message: "Installing Sideband", plugins: [], at: Date.now() };
-        void this.perform(target).catch(async (error) => {
+        this.task = this.perform(target).catch(async (error) => {
             try {
                 await this.set("failed", error instanceof Error ? error.message.slice(0, 2048) : "Update failed.");
             }

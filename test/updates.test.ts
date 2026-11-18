@@ -89,7 +89,7 @@ test("updater activates only its role after installation/plugins and preserves p
     const install = async () => { order.push("install"); const cli = await candidate(temp.directory); await privateJson(join(resolve(dirname(cli), "../.."), ".sideband-install.json"), { commit: target, source: UPDATE_REPOSITORY }); return { entry: cli, build: buildInfo(cli) }; };
     const updater = new RuntimeUpdater("worker", entry, temp.directory, async () => { order.push("restart"); }, undefined, install, async () => { order.push("plugins"); return [{ harness: "codex", state: "failed", message: "SSH unavailable" }]; });
     updater.start(target); assert.throws(() => updater.start(target), /already running/);
-    await until(() => order.includes("restart")); assert.deepEqual(order, ["install", "plugins", "restart"]);
+    await updater.idle(); assert.deepEqual(order, ["install", "plugins", "restart"]);
     assert.equal((await activeRuntime(temp.directory, "worker"))?.commit, target); assert.equal((await activeRuntime(temp.directory, "server"))?.commit, previous);
     const restored = new RuntimeUpdater("worker", runtimeEntry(temp.directory, target), temp.directory, async () => {}); await restored.restore();
     assert.equal(restored.state.phase, "done"); assert.match(restored.state.message, /plugins need attention/); assert.equal(restored.state.attempt, updater.state.attempt);
@@ -104,7 +104,7 @@ test("installation or restart failure keeps the previous role selection and repo
       await privateJson(join(runtimeDirectory(temp.directory), "worker-active.json"), { commit: previous, previous: null });
       const updater = new RuntimeUpdater("worker", entry, temp.directory, async () => { throw new Error("restart refused"); }, undefined,
         async () => { if (fail === "install") throw new Error("npm failed"); return { entry, build: { version: "99.0.0", commit: target } }; }, async () => []);
-      updater.start(target); await until(() => updater.state.phase === "failed");
+      updater.start(target); await updater.idle(); assert.equal(updater.state.phase, "failed");
       assert.equal((await activeRuntime(temp.directory, "worker"))?.commit, previous); assert.match(updater.state.message, fail === "install" ? /npm failed/ : /restart refused/);
     } finally { await temp.close(); }
   }
@@ -116,12 +116,33 @@ test("a current worker can retry plugin failures without restarting its runtime"
     const cli = await candidate(temp.directory); await privateJson(join(resolve(dirname(cli), "../.."), ".sideband-install.json"), { commit: target, source: UPDATE_REPOSITORY });
     const updater = new RuntimeUpdater("worker", cli, temp.directory, async () => { restarted = true; }, undefined,
       async () => ({ entry: cli, build: buildInfo(cli) }), async () => [{ harness: "codex", state: "updated", message: "Refreshed" }]);
-    updater.start(target); await until(() => updater.state.phase === "done"); assert.equal(restarted, false); assert.equal(updater.state.plugins[0]!.state, "updated");
+    updater.start(target); await updater.idle(); assert.equal(updater.state.phase, "done"); assert.equal(restarted, false); assert.equal(updater.state.plugins[0]!.state, "updated");
     const machine: Machine = { id: randomUUID(), name: "current", platform: "test", harnesses: [], online: true, updater: true, build: updater.build,
       update: { ...updater.state, plugins: [{ harness: "codex", state: "failed", message: "retry me" }] } };
     const fleet = new UpdateFleet(updater, () => [machine], async () => ({}), async () => ({ version: "99.0.0", commit: target }));
     await fleet.check(); assert.equal(fleet.state.available, true); fleet.close();
   } finally { await temp.close(); }
+});
+
+test("updater idle waits for the terminal status write and install-lock cleanup", async () => {
+  const temp = await temporary(); let release!: () => void, saving = false, settled = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const updater = new RuntimeUpdater("worker", entry, temp.directory, async () => {}, undefined,
+    async () => ({ entry, build: { version: "99.0.0", commit: target } }), async () => []);
+  updater.build.commit = target;
+  const internals = updater as unknown as { save(): Promise<void> }, originalSave = internals.save.bind(updater);
+  internals.save = async () => { if (updater.state.phase === "done") { saving = true; await gate; } await originalSave(); };
+  try {
+    await updater.idle(); // No update has started yet.
+    updater.start(target); await until(() => saving);
+    assert.equal(updater.state.phase, "done", "the visible phase can precede durable completion");
+    const idle = updater.idle().then(() => { settled = true; });
+    await Promise.resolve(); assert.equal(settled, false);
+    assert.equal(await readFile(join(runtimeDirectory(temp.directory), "install.lock"), "utf8"), String(process.pid));
+    release(); await idle;
+    await assert.rejects(readFile(join(runtimeDirectory(temp.directory), "install.lock")), { code: "ENOENT" });
+    assert.equal(JSON.parse(await readFile(join(runtimeDirectory(temp.directory), "worker-update.json"), "utf8")).phase, "done");
+  } finally { release(); await updater.idle(); await temp.close(); }
 });
 
 test("fleet ignores stale failures, waits for new attempts and updates server last", async () => {
@@ -146,7 +167,7 @@ test("cancelling an update during installation prevents activation and restart",
     installing = true; await gate; return { entry, build: { version: "99.0.0", commit: target } };
   });
   try {
-    updater.start(target); await until(() => installing); updater.close(); release(); await until(() => updater.state.phase === "failed");
+    updater.start(target); await until(() => installing); updater.close(); release(); await updater.idle(); assert.equal(updater.state.phase, "failed");
     assert.equal(restarted, false); assert.equal(await activeRuntime(temp.directory, "worker"), undefined);
     const cancelled = new AbortController(); cancelled.abort();
     await assert.rejects(runUpdateCommand(process.execPath, ["-e", "process.exit(0)"], { signal: cancelled.signal }), /cancelled/);
