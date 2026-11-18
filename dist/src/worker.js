@@ -24,6 +24,10 @@ export class Worker {
     inventoryTimer;
     closing = false;
     inventoryErrors = new Set();
+    inventoryFailure = "";
+    inventoryAgain = false;
+    inventoryVersion = 0;
+    savedActions = 0;
     constructor(options) {
         this.options = options;
         this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
@@ -71,7 +75,8 @@ export class Worker {
                 }
                 options.onError?.(new Error("Server does not support all worker features yet. Update the server to enable terminal launch and automatic updates."));
             }
-            await this.syncInventory();
+            // Inventory is optional recovery metadata, never part of transport readiness.
+            this.scheduleInventory(true);
         });
         this.client.onEvent((event, command) => { if (event === "control.command")
             void this.command(command); });
@@ -104,7 +109,7 @@ export class Worker {
         this.machine.terminal = terminalLauncher()?.kind ?? "none";
         await this.client.connect();
         this.inventoryTimer = setInterval(() => { if (this.client.state === "on")
-            void this.syncInventory().catch(error => this.options.onError?.(error)); }, 10000);
+            this.scheduleInventory(); }, 10000);
         this.inventoryTimer.unref();
     }
     async savedAgent(record) {
@@ -118,36 +123,58 @@ export class Worker {
             canResume: record.workspaceReady && present,
             ...(!present && record.workspaceReady ? { error: "The saved workspace is missing from this machine. Its record was preserved." } : {}) };
     }
+    reportInventoryFailure(error) {
+        if (this.closing)
+            return;
+        const message = error instanceof Error ? error.message : "Inventory synchronization failed.";
+        if (message === this.inventoryFailure)
+            return;
+        this.inventoryFailure = message;
+        this.options.onError?.(new Error(`Saved-agent inventory will retry without disconnecting the worker: ${message}`));
+    }
+    scheduleInventory(fresh = false) {
+        if (fresh && this.inventory)
+            this.inventoryAgain = true;
+        void this.syncInventory().catch(error => this.reportInventoryFailure(error));
+    }
     syncInventory() {
         if (this.closing || !this.store)
             return Promise.resolve();
         if (this.inventory)
             return this.inventory;
         this.inventory = (async () => {
+            const version = this.inventoryVersion;
             const records = this.store.all();
             for (let offset = 0; offset < Math.max(records.length, 1); offset += 30) {
                 const checked = await Promise.allSettled(records.slice(offset, offset + 30).map(record => this.savedAgent(record)));
                 const agents = checked.flatMap(result => { if (result.status === "fulfilled")
                     return [result.value]; this.options.onError?.(new Error(`A saved agent could not be loaded: ${result.reason instanceof Error ? result.reason.message : "Invalid record."}`)); return []; });
-                let response;
-                try {
-                    response = await this.client.request("control.inventory", { agents });
-                }
-                catch (error) {
-                    if (error instanceof Error && /Unknown orchestration operation/.test(error.message))
-                        return; // Server is still updating.
-                    throw error;
-                }
-                for (const error of response.errors ?? [])
-                    if (!this.inventoryErrors.has(error.id)) {
-                        this.inventoryErrors.add(error.id);
+                if (version !== this.inventoryVersion || this.savedActions)
+                    return;
+                const response = await this.client.request("control.inventory", { agents });
+                for (const error of response.errors ?? []) {
+                    const key = `${error.id}:${error.message}`;
+                    if (!this.inventoryErrors.has(key)) {
+                        this.inventoryErrors.add(key);
                         this.options.onError?.(new Error(`Saved agent ${error.id}: ${error.message}`));
                     }
-                for (const id of response.archived)
+                }
+                // A response captured before/during a local action must not undo that action.
+                for (const id of response.archived) {
+                    if (version !== this.inventoryVersion || this.savedActions)
+                        break;
                     if (this.store.get(id))
                         await this.store.desired(id, "archived");
+                }
             }
-        })().finally(() => { this.inventory = undefined; });
+            this.inventoryFailure = "";
+        })().finally(() => {
+            this.inventory = undefined;
+            const again = this.inventoryAgain;
+            this.inventoryAgain = false;
+            if (again && !this.closing)
+                this.scheduleInventory();
+        });
         return this.inventory;
     }
     resume(id) {
@@ -192,9 +219,18 @@ export class Worker {
                 const id = command.params.id;
                 if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id) || Object.keys(command.params).length !== 1)
                     throw new Error("Invalid saved agent ID.");
-                const result = command.method === "resume" ? await this.resume(id) : await this.store.desired(id, command.method === "archive" ? "archived" : "stopped").then(() => ({ accepted: true }));
-                await this.syncInventory();
+                this.savedActions++;
+                this.inventoryVersion++;
+                let result;
+                try {
+                    result = command.method === "resume" ? await this.resume(id) : await this.store.desired(id, command.method === "archive" ? "archived" : "stopped").then(() => ({ accepted: true }));
+                }
+                finally {
+                    this.savedActions--;
+                    this.inventoryVersion++;
+                }
                 await this.client.request("control.reply", { id: command.id, result });
+                this.scheduleInventory(true);
                 return;
             }
             if (command.method === "claude-trust") {

@@ -108,8 +108,11 @@ test("server and worker restarts retain resumable agents, identity, files and ar
     await worker!.close(); worker = undefined; web.disconnect(); await server.close(); server = await RoomServer.start(options); web = browser(server); await web.connect();
     assert.equal((await list()).agents.find(agent => agent.id === id)!.archived, true);
     await store.desired(id, "running"); // stale pre-archive worker row must not resurrect the server's archived agent.
-    await startWorker(); assert.equal((await list()).agents.find(agent => agent.id === id)!.archived, true); assert.equal(store.get(id)!.desired, "archived");
+    await startWorker(); await until(() => store!.get(id)!.desired === "archived"); assert.equal((await list()).agents.find(agent => agent.id === id)!.archived, true);
+    const staleArchived = { ...(await list()).agents.find(agent => agent.id === id)! };
     await action("resume"); await until(async () => (await list()).agents.some(agent => agent.id === id && agent.online && !agent.archived && agent.state === "idle"));
+    await worker!.client.request("control.inventory", { agents: [staleArchived] });
+    assert.equal((await list()).agents.find(agent => agent.id === id)!.archived, false, "a stale worker snapshot cannot archive a live resumed runner");
     assert.equal((await list()).agents.find(agent => agent.id === id)!.identityId, identity);
     await action("archive"); await until(async () => !await store!.live(id));
     await worker!.close(); worker = undefined; web.disconnect(); await server.close(); server = await RoomServer.start({ ...options, rotatePassword: true }); web = browser(server); await web.connect();

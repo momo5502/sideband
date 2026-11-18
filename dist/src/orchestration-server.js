@@ -179,12 +179,20 @@ export class OrchestrationServer {
                     }
                     if (this.resuming.has(agent.id))
                         continue;
+                    if (this.online(this.runners.get(agent.id)) && !this.archived.has(agent.id))
+                        continue;
                     if (this.archived.has(agent.id) || agent.archived) {
                         archived.push(agent.id);
                         this.archived.add(agent.id);
                         agent.archived = true;
                         agent.state = "stopped";
                         await this.save("removal", agent.id, { kind: "archived", machineId: peer.id });
+                    }
+                    if (this.resuming.has(agent.id) || this.online(this.runners.get(agent.id)) && !this.archived.has(agent.id)) {
+                        const index = archived.indexOf(agent.id);
+                        if (index >= 0)
+                            archived.splice(index, 1);
+                        continue;
                     }
                     if (!this.online(this.runners.get(agent.id)) || agent.archived) {
                         this.agents.set(agent.id, { ...agent, online: false });

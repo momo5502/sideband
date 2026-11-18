@@ -11,6 +11,11 @@ import { Worker } from "../src/worker.js";
 import { generate } from "selfsigned";
 import { RoomError } from "../src/room-protocol.js";
 import { RuntimeUpdater } from "../src/updater.js";
+import { randomUUID } from "node:crypto";
+import { BrowserRoomClient } from "../src/browser-protocol.js";
+import NodeWebSocket from "ws";
+import { AgentStore, type SavedAgent } from "../src/persistence.js";
+import { AgentKeys } from "../src/room-protocol.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, timeout = testTimeout(15000)) {
@@ -41,6 +46,60 @@ test("new workers retain updater metadata while an older server accepts only OMP
     await worker.start(); assert.deepEqual(worker.machine.harnesses, ["omp", "codex", "claude"]);
     assert.deepEqual(registrations.at(-1).harnesses, ["omp"]); assert.equal(registrations.at(-1).build.commit, updater.build.commit); assert.equal(registrations.at(-1).updater, true);
   } finally { await worker.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-harnesses-"))); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("inventory waits, old-server rejections and database failures never disconnect an updated worker", { timeout: testTimeout(30000) }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-worker-inventory-"));
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
+  const origin = `http://127.0.0.1:${server.statusPort}`;
+  const web = new BrowserRoomClient(`ws://127.0.0.1:${server.statusPort}/browser-ws`, server.password, "observer", undefined, url => new NodeWebSocket(url, { origin }) as unknown as WebSocket);
+  const updater = new RuntimeUpdater("worker", resolve("dist/src/cli.js"), directory, async () => {}), target = "a".repeat(40), attempt = randomUUID();
+  updater.build.commit = target; Object.assign(updater.state, { phase: "done", target, attempt, message: "Updated" });
+  const warnings: string[] = [], connections: string[] = [], fixture = { command: process.execPath };
+  const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, entry: resolve("dist/src/cli.js"), root: directory,
+    omp: fixture, codex: fixture, claude: fixture, updater, onError: error => warnings.push(error.message), onConnection: change => connections.push(change.state) });
+  const request = worker.client.request.bind(worker.client);
+  let inventoryCalls = 0, hold = true, rejectHeld: ((error: Error) => void) | undefined;
+  let resolveHeld: ((value: unknown) => void) | undefined;
+  let failure: Error | undefined = new RoomError("CONTROL", "Orchestration controls are available through the authenticated web panel.");
+  worker.client.request = async (method, params) => {
+    if (method === "control.inventory") {
+      inventoryCalls++;
+      if (hold) return await new Promise<unknown>((resolve, reject) => { rejectHeld = reject; resolveHeld = resolve; }) as never;
+      if (failure) throw failure;
+    }
+    return request(method, params) as never;
+  };
+  const scheduler = worker as unknown as { scheduleInventory(): void; syncInventory(): Promise<void> };
+  try {
+    await worker.start(); assert.ok(rejectHeld, "inventory is pending while worker startup is already complete"); assert.equal(worker.client.state, "on");
+    hold = false; rejectHeld!(failure!); rejectHeld = undefined; await until(() => warnings.length === 1);
+    assert.equal(worker.client.state, "on"); await web.connect();
+    const snapshot = await web.request<{ machines: { online: boolean; build: { commit: string }; update: { attempt: string; phase: string } }[] }>("control.list"), machine = snapshot.machines[0]!;
+    assert.equal(machine.online, true); assert.equal(machine.build.commit, target); assert.equal(machine.update.phase, "done"); assert.equal(machine.update.attempt, attempt, "the rollout can accept the worker as updated without waiting on inventory");
+    scheduler.scheduleInventory(); await until(() => inventoryCalls === 2); await pause(10); assert.equal(warnings.length, 1, "repeated legacy errors are reported once");
+    failure = new Error("database is locked"); scheduler.scheduleInventory(); await until(() => warnings.length === 2); assert.equal(worker.client.state, "on");
+    failure = undefined; await scheduler.syncInventory(); assert.equal(worker.client.state, "on");
+    const id = randomUUID(), keys = new AgentKeys("saved");
+    const saved: SavedAgent = { agent: { id, name: "saved", harness: "omp", machineId: worker.machine.id, machineName: "fixture", room: "", state: "idle", online: false, persistent: true, createdAt: Date.now() },
+      privateKey: keys.exportPrivateKey(), workspaceReady: false, desired: "running", updatedAt: Date.now() };
+    const store = await AgentStore.open(directory, { server: `127.0.0.1:${server.port}`, password: server.password });
+    try {
+      await store.registry.change(() => store.registry.put("agent", id, saved)); await request("control.inventory", { agents: [saved.agent] });
+      hold = true; scheduler.scheduleInventory(); await until(() => !!rejectHeld);
+      await web.request("control.action", { agentId: id, action: "stop" });
+      assert.equal(store.get(id)!.desired, "stopped", "completed commands do not wait for a pending inventory request");
+      const calls = inventoryCalls; hold = false; resolveHeld!({ archived: [id], errors: [] }); rejectHeld = undefined; resolveHeld = undefined;
+      await until(() => inventoryCalls > calls);
+      await until(() => !((worker as unknown as { inventory?: Promise<void> }).inventory));
+      assert.equal(store.get(id)!.desired, "stopped", "a stale inventory response cannot undo the completed action");
+    } finally { await store.close(); }
+    assert.deepEqual(connections, ["connecting", "on"], "inventory failures never enter the reconnect loop");
+    assert.match(warnings[0]!, /without disconnecting/);
+  } finally {
+    rejectHeld?.(new Error("Fixture closing")); web.disconnect(); await worker.close(); await server.close();
+    assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-inventory-"))); await rm(directory, { recursive: true, force: true });
+  }
 });
 async function stop(child: ChildProcess) { if (child.exitCode === null && child.signalCode === null) { child.kill(); await new Promise<void>(resolve => child.once("exit", () => resolve())); } }
 
