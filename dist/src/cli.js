@@ -89,6 +89,8 @@ async function main() {
             await close();
         }) : undefined;
         await updater?.restore();
+        const build = updater?.build ?? buildInfo(process.argv[1]);
+        console.log(`Sideband server v${build.version} (${build.commit?.slice(0, 8) ?? "bootstrap"}) starting...`);
         const { RoomServer } = await import("./room-server.js");
         server = await RoomServer.start({ host: values.host, port, statusPort,
             updater, credentialsFile, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
@@ -129,6 +131,8 @@ async function main() {
             await close();
         }) : undefined;
         await updater?.restore();
+        const build = updater?.build ?? buildInfo(process.argv[1]);
+        console.log(`Sideband worker v${build.version} (${build.commit?.slice(0, 8) ?? "bootstrap"}) starting...`);
         const worker = new Worker({ profile, updater, entry: resolve(process.argv[1]), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}),
             onError: error => console.error(`Worker connection: ${error.message}`),
             onConnection: change => {

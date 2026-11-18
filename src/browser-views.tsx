@@ -19,6 +19,7 @@ const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digi
 
 export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { store: BrowserWorkspace; state: WorkspaceState; close(): void; onNew(): void; onJoin(): void; onSettings(): void }) {
   const [search, setSearch] = useState("");
+  const build = state.control.updates?.current;
   const query = search.trim().toLowerCase(), agents = state.control.agents.filter(agent => `${agent.name} ${agent.machineName}`.toLowerCase().includes(query));
   const rooms = allRooms(state).filter(room => room.name.toLowerCase().includes(query)).sort((a, b) => Number(state.joined.some(room => room.id === b.id)) - Number(state.joined.some(room => room.id === a.id)) || a.name.localeCompare(b.name));
   return <aside id="room-menu" className="sidebar" aria-label="Workspace navigation">
@@ -49,7 +50,8 @@ export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { st
     </nav>
     <div className="sidebar-footer"><div className="user-row">{state.identity && <Avatar identity={state.identity} small />}<div className="user-copy"><strong>{state.identity ? identityLabel(state.identity) : "Connecting"}</strong>
       <span id="connection" className="connection-label"><Status state={state.connection} />{state.connection === "on" ? "Connected" : "Reconnecting…"}</span></div>
-      <Button id="settings-open" variant="ghost" icon aria-label="Settings" title="Settings" onClick={onSettings}><Settings2 size={17} /></Button></div></div>
+      <Button id="settings-open" variant="ghost" icon aria-label="Settings" title="Settings" onClick={onSettings}><Settings2 size={17} /></Button></div>
+      {build && <p id="server-version" className="px-1.5 pt-2 text-[10px] text-zinc-500" title={build.commit ? `Server commit ${build.commit}` : "Commit available after a managed update."}>Server v{build.version}{build.commit && ` · ${build.commit.slice(0, 8)}`}</p>}</div>
   </aside>;
 }
 

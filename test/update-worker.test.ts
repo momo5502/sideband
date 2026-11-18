@@ -53,6 +53,8 @@ if(command==='npm') {
     assert.equal(machine.id, original.id); assert.equal(machine.build?.commit, target); assert.equal(machine.build.version, "99.0.0");
     assert.equal(machine.update?.phase, "done"); assert.equal(machine.update.plugins.length, 3); assert.ok(machine.update.plugins.every(plugin => plugin.state === "skipped"));
     assert.equal(child.exitCode, null); assert.ok(log.split("connected and registered").length >= 3, log);
+    assert.match(log, /Sideband worker v[\d.]+ \(bootstrap\) starting/);
+    assert.match(log, /Sideband worker v99\.0\.0 \(ffffffff\) starting/);
   } finally {
     child.kill(); await exited;
     await wait(async () => !(await web.request<ControlSnapshot>("control.list")).machines.some(machine => machine.online));

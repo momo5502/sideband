@@ -14,6 +14,7 @@ test("authenticated web Updates checks, starts and displays per-worker plugin re
   const directory = await mkdtemp(join(tmpdir(), "sideband-update-ui-")), target = "e".repeat(40), entry = resolve("dist/src/cli.js");
   const order: string[] = [];
   const serverUpdater = new RuntimeUpdater("server", entry, directory, async () => { order.push("server"); }, undefined, async () => ({ entry, build: { version: "99.0.0", commit: target } }));
+  serverUpdater.build.commit = "a".repeat(40);
   serverUpdater.latest = async () => ({ version: "99.0.0", commit: target });
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, updater: serverUpdater });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, peer = new RoomClient(profile, "peer");
@@ -31,7 +32,11 @@ test("authenticated web Updates checks, starts and displays per-worker plugin re
     await worker.start(); await peer.connect();
     await assert.rejects(peer.request("control.updates.check"), /authenticated web panel/);
     await assert.rejects(peer.request("control.worker_update", { update: { phase: "done" } }), /Only a registered worker/);
-    page = await browserPage(server); await page.login(); await page.settings(); page.click(page.button("Updates", "tab"));
+    page = await browserPage(server); await page.login();
+    await until(() => !!page!.doc.querySelector("#server-version"));
+    assert.equal(page.get("#server-version").textContent, `Server v${serverUpdater.build.version} · aaaaaaaa`);
+    assert.equal(page.get("#server-version").title, `Server commit ${serverUpdater.build.commit}`);
+    await page.settings(); page.click(page.button("Updates", "tab"));
     await until(() => !!page!.doc.querySelector("#updates-panel"));
     assert.equal(page.get<HTMLButtonElement>("#updates-install").disabled, true);
     page.click("#updates-check"); await until(() => !page!.get<HTMLButtonElement>("#updates-install").disabled);
