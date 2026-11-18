@@ -14,6 +14,8 @@ import NodeWebSocket from "ws";
 import { browserPage, until } from "./browser-fixture.js";
 import { testTimeout } from "./waits.js";
 
+async function workspaceKeys(root: string): Promise<string[]> { return [...new Set([resolve(root).replaceAll("\\", "/"), (await realpath(root)).replaceAll("\\", "/")])]; }
+
 test("Claude trust merges only the canonical workspace root and preserves profile settings", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-claude-trust-")), file = join(directory, ".claude.json"), root = join(directory, "workspaces");
   try {
@@ -24,10 +26,10 @@ test("Claude trust merges only the canonical workspace root and preserves profil
     const key = (await realpath(root)).replaceAll("\\", "/");
     const config = { theme: "dark", oauthAccount: { fixture: "keep-private" }, projects: { [key]: { allowedTools: ["Read"], custom: 42 }, "/unrelated": { hasTrustDialogAccepted: false } } };
     await writeFile(file, JSON.stringify(config));
-    const results = await Promise.all([trustClaudeWorkspaces(root, file), trustClaudeWorkspaces(root, file)]);
-    assert.deepEqual(results, [{ root: key }, { root: key }]);
+    const results = await Promise.all([trustClaudeWorkspaces(root, file), trustClaudeWorkspaces(root, file)]), keys = await workspaceKeys(root);
+    assert.deepEqual(results, [{ root: keys[0] }, { root: keys[0] }]);
     const saved = JSON.parse(await readFile(file, "utf8"));
-    assert.deepEqual(saved, { ...config, projects: { ...config.projects, [key]: { ...config.projects[key], hasTrustDialogAccepted: true } } });
+    assert.deepEqual(saved, { ...config, projects: { ...config.projects, ...Object.fromEntries(keys.map(key => [key, { ...config.projects[key], hasTrustDialogAccepted: true }])) } });
     assert.deepEqual((await readdir(directory)).sort(), [".claude.json", "workspaces"]);
     if (process.platform !== "win32") assert.equal((await stat(file)).mode & 0o777, 0o600);
     const before = await readFile(file, "utf8"); await trustClaudeWorkspaces(root, file); assert.equal(await readFile(file, "utf8"), before);
@@ -43,14 +45,14 @@ test("recording Claude trust refuses missing profiles and respects profile and w
     const file = join(directory, "custom-profile", ".claude.json"), root = join(directory, "root");
     await assert.rejects(trustClaudeWorkspaces(root, file), /Run Claude once/);
     await mkdir(join(directory, "custom-profile")); await writeFile(file, "{}");
-    const result = await trustClaudeWorkspaces(root, file);
-    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { projects: { [result.root]: { hasTrustDialogAccepted: true } } });
+    await trustClaudeWorkspaces(root, file);
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { projects: Object.fromEntries((await workspaceKeys(root)).map(key => [key, { hasTrustDialogAccepted: true }])) });
     if (process.platform !== "win32") {
       const link = join(directory, "profile-link.json"); await symlink(file, link);
       const second = join(directory, "second-root"); await symlink(root, second, "dir"); await trustClaudeWorkspaces(second, link);
       const projects = JSON.parse(await readFile(file, "utf8")).projects;
-      assert.equal(Object.keys(projects).length, 2); assert.equal(projects[second].hasTrustDialogAccepted, true);
-      assert.equal((await realpath(link)), file);
+      assert.equal(Object.keys(projects).length, new Set([...await workspaceKeys(root), ...await workspaceKeys(second)]).size); assert.equal(projects[second].hasTrustDialogAccepted, true);
+      assert.equal((await realpath(link)), await realpath(file));
     }
   } finally { assert.ok(directory.startsWith(join(tmpdir(), "sideband-claude-trust-create-"))); await rm(directory, { recursive: true, force: true }); }
 });
@@ -83,7 +85,7 @@ test("web trust action requires explicit confirmation and records only the selec
   await new RoomProfiles(state).save("default", profile); await mkdir(config);
   const file = join(config, ".claude.json"); await writeFile(file, "{broken");
   const child = spawn(process.execPath, [resolve("dist/src/cli.js"), "worker", "--directory", root, "--omp", process.execPath, "--claude", process.execPath, "--codex", process.execPath], {
-    windowsHide: true, env: { ...process.env, SIDEBAND_STATE_DIR: state, CLAUDE_CONFIG_DIR: config }, stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true, env: { ...process.env, SIDEBAND_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_CUSTOM_OAUTH_URL: "" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let log = ""; child.stdout!.on("data", chunk => { log += chunk; }); child.stderr!.on("data", chunk => { log += chunk; });
   const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
@@ -105,8 +107,8 @@ test("web trust action requires explicit confirmation and records only the selec
     await writeFile(file, JSON.stringify({ theme: "dark", projects: { "/other-project": { hasTrustDialogAccepted: false } } }));
     page.click(page.button("Trust Claude workspaces"));
     await until(() => !!page!.doc.querySelector("[data-claude-trust] [role=status]"));
-    const key = (await realpath(root)).replaceAll("\\", "/");
-    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { theme: "dark", projects: { "/other-project": { hasTrustDialogAccepted: false }, [key]: { hasTrustDialogAccepted: true } } });
+    const trusted = Object.fromEntries((await workspaceKeys(root)).map(key => [key, { hasTrustDialogAccepted: true }]));
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { theme: "dark", projects: { "/other-project": { hasTrustDialogAccepted: false }, ...trusted } });
     assert.match(page.get("[data-claude-trust] [role=status]").textContent!, /Start or resume/);
     assert.deepEqual(page.errors, []);
   } finally {
