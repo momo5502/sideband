@@ -17,7 +17,7 @@ export class RoomServer {
     fingerprint;
     secret;
     webhooks;
-    orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet));
+    orchestration;
     webhookBudget = { tokens: 100, updated: Date.now() };
     http;
     plainHttp;
@@ -44,6 +44,7 @@ export class RoomServer {
     }
     constructor(identity, options) {
         this.options = options;
+        this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater);
         this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
         this.secret = createHash("sha256").update(identity.secret).digest();
         this.webhooks = new Webhooks(this.secret);
@@ -127,6 +128,7 @@ export class RoomServer {
     get statusPort() { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
     get browserUrl() { return this.browserHttps?.url; }
     get nativePort() { return this.browserHttps?.port ?? this.port; }
+    get acmePort() { return this.browserHttps?.httpPort; }
     publicStatus() {
         let connectedParticipants = 0;
         for (const member of this.members.values())
@@ -566,6 +568,7 @@ export class RoomServer {
             this.names.delete(member.identity.name.toLowerCase());
     }
     async close() {
+        this.options.updater?.close();
         this.stopping = true;
         if (this.heartbeat)
             clearInterval(this.heartbeat);

@@ -10,9 +10,10 @@ import { RoomError, type ConnectionProfile } from "./room-protocol.js";
 import type { RunnerConfig } from "./agent-runner.js";
 import type { Executable } from "./managed-omp.js";
 import { terminalLauncher } from "./terminal-launch.js";
+import type { RuntimeUpdater } from "./updater.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable;
-  onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void };
+  onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
 export class Worker {
   readonly client: RoomClient;
   readonly machine: Machine;
@@ -24,17 +25,26 @@ export class Worker {
     const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root])).digest("hex").slice(0, 32);
     const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
     this.machine = { id, name: options.name ?? hostname(), platform: platform(), harnesses: ["omp"], online: true };
+    if (options.updater) { this.machine.build = options.updater.build; this.machine.updater = true; this.machine.update = options.updater.state; }
     this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
     this.client.onConnected(async () => {
       try { await this.client.request("control.worker", { machine: this.machine }); }
       catch (error) {
         if (!(error instanceof RoomError) || error.code !== "INVALID_ARGUMENT" || !this.machine.terminal) throw error;
-        const { terminal: _terminal, ...legacy } = this.machine;
-        await this.client.request("control.worker", { machine: legacy });
-        options.onError?.(new Error("Server does not support terminal launch yet. Update the server to enable native OMP windows."));
+        const { build: _build, updater: _updater, update: _update, ...terminalKnown } = this.machine;
+        try { if (!options.updater) throw error; await this.client.request("control.worker", { machine: terminalKnown }); }
+        catch (fallback) {
+          if (!(fallback instanceof RoomError) || fallback.code !== "INVALID_ARGUMENT") throw fallback;
+          const { terminal: _terminal, ...legacy } = terminalKnown; await this.client.request("control.worker", { machine: legacy });
+        }
+        options.onError?.(new Error("Server does not support all worker features yet. Update the server to enable terminal launch and automatic updates."));
       }
     });
     this.client.onEvent((event, command: ControlCommand) => { if (event === "control.command") void this.command(command); });
+    options.updater?.onChange(() => {
+      this.machine.update = options.updater!.state;
+      if (this.client.state === "on") void this.client.request("control.worker_update", { update: this.machine.update }).catch(() => {});
+    });
   }
   async start(): Promise<void> {
     const executable = this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" };
@@ -45,6 +55,11 @@ export class Worker {
   }
   private async command(command: ControlCommand): Promise<void> {
     try {
+      if (command.method === "update") {
+        if (!this.options.updater || typeof command.params.target !== "string" || Object.keys(command.params).length !== 1) throw new Error("This worker cannot perform automatic updates.");
+        this.options.updater.start(command.params.target);
+        await this.client.request("control.reply", { id: command.id, result: { accepted: true, attempt: this.options.updater.state.attempt } }); return;
+      }
       if (command.method !== "launch") throw new Error("Unknown worker operation.");
       const id = command.params.id;
       if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid agent ID.");
@@ -77,5 +92,5 @@ export class Worker {
     return { id: config.id };
   }
   /** Closing/updating a worker deliberately leaves its independently connected runners alive. */
-  async close(): Promise<void> { await this.client.close(); }
+  async close(): Promise<void> { this.options.updater?.close(); await this.client.close(); }
 }

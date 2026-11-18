@@ -535,6 +535,10 @@ export class BrowserWorkspace {
         return result;
     }
     webhook(room, sender) { return this.requireClient().request("webhook", { room, sender }); }
+    async updateSideband(start = false) {
+        await this.requireClient().request(start ? "control.updates.start" : "control.updates.check");
+        await this.refreshControl();
+    }
     home() { this.update({ view: { kind: "home" }, error: "" }); this.watched = ""; ++this.watchGeneration; if (this.client)
         void this.client.request("control.watch", { agentId: "" }).catch(() => { }); }
     clearError() { this.update({ error: "" }); }

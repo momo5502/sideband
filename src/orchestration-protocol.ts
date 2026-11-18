@@ -1,13 +1,14 @@
 import { agentName, fields, text } from "./room-protocol.js";
+import type { BuildInfo, LocalUpdate, FleetUpdates } from "./update-types.js";
 
-export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; terminal?: "window" | "tmux" | "none" };
+export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
 export type LaunchSpec = { name: string; harness: "omp"; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
 export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
 export type ControlCommand = { id: string; method: string; params: Record<string, unknown> };
-export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number };
+export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number; updates?: FleetUpdates };
 
 export function launchSpec(input: unknown): LaunchSpec {
   const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);

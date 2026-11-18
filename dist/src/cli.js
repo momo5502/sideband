@@ -4,8 +4,31 @@ import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { RoomProfiles, stateDirectory } from "./room-profiles.js";
 import { hiddenInput, terminalLogin } from "./terminal-login.js";
+import { buildInfo } from "./update-runtime.js";
+import { RuntimeUpdater } from "./updater.js";
+import { forwardRuntime, supervise, UPDATE_RESTART } from "./update-supervisor.js";
 async function main() {
     const command = process.argv[2];
+    const supervised = process.env.SIDEBAND_SUPERVISED === "1", selected = process.env.SIDEBAND_RUNTIME_SELECTED === "1";
+    // These are one-hop bootstrap markers, not settings for agents or their shell tools.
+    delete process.env.SIDEBAND_SUPERVISED;
+    delete process.env.SIDEBAND_RUNTIME_SELECTED;
+    if (["server", "worker"].includes(command ?? "") && !supervised) {
+        process.exitCode = await supervise(resolve(process.argv[1]), process.argv.slice(2));
+        return;
+    }
+    if (!["server", "worker", "mcp", "agent-runner", "terminal-agent", "--runtime-version"].includes(command ?? "") && !selected) {
+        const code = await forwardRuntime(resolve(process.argv[1]), process.argv.slice(2));
+        if (code !== undefined) {
+            process.exitCode = code;
+            return;
+        }
+    }
+    if (command === "--version" || command === "version" || command === "--runtime-version") {
+        const info = buildInfo(process.argv[1]);
+        console.log(`sideband ${info.version}${info.commit ? ` ${info.commit}` : ""}`);
+        return;
+    }
     if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
         console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host ADDRESS] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n    [--domain HOST] [--email ADDRESS] [--http-port 80] [--https-port 443] [--acme-staging]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials.");
         return;
@@ -41,19 +64,45 @@ async function main() {
             if (values.email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email))
                 throw new Error("Invalid --email address.");
         }
+        let server;
+        let closing = false;
+        const close = async () => { if (closing)
+            return; closing = true; await server?.close(); if (process.connected)
+            process.disconnect(); };
+        const updater = process.send ? new RuntimeUpdater("server", resolve(process.argv[1]), stateDirectory, async () => {
+            const args = process.argv.slice(2).filter(value => value !== "--rotate-password");
+            const set = (key, value) => { const i = args.findIndex(arg => arg === key || arg.startsWith(`${key}=`)); if (i < 0)
+                args.push(key, value);
+            else if (args[i].includes("="))
+                args[i] = `${key}=${value}`;
+            else
+                args[i + 1] = value; };
+            set("--credentials-file", credentialsFile);
+            set("--port", String(server.port));
+            set("--status-port", String(server.statusPort));
+            if (values.domain) {
+                set("--https-port", String(server.nativePort));
+                set("--http-port", String(server.acmePort));
+            }
+            process.send?.({ type: "sideband.restart", args });
+            process.exitCode = UPDATE_RESTART;
+            await close();
+        }) : undefined;
+        await updater?.restore();
         const { RoomServer } = await import("./room-server.js");
-        const server = await RoomServer.start({ host: values.host, port, statusPort,
-            credentialsFile, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
+        server = await RoomServer.start({ host: values.host, port, statusPort,
+            updater, credentialsFile, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
                     httpPort, httpsPort, email: values.email, staging: values["acme-staging"], log: message => console.log(message) } } : {}) });
         const address = server.browserUrl ? new URL(server.browserUrl).host : `<your-VPS-IP>:${server.port}`;
         console.log(`Sideband listening on ${values.host ?? "*"}:${server.nativePort}\n\nClient address: ${address}\nClient login: sideband login ${address}\nPassword: ${server.password}\n\nBrowser: ${server.browserUrl ?? `http://<your-VPS-IP>:${server.statusPort}`}/chat\nCredentials: ${credentialsFile}\nThe password and native TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
         if (server.browserUrl)
             console.log(`Native agents and browsers share HTTPS port ${server.nativePort}. Existing ports ${server.port}/${server.statusPort} remain available.\nAutomatic certificates use Let's Encrypt. Setup and renewals require public port 80 to reach --http-port.`);
-        let closing = false;
-        const close = () => { if (closing)
-            return; closing = true; void server.close(); };
-        process.once("SIGINT", close);
-        process.once("SIGTERM", close);
+        process.send?.({ type: "sideband.ready" });
+        process.on("message", (message) => { if (message?.type === "sideband.shutdown")
+            void close(); });
+        process.once("disconnect", () => { void close(); });
+        process.once("SIGINT", () => { void close(); });
+        process.once("SIGTERM", () => { void close(); });
         return;
     }
     if (command === "mcp") {
@@ -65,30 +114,43 @@ async function main() {
     }
     if (command === "worker") {
         const { values } = parseArgs({ args: process.argv.slice(3), options: { profile: { type: "string" }, name: { type: "string" }, omp: { type: "string" }, directory: { type: "string" } } });
-        const { profile } = await new RoomProfiles().resolve(values.profile);
+        const { name: profileName, profile } = await new RoomProfiles().resolve(values.profile);
         const { Worker } = await import("./worker.js");
-        const worker = new Worker({ profile, entry: resolve(process.argv[1]), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}),
+        let closing = false;
+        const close = async () => { if (closing)
+            return; closing = true; await worker?.close(); if (process.connected)
+            process.disconnect(); };
+        const updater = process.send ? new RuntimeUpdater("worker", resolve(process.argv[1]), stateDirectory, async () => {
+            const args = process.argv.slice(2);
+            if (!values.profile)
+                args.push("--profile", profileName);
+            process.send?.({ type: "sideband.restart", args });
+            process.exitCode = UPDATE_RESTART;
+            await close();
+        }) : undefined;
+        await updater?.restore();
+        const worker = new Worker({ profile, updater, entry: resolve(process.argv[1]), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}),
             onError: error => console.error(`Worker connection: ${error.message}`),
             onConnection: change => {
-                if (change.state === "on")
+                if (change.state === "on") {
                     console.error("Worker connected and registered.");
+                }
                 else if (change.state === "reconnecting")
                     console.error(`Worker disconnected; retrying in ${change.retryInMs / 1000}s.`);
                 else if (change.state === "disconnected") {
                     console.error(`Worker cannot reconnect: ${change.error?.message}\nCheck the server address and proxy settings. If credentials changed, run sideband login again.`);
                     process.exitCode = 1;
-                    void worker.close();
+                    void close();
                 }
             } });
         await worker.start();
+        process.send?.({ type: "sideband.ready" });
         console.log(`Sideband worker '${worker.machine.name}' started. Open /chat on your server and select New agent to launch OMP.\nAgent runners keep running when this worker stops. Stop agents from the web panel.`);
-        let closing = false;
-        const close = () => { if (!closing) {
-            closing = true;
-            void worker.close();
-        } };
-        process.once("SIGINT", close);
-        process.once("SIGTERM", close);
+        process.on("message", (message) => { if (message?.type === "sideband.shutdown")
+            void close(); });
+        process.once("disconnect", () => { void close(); });
+        process.once("SIGINT", () => { void close(); });
+        process.once("SIGTERM", () => { void close(); });
         return;
     }
     if (command === "agent-runner") {

@@ -7,6 +7,7 @@ import { Button, ErrorMessage, Field, Modal, Spinner } from "./browser-component
 import { allRooms, Brand, repositoryName, Status } from "./browser-views.js";
 import type { Room } from "./room-protocol.js";
 import type { ManagedAgent, LaunchSpec } from "./orchestration-protocol.js";
+import { Updates } from "./browser-updates.js";
 
 function RoomPicker({ rooms, value, onChange, id, allowNone = true }: { rooms: Room[]; value: string; onChange(value: string): void; id: string; allowNone?: boolean }) {
   const [creating, setCreating] = useState(false);
@@ -87,11 +88,12 @@ export function Settings({ state, store, close }: { state: WorkspaceState; store
   const notificationAvailable = typeof Notification !== "undefined", secure = window.isSecureContext !== false, permission = notificationAvailable ? Notification.permission : "denied";
   const notificationStatus = !state.identity?.name ? "Connect with a username to receive @mentions." : !secure ? "Desktop notifications need HTTPS or localhost. Mention badges still work." : !notificationAvailable ? "Notifications are unavailable in this browser. Mention badges still work." : permission === "granted" ? "You’ll be notified when someone mentions your username." : permission === "denied" ? "Notifications are blocked. Enable them in your browser’s site settings." : "Get a desktop notification when someone mentions @yourUsername.";
   return <Modal id="settings-dialog" open onOpenChange={open => { if (!open) close(); }} title="Settings" description="Your connection, notifications and room integrations.">
-    <Tabs.Root value={tab} onValueChange={value => { setTab(value); setUrl(""); setError(""); setToast(""); }}><Tabs.List className="settings-tabs" aria-label="Settings sections">{["general", "machines", "webhooks"].map(value => <Tabs.Trigger key={value} value={value} className="button button-ghost">{value.charAt(0).toUpperCase() + value.slice(1)}</Tabs.Trigger>)}</Tabs.List>
+    <Tabs.Root value={tab} onValueChange={value => { setTab(value); setUrl(""); setError(""); setToast(""); }}><Tabs.List className="settings-tabs" aria-label="Settings sections">{["general", "machines", "updates", "webhooks"].map(value => <Tabs.Trigger key={value} value={value} className="button button-ghost">{value.charAt(0).toUpperCase() + value.slice(1)}</Tabs.Trigger>)}</Tabs.List>
     <Tabs.Content value={tab}>
       {tab === "general" && <><div className="settings-section"><h3>Notifications</h3><p id="notification-status">{notificationStatus}</p><Button id="notifications" className="mt-3" disabled={!secure || !notificationAvailable || permission !== "default" || !state.identity?.name} onClick={() => { void Notification.requestPermission().then(() => rerender(value => value + 1)).catch(() => setError("Notifications could not be enabled.")); }}>{permission === "granted" ? <Check size={14} /> : <Activity size={14} />}{permission === "granted" ? "Notifications enabled" : "Enable desktop notifications"}</Button></div>
         <div className="settings-section"><h3>Connection</h3><p>{location.host} · {location.protocol === "https:" ? "HTTPS" : "HTTP (unencrypted)"}</p><p className="mt-2">Signed in as {state.identity ? identityLabel(state.identity) : "guest"}. Your login is remembered in this browser.</p><div className="mt-4 flex flex-wrap gap-2"><Button id="logout" onClick={() => { close(); store.logout(); }}><LogOut size={14} />Disconnect</Button><Button variant="ghost" onClick={() => window.open("/", "_blank", "noopener")}><ArrowUpRight size={14} />Server status</Button></div></div></>}
       {tab === "machines" && <><MachineList state={state} /><div className="mt-5"><WorkerSetup state={state} /></div></>}
+      {tab === "updates" && <Updates state={state} store={store} />}
       {tab === "webhooks" && <form id="webhook-form" onSubmit={event => {
         event.preventDefault(); if (busy || !room.trim()) return; setBusy(true); setUrl(""); setError("");
         void store.webhook(room.trim(), sender.trim()).then(result => setUrl(new URL(result.path, location.origin).href)).catch(error => setError(error instanceof Error ? error.message : "Could not generate URL.")).finally(() => setBusy(false));

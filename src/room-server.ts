@@ -11,6 +11,7 @@ import { OrchestrationServer } from "./orchestration-server.js";
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
 import { BrowserHttps, type BrowserHttpsOptions } from "./browser-https.js";
+import type { RuntimeUpdater } from "./updater.js";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
   type AgentIdentity, type Room, type SignedMessage, type PresenceKind,
@@ -20,7 +21,7 @@ type Member = { identity: AgentIdentity; roomIds: Set<string>; roomId?: string; 
 type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
 type Connection = { browser: boolean; alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
 export type RoomServerOptions = { host?: string; port?: number; statusPort?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
-  credentialsFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions };
+  credentialsFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions; updater?: RuntimeUpdater };
 
 /** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
@@ -28,7 +29,7 @@ export class RoomServer {
   readonly fingerprint: string;
   private readonly secret: Buffer;
   private readonly webhooks: Webhooks;
-  private readonly orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet));
+  private readonly orchestration: OrchestrationServer;
   private webhookBudget = { tokens: 100, updated: Date.now() };
   private readonly http: HttpsServer;
   private readonly plainHttp?: HttpServer;
@@ -51,6 +52,7 @@ export class RoomServer {
     this.roomChangeTimer.unref();
   }
   private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions) {
+    this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater);
     this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
     this.secret = createHash("sha256").update(identity.secret).digest();
     this.webhooks = new Webhooks(this.secret);
@@ -116,6 +118,7 @@ export class RoomServer {
   get statusPort(): number | undefined { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
   get browserUrl(): string | undefined { return this.browserHttps?.url; }
   get nativePort(): number { return this.browserHttps?.port ?? this.port; }
+  get acmePort(): number | undefined { return this.browserHttps?.httpPort; }
   private publicStatus(): PublicStatus {
     let connectedParticipants = 0;
     for (const member of this.members.values()) if (member.socket?.readyState === WebSocket.OPEN && !this.orchestration.isWorker(member.socket)) connectedParticipants++;
@@ -408,6 +411,7 @@ export class RoomServer {
     if (member.identity.name) this.names.delete(member.identity.name.toLowerCase());
   }
   async close(): Promise<void> {
+    this.options.updater?.close();
     this.stopping = true; if (this.heartbeat) clearInterval(this.heartbeat);
     await this.browserHttps?.close();
     if (this.roomChangeTimer) clearTimeout(this.roomChangeTimer);

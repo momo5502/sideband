@@ -346,6 +346,10 @@ export class BrowserWorkspace {
     return result;
   }
   webhook(room: string, sender: string): Promise<{ path: string }> { return this.requireClient().request("webhook", { room, sender }); }
+  async updateSideband(start = false): Promise<void> {
+    await this.requireClient().request(start ? "control.updates.start" : "control.updates.check");
+    await this.refreshControl();
+  }
   home() { this.update({ view: { kind: "home" }, error: "" }); this.watched = ""; ++this.watchGeneration; if (this.client) void this.client.request("control.watch", { agentId: "" }).catch(() => {}); }
   clearError() { this.update({ error: "" }); }
   private requireClient(): BrowserRoomClient { if (!this.client || this.state.connection !== "on") throw new Error("Reconnecting. Your draft is kept; send it once connected."); return this.client; }

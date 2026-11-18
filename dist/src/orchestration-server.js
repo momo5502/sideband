@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { fields, text, RoomError } from "./room-protocol.js";
 import { launchSpec } from "./orchestration-protocol.js";
+import { parseBuild, parseUpdate } from "./update-types.js";
+import { UpdateFleet } from "./update-fleet.js";
 const uuid = (value) => { const id = text(value, "ID", 64); if (!/^[a-f0-9-]{36}$/.test(id))
     throw new Error("Invalid ID."); return id; };
 /** Authenticated control plane. Room messages never pass through this broker. */
@@ -33,8 +35,13 @@ export class OrchestrationServer {
     }
     browsers = new Map();
     pending = new Map();
-    constructor(send) {
+    updates;
+    constructor(send, updater) {
         this.send = send;
+        if (updater) {
+            this.updates = new UpdateFleet(updater, () => [...this.machines.values()], (id, target) => this.dispatch(this.workers.get(id), "update", { target }));
+            this.updates.onChange(() => this.changed());
+        }
     }
     isWorker(socket) { return !!socket && this.peers.get(socket)?.kind === "worker"; }
     changed() { for (const socket of this.browsers.keys())
@@ -70,7 +77,7 @@ export class OrchestrationServer {
             const existing = this.peers.get(socket);
             const args = fields(params, [kind === "worker" ? "machine" : "agent"]);
             if (kind === "worker") {
-                const machine = fields(args.machine, ["id", "name", "platform", "harnesses", "online", "terminal"]);
+                const machine = fields(args.machine, ["id", "name", "platform", "harnesses", "online", "terminal", "build", "updater", "update"]);
                 if (machine.terminal !== undefined && !["window", "tmux", "none"].includes(String(machine.terminal)))
                     throw new Error("Invalid terminal capability.");
                 const id = uuid(machine.id);
@@ -78,13 +85,17 @@ export class OrchestrationServer {
                     throw new Error("Connection already registered.");
                 if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => h !== "omp"))
                     throw new Error("Invalid harness list.");
+                if (machine.updater !== undefined && typeof machine.updater !== "boolean")
+                    throw new Error("Invalid updater capability.");
+                const metadata = { ...(machine.build !== undefined ? { build: parseBuild(machine.build) } : {}),
+                    ...(machine.update !== undefined ? { update: parseUpdate(machine.update) } : {}), ...(machine.updater !== undefined ? { updater: machine.updater } : {}) };
                 const prior = this.workers.get(id);
                 if (prior && prior.socket !== socket && this.online(prior))
                     throw new Error("A worker for this machine is already connected.");
                 const peer = { socket, kind, id };
                 this.peers.set(socket, peer);
                 this.workers.set(id, peer);
-                this.machines.set(id, { id, name: text(machine.name, "machine name", 100), platform: text(machine.platform, "platform", 32), harnesses: machine.harnesses, online: true, ...(machine.terminal ? { terminal: machine.terminal } : {}) });
+                this.machines.set(id, { id, name: text(machine.name, "machine name", 100), platform: text(machine.platform, "platform", 32), harnesses: machine.harnesses, online: true, ...metadata, ...(machine.terminal ? { terminal: machine.terminal } : {}) });
             }
             else {
                 const agent = this.agent(args.agent);
@@ -122,6 +133,15 @@ export class OrchestrationServer {
             }
             this.changed();
             return { registered: true };
+        }
+        if (method === "control.worker_update") {
+            const peer = this.peers.get(socket);
+            if (browser || peer?.kind !== "worker")
+                throw new Error("Only a registered worker can report update status.");
+            const args = fields(params, ["update"]);
+            this.machines.get(peer.id).update = parseUpdate(args.update);
+            this.changed();
+            return { accepted: true };
         }
         if (method === "control.reply") {
             const args = fields(params, ["id", "result", "error"]), id = text(args.id, "command ID", 64), pending = this.pending.get(id);
@@ -168,7 +188,13 @@ export class OrchestrationServer {
             fields(params, []);
             if (!this.browsers.has(socket))
                 this.browsers.set(socket, undefined);
-            return { machines: [...this.machines.values()], agents: [...this.agents.values()] };
+            return { machines: [...this.machines.values()], agents: [...this.agents.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+        }
+        if (method === "control.updates.check" || method === "control.updates.start") {
+            fields(params, []);
+            if (!this.updates)
+                throw new Error("Automatic updates require a supervised Sideband server. Install the latest CLI manually once.");
+            return method === "control.updates.check" ? this.updates.check() : this.updates.start();
         }
         if (method === "control.launch") {
             const { machineId, ...specInput } = fields(params, ["machineId", "name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
@@ -242,7 +268,7 @@ export class OrchestrationServer {
         }
         this.changed();
     }
-    close() { for (const socket of [...this.peers.keys(), ...this.browsers.keys()])
+    close() { this.updates?.close(); for (const socket of [...this.peers.keys(), ...this.browsers.keys()])
         this.disconnect(socket); this.machines.clear(); this.agents.clear(); this.runnerOwners.clear(); this.forgotten.clear(); }
 }
 //# sourceMappingURL=orchestration-server.js.map

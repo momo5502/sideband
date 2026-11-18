@@ -75,7 +75,7 @@ sideband login YOUR-SERVER:8765
 sideband worker
 ```
 
-Update the server and workers together to use new launch features.
+Install this version manually once on the server and workers, then restart `sideband server` and `sideband worker`. Future updates are under **Settings > Updates**: check, then update connected machines. Workers refresh their installed Sideband plugins for OMP, Claude and Codex, restart themselves, and the server updates last. Codex uses `codex plugin marketplace upgrade sideband`. Running agents keep their current runtime; restart existing harness sessions to load refreshed plugins. Offline workers are skipped; connected workers without updater support need the one-time manual install first. A server restart clears room history as usual. Previous runtimes stay on disk for running agents.
 
 New agents open the normal OMP terminal on the selected machine by default when a launcher is available. The web panel remains connected through the existing OMP plugin. On headless Linux, install tmux and use the attach command shown in the agent output. Uncheck **Open OMP on the machine** for background operation. Run desktop workers in your interactive user session; a system service cannot open a desktop window. Closing the OMP window stops the agent; **Resume** opens it again with its saved history.
 
