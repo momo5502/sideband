@@ -373,7 +373,7 @@ export class BrowserWorkspace {
   async action(id: string, action: string, params: Record<string, unknown> = {}) {
     const result = await this.requireClient().request("control.action", { agentId: id, action, ...params });
     await this.refreshControl();
-    if (action === "dispose") this.update({ view: { kind: "home" }, output: [], outputAgent: "" });
+    if (action === "dispose" || action === "archive") this.update({ view: { kind: "home" }, output: [], outputAgent: "" });
     return result;
   }
   webhook(room: string, sender: string): Promise<{ path: string }> { return this.requireClient().request("webhook", { room, sender }); }

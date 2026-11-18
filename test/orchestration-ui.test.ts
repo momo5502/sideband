@@ -8,6 +8,44 @@ import { boundedOutput, mentionsUsername } from "../src/browser-workspace.js";
 import type { ManagedAgent, ControlCommand, OutputEvent } from "../src/orchestration-protocol.js";
 import { browserPage, until } from "./browser-fixture.js";
 
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} saved sessions: archived list, offline resume and reversible archive`, { timeout: testTimeout(30000) }, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), profile = { server: `127.0.0.1:${server.port}`, password: server.password };
+  const worker = new RoomClient(profile), runner = new RoomClient(profile, "saved"), machineId = randomUUID();
+  const agent: ManagedAgent = { id: randomUUID(), name: "saved", harness: "omp", machineId, machineName: "machine", state: "stopped", online: false, createdAt: Date.now(), room: "", persistent: true, archived: true, canResume: true };
+  let page: Awaited<ReturnType<typeof browserPage>> | undefined; const errors: unknown[] = []; let refuse = true;
+  worker.onEvent((event, command: ControlCommand) => {
+    if (event !== "control.command") return;
+    void (async () => {
+      assert.equal(command.method, "resume");
+      if (refuse) { refuse = false; await worker.request("control.reply", { id: command.id, error: "Fixture resume failed" }); return; }
+      agent.archived = false; agent.state = "idle"; await runner.connect(); await runner.request("control.runner", { agent });
+      await worker.request("control.reply", { id: command.id, result: { resumed: true } });
+    })().catch(error => errors.push(error));
+  });
+  runner.onEvent((event, command: ControlCommand) => {
+    if (event !== "control.command") return;
+    void (async () => {
+      await runner.request("control.reply", { id: command.id, result: command.method === "logs" ? { events: [], first: 1, next: 1 } : {} });
+      if (command.method === "archive") await runner.close();
+    })().catch(error => errors.push(error));
+  });
+  try {
+    await worker.connect(); await worker.request("control.worker", { machine: { id: machineId, name: "machine", platform: "test", harnesses: ["omp"] } }); await worker.request("control.inventory", { agents: [agent] });
+    page = await browserPage(server, { mobile }); const p = page; await p.login(); await p.navigation();
+    await until(() => !!p.doc.querySelector("#archived-agents")); assert.equal(p.doc.querySelectorAll("#agent-list [data-agent-id]").length, 0);
+    p.click("#archived-agents summary"); p.click(`#archived-agents [data-agent-id="${agent.id}"]`);
+    await until(() => !!p.doc.querySelector("#agent-resume") && !p.doc.querySelector("#navigation-dialog")); assert.equal(p.get<HTMLButtonElement>("#agent-resume").disabled, false);
+    p.click("#agent-resume"); await until(() => p.doc.body.textContent!.includes("Fixture resume failed"));
+    await until(() => !p.get<HTMLButtonElement>("#agent-resume").disabled); assert.equal(p.get('.badge-state').getAttribute("data-state"), "archived");
+    p.click("#agent-resume"); await until(() => !!p.doc.querySelector("#agent-prompt") && !p.get<HTMLTextAreaElement>("#agent-prompt").disabled);
+    p.click('button[aria-label="Agent actions"]'); await until(() => !!p.doc.querySelector('[role="menuitem"]')); p.click(p.button("Archive agent\u2026", "menuitem"));
+    await until(() => !!p.doc.querySelector("#agent-action-dialog")); assert.match(p.get("#agent-action-dialog").textContent!, /resume it later/); p.submit("#agent-room-form");
+    await until(() => !p.doc.querySelector("#agent-action-dialog") && p.doc.querySelector("#workspace-title")?.textContent === "Workspace"); await p.navigation();
+    await until(() => !!p.doc.querySelector("#archived-agents")); assert.equal(p.doc.querySelectorAll("#agent-list [data-agent-id]").length, 0);
+    assert.deepEqual(errors, []); assert.deepEqual(p.errors, []);
+  } finally { await page?.close(); await runner.close(); await worker.close(); await server.close(); }
+});
+
 test("native Claude setup is explicit, survives an error and blocks launch while trust is being recorded", { timeout: testTimeout(30000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const worker = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }), machineId = randomUUID(), commands: ControlCommand[] = [];

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { requireNodeVersion } from "./persistence.js";
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +9,7 @@ import { buildInfo } from "./update-runtime.js";
 import { RuntimeUpdater } from "./updater.js";
 import { forwardRuntime, supervise, UPDATE_RESTART } from "./update-supervisor.js";
 async function main() {
+    requireNodeVersion();
     const command = process.argv[2];
     const supervised = process.env.SIDEBAND_SUPERVISED === "1", selected = process.env.SIDEBAND_RUNTIME_SELECTED === "1";
     // These are one-hop bootstrap markers, not settings for agents or their shell tools.
@@ -93,7 +95,7 @@ async function main() {
         console.log(`Sideband server v${build.version} (${build.commit?.slice(0, 8) ?? "bootstrap"}) starting...`);
         const { RoomServer } = await import("./room-server.js");
         server = await RoomServer.start({ host: values.host, port, statusPort,
-            updater, credentialsFile, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
+            updater, credentialsFile, databaseFile: `${credentialsFile}.sqlite`, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
                     httpPort, httpsPort, email: values.email, staging: values["acme-staging"], log: message => console.log(message) } } : {}) });
         const address = server.browserUrl ? new URL(server.browserUrl).host : `<your-VPS-IP>:${server.port}`;
         console.log(`Sideband listening on ${values.host ?? "*"}:${server.nativePort}\n\nClient address: ${address}\nClient login: sideband login ${address}\nPassword: ${server.password}\n\nBrowser: ${server.browserUrl ?? `http://<your-VPS-IP>:${server.statusPort}`}/chat\nCredentials: ${credentialsFile}\nThe password and native TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);

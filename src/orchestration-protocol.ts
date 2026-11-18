@@ -1,11 +1,11 @@
 import { agentName, fields, text } from "./room-protocol.js";
 import type { BuildInfo, LocalUpdate, FleetUpdates } from "./update-types.js";
 
-export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate };
+export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; persistent?: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
 export type HarnessName = "omp" | "codex" | "claude";
 export type LaunchSpec = { name: string; harness: HarnessName; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
-export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string };
+export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string; persistent?: boolean; archived?: boolean };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
 export type ControlCommand = { id: string; method: string; params: Record<string, unknown> };

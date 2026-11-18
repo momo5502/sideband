@@ -8,6 +8,7 @@ import { createServer as createHttpServer, type Server as HttpServer, type Incom
 import { statusPage, type PublicStatus } from "./status-page.js";
 import { webPage } from "./web-page.js";
 import { browserScript } from "./browser-bundle.js";
+import { Registry } from "./persistence.js";
 import { OrchestrationServer } from "./orchestration-server.js";
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity, type ServerIdentity } from "./server-identity.js";
@@ -22,7 +23,7 @@ type Member = { identity: AgentIdentity; roomIds: Set<string>; roomId?: string; 
 type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
 type Connection = { browser: boolean; alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
 export type RoomServerOptions = { host?: string; port?: number; statusPort?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
-  credentialsFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions; updater?: RuntimeUpdater };
+  credentialsFile?: string; databaseFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions; updater?: RuntimeUpdater };
 
 /** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
@@ -52,8 +53,8 @@ export class RoomServer {
     }, 40);
     this.roomChangeTimer.unref();
   }
-  private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions) {
-    this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater);
+  private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions, store?: Registry) {
+    this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater, store);
     this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
     this.secret = createHash("sha256").update(identity.secret).digest();
     this.webhooks = new Webhooks(this.secret);
@@ -90,7 +91,8 @@ export class RoomServer {
     if (options.rotatePassword && !options.credentialsFile) throw new Error("Password rotation requires a credentials file.");
     const existing = options.credentialsFile && !options.rotatePassword ? await loadServerIdentity(options.credentialsFile) : undefined;
     const identity = existing ?? await createServerIdentity();
-    const server = new RoomServer(identity, options);
+    const store = options.databaseFile ? await Registry.open(options.databaseFile, "server") : undefined;
+    const server = new RoomServer(identity, options, store);
     try {
       for (const [listener, port] of [[server.http, options.port ?? 8765], [server.plainHttp, options.statusPort]] as const) if (listener) {
         await new Promise<void>((resolve, reject) => {
@@ -416,7 +418,7 @@ export class RoomServer {
     this.stopping = true; if (this.heartbeat) clearInterval(this.heartbeat);
     await this.browserHttps?.close();
     if (this.roomChangeTimer) clearTimeout(this.roomChangeTimer);
-    this.orchestration.close();
+    await this.orchestration.close();
     for (const member of this.members.values()) if (member.expiry) clearTimeout(member.expiry);
     for (const socket of this.connections.keys()) socket.terminate();
     // Also close incomplete TLS/HTTP handshakes; shutdown must not wait on unauthenticated clients.

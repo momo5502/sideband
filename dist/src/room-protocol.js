@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 export const VERSION = 1;
 export const MAX_TEXT_BYTES = 8192;
 export class RoomError extends Error {
@@ -48,12 +48,14 @@ export function identityFor(encoded, name) {
 export class AgentKeys {
     identity;
     privateKey;
-    constructor(name) {
-        const keys = generateKeyPairSync("ed25519");
+    constructor(name, savedPrivateKey) {
+        const keys = savedPrivateKey ? (() => { const privateKey = createPrivateKey({ key: Buffer.from(savedPrivateKey, "base64url"), type: "pkcs8", format: "der" }); if (privateKey.asymmetricKeyType !== "ed25519")
+            throw new Error("Invalid saved agent identity."); return { privateKey, publicKey: createPublicKey(privateKey) }; })() : generateKeyPairSync("ed25519");
         this.privateKey = keys.privateKey;
         this.identity = identityFor(keys.publicKey.export({ type: "spki", format: "der" }).toString("base64url"), agentName(name));
     }
     sign(data) { return sign(null, Buffer.from(data), this.privateKey).toString("base64url"); }
+    exportPrivateKey() { return this.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64url"); }
 }
 export function validSignature(key, data, signature) {
     try {

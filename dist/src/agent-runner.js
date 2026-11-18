@@ -1,10 +1,12 @@
 import { INSTALL_TIMEOUT_MS } from "./timeouts.js";
+import { randomUUID } from "node:crypto";
+import { AgentStore, LeaseLost } from "./persistence.js";
 import { mkdir } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import spawn from "cross-spawn";
 import { RoomClient } from "./room-client.js";
 import { formatDelivery } from "./protocol.js";
-import { RoomError } from "./room-protocol.js";
+import { AgentKeys, RoomError } from "./room-protocol.js";
 import { ManagedOmp } from "./managed-omp.js";
 import { ManagedTerminal } from "./managed-terminal.js";
 import { OutputBuffer, launchSpec } from "./orchestration-protocol.js";
@@ -16,6 +18,7 @@ const errorText = (error) => (error instanceof Error ? error.message : "Operatio
 /** Independent of the worker: owns the harness, room identity, and bounded output. */
 export class AgentRunner {
     config;
+    store;
     client;
     output = new OutputBuffer();
     agent;
@@ -35,9 +38,35 @@ export class AgentRunner {
     workspaceReady = false;
     preparing;
     published = "";
+    legacyServer = false;
     stopRequested = false;
-    constructor(config) {
+    lease = randomUUID();
+    claimed = false;
+    desired = "running";
+    saved = "";
+    checking = false;
+    lastCheckpoint = 0;
+    lastHeartbeat = 0;
+    recoveryNotice = "";
+    closing;
+    static async create(config) {
+        const store = await AgentStore.open(config.root, config.profile);
+        try {
+            const restored = config.recover ? store.get(config.id) : undefined;
+            if (restored && (restored.agent.id !== config.id || restored.agent.machineId !== config.machineId))
+                throw new Error("Saved agent does not belong to this machine.");
+            if (config.recover && !restored)
+                throw new Error("This agent has no saved session on this machine.");
+            return new AgentRunner(config, store, restored);
+        }
+        catch (error) {
+            await store.close();
+            throw error;
+        }
+    }
+    constructor(config, store, restored) {
         this.config = config;
+        this.store = store;
         const spec = launchSpec(config.spec);
         if (!/^[a-f0-9-]{36}$/.test(config.id))
             throw new Error("Invalid runner ID.");
@@ -48,14 +77,35 @@ export class AgentRunner {
         this.desiredRoom = spec.room ?? "";
         const { prompt: _prompt, ...description } = spec;
         this.agent = { ...description, id: config.id, machineId: config.machineId, machineName: config.machineName, room: this.desiredRoom, state: "preparing", online: true, createdAt: Date.now(), canResume: false };
-        this.client = new RoomClient(config.profile, spec.name, { onError: error => this.record("connection", error.message) });
+        if (restored) {
+            Object.assign(this.agent, restored.agent, { online: true, state: restored.desired === "running" ? "starting" : "stopped", persistent: true, archived: restored.desired === "archived" });
+            this.sessionFile = restored.session;
+            this.workspaceReady = restored.workspaceReady;
+            this.desired = restored.desired;
+            this.desiredRoom = restored.agent.room;
+        }
+        this.agent.persistent = true;
+        this.client = new RoomClient(config.profile, spec.name, { keys: new AgentKeys(spec.name, restored?.privateKey), onError: error => this.record("connection", error.message) });
         this.client.onConnected(async () => {
+            this.legacyServer = false;
             try {
-                await this.client.request("control.runner", { agent: this.agent });
+                try {
+                    await this.client.request("control.runner", { agent: this.agent });
+                }
+                catch (error) {
+                    if (!(error instanceof RoomError) || error.code !== "INVALID_ARGUMENT")
+                        throw error;
+                    this.legacyServer = true;
+                    await this.client.request("control.runner", { agent: this.wireAgent() });
+                }
             }
             catch (error) {
-                if (error instanceof RoomError && error.code === "AGENT_FORGOTTEN")
+                if (error instanceof RoomError && ["AGENT_FORGOTTEN", "AGENT_ARCHIVED"].includes(error.code)) {
+                    this.desired = "archived";
+                    this.agent.archived = true;
+                    await this.checkpoint("archived");
                     await this.close();
+                }
                 throw error;
             }
         });
@@ -79,6 +129,58 @@ export class AgentRunner {
         this.agent.error = error === undefined ? undefined : errorText(error);
         this.record("state", error ? `${state}: ${this.agent.error}` : state);
     }
+    wireAgent() {
+        if (!this.legacyServer)
+            return this.agent;
+        const { persistent: _persistent, archived: _archived, identityId: _identity, ...agent } = this.agent;
+        return agent;
+    }
+    snapshot() {
+        return { agent: { ...this.agent, online: false, identityId: this.client.identity.id }, session: this.driver?.sessionFile ?? this.sessionFile, workspaceReady: this.workspaceReady,
+            privateKey: this.client.keys.exportPrivateKey(), desired: this.desired, updatedAt: Date.now() };
+    }
+    async checkpoint(desired) {
+        if (!this.store || !this.claimed)
+            return;
+        const record = this.snapshot(), signature = JSON.stringify({ ...record, updatedAt: 0 });
+        if (desired !== undefined || signature !== this.saved) {
+            await this.store.checkpoint(record, this.lease, desired);
+            this.saved = signature;
+        }
+    }
+    async check() {
+        if (this.checking || this.closed || Date.now() - this.lastCheckpoint < 1000)
+            return;
+        this.checking = true;
+        this.lastCheckpoint = Date.now();
+        try {
+            await this.checkpoint();
+            if (Date.now() - this.lastHeartbeat > 5000) {
+                this.lastHeartbeat = Date.now();
+                await this.store?.heartbeat(this.agent.id, this.lease);
+            }
+            if (this.closed)
+                return;
+            const desired = this.store?.get(this.agent.id)?.desired;
+            if (desired && desired !== this.desired && desired !== "running") {
+                this.desired = desired;
+                this.stopRequested = true;
+                if (this.preparing)
+                    terminateTree(this.preparing);
+                if (this.agent.state === "starting")
+                    void this.driver?.stop();
+                this.operations = this.operations.then(() => this.action(desired === "archived" ? "archive" : "stop", {})).then(() => { }, error => this.record("error", errorText(error)));
+            }
+        }
+        catch (error) {
+            this.record("error", `Could not save session recovery metadata: ${errorText(error)}`);
+            if (error instanceof LeaseLost)
+                await this.close().catch(() => { });
+        }
+        finally {
+            this.checking = false;
+        }
+    }
     async flush() {
         if (this.closed || this.flushing || this.client.state !== "on")
             return;
@@ -88,7 +190,7 @@ export class AgentRunner {
         this.flushing = true;
         const batch = this.events.splice(0, 20);
         try {
-            await this.client.request("control.publish", { agent: this.agent, events: batch });
+            await this.client.request("control.publish", { agent: this.wireAgent(), events: batch });
             this.published = status;
         }
         catch { /* Ring buffer remains authoritative. Do not replay uncertain live packets. */ }
@@ -96,8 +198,16 @@ export class AgentRunner {
             this.flushing = false;
         }
     }
+    async publishState() {
+        if (this.closed || this.client.state !== "on")
+            return;
+        try {
+            await this.client.request("control.publish", { agent: this.wireAgent(), events: [] });
+        }
+        catch { /* The local record is durable; registration/inventory reconciles after an outage. */ }
+    }
     command(command) {
-        if (command.method === "stop") {
+        if (["stop", "archive"].includes(command.method)) {
             this.stopRequested = true;
             if (this.preparing)
                 terminateTree(this.preparing);
@@ -125,19 +235,46 @@ export class AgentRunner {
             if (this.closed || epoch !== this.roomEpoch || this.client.room?.id !== roomId || !this.driver)
                 return;
             this.record("room", text);
+            const input = this.recoveryInput(text);
             if (this.driver.deliver)
-                await this.driver.deliver(text);
+                await this.driver.deliver(input);
             else
-                await this.driver.prompt(text);
+                await this.driver.prompt(input);
         }).catch(error => this.record("error", errorText(error))).finally(() => { this.inboxSize--; });
     }
     async start() {
+        this.store ??= await AgentStore.open(this.config.root, this.config.profile);
+        await this.store.claim(this.snapshot(), this.lease, !!this.config.recover);
+        this.claimed = true;
         await this.client.connect();
-        this.timer = setInterval(() => { void this.flush(); }, 200);
+        this.timer = setInterval(() => { void this.flush(); void this.check(); }, 200);
         // The runner registers before cloning, so a failed clone is visible and never creates an orphan.
-        this.operations = this.launch().catch(error => { if (!this.stopRequested && !this.closed)
-            this.state("failed", error); });
+        this.operations = (this.config.recover ? this.restore() : this.launch()).catch(async (error) => {
+            if (!this.stopRequested && !this.closed) {
+                this.state("failed", error);
+                this.desired = "stopped";
+                await this.driver?.stop().catch(stopError => this.record("error", errorText(stopError)));
+                await this.checkpoint("stopped").catch(saveError => this.record("error", errorText(saveError)));
+                await this.publishState();
+            }
+        });
     }
+    async restore() {
+        if (this.desired !== "running") {
+            this.state("stopped");
+            await this.checkpoint();
+            return;
+        }
+        if (!this.workspaceReady)
+            throw new Error("Workspace setup did not complete. Launch a new agent; the existing files were preserved.");
+        await this.startHarness();
+        if (this.desiredRoom)
+            await this.changeRoom(this.desiredRoom);
+        this.record("state", "Restored the saved harness session. Room messages sent while offline may have been missed.");
+        // This is recovery context, never a replay of the original task or a room history.
+        this.recoveryNotice = "Sideband restored this saved session after its controller restarted. An earlier turn may have been interrupted; room messages sent while offline may have been missed. Check the existing session before repeating work.";
+    }
+    recoveryInput(text) { const notice = this.recoveryNotice; this.recoveryNotice = ""; return notice ? `${notice}\n\n${text}` : text; }
     async git(args) {
         await new Promise((resolvePromise, reject) => {
             const child = spawn("git", args, { cwd: this.directory, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
@@ -168,6 +305,7 @@ export class AgentRunner {
             await this.git(["-C", "repo", "checkout", "--detach", this.agent.ref]);
         this.workspaceReady = true;
         this.agent.canResume = true;
+        await this.checkpoint();
         await this.startHarness();
         if (this.closed || this.stopRequested)
             return;
@@ -209,6 +347,8 @@ export class AgentRunner {
                     return;
                 this.sessionFile = driver.sessionFile ?? this.sessionFile;
                 this.state(this.agent.terminal ? "stopped" : "failed", error);
+                this.desired = "stopped";
+                void this.checkpoint("stopped").catch(error => this.record("error", errorText(error)));
                 ++this.roomEpoch;
                 if (this.agent.terminal && this.client.room)
                     void this.client.leaveRoom().catch(() => { });
@@ -234,8 +374,10 @@ export class AgentRunner {
             throw error;
         }
         this.sessionFile = driver.sessionFile;
+        await this.checkpoint();
         if (!this.closed && !this.stopRequested && this.agent.state === "starting")
             this.state("idle");
+        await this.publishState();
     }
     async changeRoom(room) {
         ++this.roomEpoch;
@@ -250,6 +392,8 @@ export class AgentRunner {
         }
         this.agent.room = this.desiredRoom;
         this.record("state", this.desiredRoom ? `Joined room ${this.desiredRoom}` : "Left room");
+        await this.checkpoint();
+        await this.publishState();
     }
     async action(method, params) {
         if (this.closed)
@@ -263,7 +407,7 @@ export class AgentRunner {
                     throw new Error("Invalid instructions.");
                 if (!this.agent.terminal)
                     this.record("user", text);
-                await this.driver.prompt(text);
+                await this.driver.prompt(this.recoveryInput(text));
                 return { accepted: true };
             }
             case "interrupt":
@@ -277,6 +421,9 @@ export class AgentRunner {
                 await this.changeRoom(params.room);
                 return { room: this.agent.room };
             case "stop": {
+                this.desired = this.agent.archived ? "archived" : "stopped";
+                // A storage failure must never prevent a requested stop from reaching the harness.
+                await this.checkpoint(this.desired).catch(error => this.record("error", errorText(error)));
                 if (this.agent.state === "stopped")
                     return { stopped: true };
                 this.state("stopped");
@@ -288,6 +435,8 @@ export class AgentRunner {
                 }
                 if (this.client.room)
                     await this.client.leaveRoom();
+                await this.checkpoint(this.desired);
+                await this.publishState();
                 return { stopped: true };
             }
             case "resume": {
@@ -296,22 +445,37 @@ export class AgentRunner {
                 if (this.driver)
                     await this.driver.stop();
                 this.stopRequested = false;
+                this.desired = "running";
+                this.agent.archived = false;
+                await this.store?.desired(this.agent.id, "running");
                 await this.startHarness();
                 if (this.desiredRoom)
                     await this.changeRoom(this.desiredRoom);
                 return { resumed: true };
             }
+            case "archive": {
+                this.desired = "archived";
+                this.agent.archived = true;
+                await this.action("stop", {});
+                await this.checkpoint("archived");
+                setTimeout(() => { void this.close(); }, 100);
+                return { archived: true, workspaceRetained: true };
+            }
             case "dispose": {
                 if (this.agent.state !== "stopped" && this.agent.state !== "failed")
                     throw new Error("Stop the agent before removing its runner.");
                 // Preserve checkout/history. Reclaiming disk is a separate, explicit workspace operation.
+                this.desired = "archived";
+                this.agent.archived = true;
+                await this.checkpoint("archived");
                 setTimeout(() => { void this.close(); }, 100);
                 return { removed: true, workspaceRetained: true };
             }
             default: throw new Error("Unknown runner operation.");
         }
     }
-    async close() {
+    close() { return this.closing ??= this.shutdown(); }
+    async shutdown() {
         if (this.closed)
             return;
         this.closed = true;
@@ -320,8 +484,20 @@ export class AgentRunner {
         ++this.roomEpoch;
         if (this.preparing)
             terminateTree(this.preparing);
-        await this.driver?.stop();
-        await this.client.close();
+        try {
+            await this.driver?.stop();
+            await this.checkpoint();
+        }
+        finally {
+            await this.client.close();
+            try {
+                if (this.claimed)
+                    await this.store?.release(this.agent.id, this.lease);
+            }
+            finally {
+                await this.store?.close();
+            }
+        }
     }
 }
 /** Private CLI entry: bootstrap travels through stdin, never command arguments or disk. */
@@ -334,7 +510,7 @@ export async function runAgentRunner() {
     }
     let runner;
     try {
-        runner = new AgentRunner(JSON.parse(input));
+        runner = await AgentRunner.create(JSON.parse(input));
         process.once("SIGINT", () => { void runner?.close(); });
         process.once("SIGTERM", () => { void runner?.close(); });
         await runner.start();

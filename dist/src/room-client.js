@@ -31,7 +31,7 @@ export class RoomClient {
         this.options = options;
         this.endpoint = serverUrl(profile.server);
         parsePassword(profile.password);
-        this.keys = new AgentKeys(name);
+        this.keys = options.keys ?? new AgentKeys(name);
     }
     get identity() { return this.keys.identity; }
     onMessage(listener) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }

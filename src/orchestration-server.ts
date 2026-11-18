@@ -5,6 +5,7 @@ import { fields, text, RoomError, type AgentIdentity } from "./room-protocol.js"
 import { launchSpec, type Machine, type ManagedAgent, type OutputEvent } from "./orchestration-protocol.js";
 import { parseBuild, parseUpdate } from "./update-types.js";
 import type { RuntimeUpdater } from "./updater.js";
+import type { Registry } from "./persistence.js";
 import { UpdateFleet } from "./update-fleet.js";
 
 type Peer = { socket: WebSocket; kind: "worker" | "runner"; id: string };
@@ -20,12 +21,16 @@ export class OrchestrationServer {
   private agents = new Map<string, ManagedAgent>();
   private runnerOwners = new Map<string, string>();
   private forgotten = new Set<string>();
+  private archived = new Set<string>();
+  private resuming = new Set<string>();
   private legacyRemoval = new WeakSet<WebSocket>();
   private async stopLegacyRunner(peer: Peer): Promise<void> {
     try { await this.dispatch(peer, "stop", {}); await this.dispatch(peer, "dispose", {}); }
     catch { peer.socket.terminate(); }
   }
-  private forget(id: string): void {
+  private async forget(id: string): Promise<void> {
+    const machineId = this.agents.get(id)?.machineId;
+    await this.store?.change(() => { this.store!.put("removal", id, { kind: "forgotten", machineId }); this.store!.remove("agent", id); });
     this.forgotten.add(id);
     if (this.forgotten.size > 10000) this.forgotten.delete(this.forgotten.values().next().value!);
     this.agents.delete(id); this.changed();
@@ -33,9 +38,14 @@ export class OrchestrationServer {
   private browsers = new Map<WebSocket, string | undefined>();
   private pending = new Map<string, Pending>();
   private updates?: UpdateFleet;
-  constructor(private readonly send: (socket: WebSocket, packet: object) => void, updater?: RuntimeUpdater) {
+  constructor(private readonly send: (socket: WebSocket, packet: object) => void, updater?: RuntimeUpdater, private readonly store?: Registry) {
+    for (const [id, machine] of store?.all<Machine>("machine") ?? []) this.machines.set(id, { ...machine, online: false });
+    for (const [id, agent] of store?.all<ManagedAgent>("agent") ?? []) this.agents.set(id, { ...agent, online: false, state: "stopped" });
+    for (const [id, owner] of store?.all<string>("owner") ?? []) this.runnerOwners.set(id, owner);
+    for (const [id, removal] of store?.all<{ kind: string }>("removal") ?? []) (removal.kind === "archived" ? this.archived : this.forgotten).add(id);
     if (updater) { this.updates = new UpdateFleet(updater, () => [...this.machines.values()], (id, target) => this.dispatch(this.workers.get(id), "update", { target })); this.updates.onChange(() => this.changed()); }
   }
+  private save(kind: string, id: string, value: unknown): Promise<unknown> { return this.store?.change(() => this.store!.put(kind, id, value)) ?? Promise.resolve(); }
   isWorker(socket?: WebSocket): boolean { return !!socket && this.peers.get(socket)?.kind === "worker"; }
   private changed(): void { for (const socket of this.browsers.keys()) this.send(socket, { event: "control.changed", data: {} }); }
   private online(peer?: Peer): boolean { return peer?.socket.readyState === WebSocket.OPEN; }
@@ -50,12 +60,13 @@ export class OrchestrationServer {
     });
   }
   private agent(input: unknown): ManagedAgent {
-    const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume"]);
-    const { id, machineId, machineName, state, createdAt, error, online, canResume, ...spec } = value;
+    const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume", "persistent", "archived", "identityId"]);
+    const { id, machineId, machineName, state, createdAt, error, online, canResume, persistent, archived, identityId, ...spec } = value;
+    for (const flag of [persistent, archived]) if (flag !== undefined && typeof flag !== "boolean") throw new Error("Invalid persistence flag.");
     if (canResume !== undefined && typeof canResume !== "boolean") throw new Error("Invalid resume capability.");
     if (!["preparing", "starting", "idle", "busy", "stopped", "failed"].includes(state as string) || !Number.isFinite(createdAt)) throw new Error("Invalid agent state.");
     return { ...launchSpec(spec), id: uuid(id), machineId: uuid(machineId), machineName: text(machineName, "machine name", 100), state: state as ManagedAgent["state"], createdAt: createdAt as number,
-      room: typeof spec.room === "string" ? spec.room : "", online: true, ...(error ? { error: text(error, "error", 2048) } : {}), ...(canResume !== undefined ? { canResume: canResume as boolean } : {}) };
+      room: typeof spec.room === "string" ? spec.room : "", online: true, ...(persistent !== undefined ? { persistent: persistent as boolean } : {}), ...(archived !== undefined ? { archived: archived as boolean } : {}), ...(typeof identityId === "string" ? { identityId: text(identityId, "identity", 100) } : {}), ...(error ? { error: text(error, "error", 2048) } : {}), ...(canResume !== undefined ? { canResume: canResume as boolean } : {}) };
   }
   async request(socket: WebSocket, browser: boolean, method: string, params: unknown, identity: AgentIdentity): Promise<unknown> {
     if (method === "control.worker" || method === "control.runner") {
@@ -76,11 +87,13 @@ export class OrchestrationServer {
         if (prior && prior.socket !== socket && this.online(prior)) throw new Error("A worker for this machine is already connected.");
         const peer: Peer = { socket, kind, id }; this.peers.set(socket, peer); this.workers.set(id, peer);
         this.machines.set(id, { id, name: text(machine.name, "machine name", 100), platform: text(machine.platform, "platform", 32), harnesses: machine.harnesses as string[], online: true, ...metadata, ...(machine.terminal ? { terminal: machine.terminal as Machine["terminal"] } : {}) });
+        await this.save("machine", id, this.machines.get(id));
       } else {
         const agent = this.agent(args.agent);
         if (agent.name !== identity.name) throw new Error("Runner name must match its authenticated room identity.");
         const owner = this.runnerOwners.get(agent.id);
         if (owner && owner !== identity.id) throw new Error("This agent ID belongs to another verified identity.");
+        if (this.archived.has(agent.id)) throw new RoomError("AGENT_ARCHIVED", "This agent is archived. Resume it through the worker.");
         if (this.forgotten.has(agent.id)) {
           if (agent.canResume === undefined) {
             // Runners from 0.16 don't understand AGENT_FORGOTTEN. Their existing stop/dispose
@@ -98,9 +111,31 @@ export class OrchestrationServer {
         const prior = this.runners.get(agent.id);
         if (prior && prior.socket !== socket && this.online(prior)) throw new Error("Agent runner already connected.");
         const peer: Peer = { socket, kind, id: agent.id }; this.peers.set(socket, peer); this.runners.set(agent.id, peer); this.agents.set(agent.id, { ...agent, identityId: identity.id }); this.runnerOwners.set(agent.id, identity.id);
+        await this.store?.change(() => { if (agent.persistent) this.store!.put("agent", agent.id, this.agents.get(agent.id)); this.store!.put("owner", agent.id, identity.id); });
         if (!this.machines.has(agent.machineId)) this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
       }
       this.changed(); return { registered: true };
+    }
+    if (method === "control.inventory") {
+      const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report saved sessions.");
+      const args = fields(params, ["agents"]); if (!Array.isArray(args.agents) || args.agents.length > 30) throw new Error("Invalid saved-agent inventory.");
+      const archived: string[] = [], errors: { id: string; message: string }[] = [];
+      for (const value of args.agents) {
+        try {
+        const agent = this.agent(value);
+        if (agent.machineId !== peer.id || agent.persistent !== true) throw new Error("Invalid saved-agent machine.");
+        if (this.agents.has(agent.id) && this.agents.get(agent.id)!.machineId !== peer.id) throw new Error("Agent belongs to a different machine.");
+        if (this.forgotten.has(agent.id)) { archived.push(agent.id); continue; }
+        if (this.resuming.has(agent.id)) continue;
+        if (this.archived.has(agent.id) || agent.archived) {
+          archived.push(agent.id); this.archived.add(agent.id); agent.archived = true; agent.state = "stopped";
+          await this.save("removal", agent.id, { kind: "archived", machineId: peer.id });
+        }
+        if (!this.online(this.runners.get(agent.id)) || agent.archived) { this.agents.set(agent.id, { ...agent, online: false }); await this.save("agent", agent.id, this.agents.get(agent.id)); }
+        } catch (error) { errors.push({ id: typeof value?.id === "string" ? value.id.slice(0, 64) : "unknown", message: error instanceof Error ? error.message : "Invalid saved agent." }); }
+      }
+      this.machines.get(peer.id)!.persistent = true; await this.save("machine", peer.id, this.machines.get(peer.id));
+      this.changed(); return { archived, errors };
     }
     if (method === "control.worker_update") {
       const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report update status.");
@@ -115,7 +150,7 @@ export class OrchestrationServer {
     }
     if (method === "control.publish") {
       const peer = this.peers.get(socket); if (peer?.kind !== "runner") throw new Error("Only an agent runner can publish output.");
-      if (this.forgotten.has(peer.id)) return { removed: true };
+      if (this.forgotten.has(peer.id) || this.archived.has(peer.id)) return { removed: true };
       const args = fields(params, ["agent", "events"]), agent = this.agent(args.agent);
       if (agent.id !== peer.id || agent.machineId !== this.agents.get(peer.id)?.machineId || agent.name !== identity.name) throw new Error("Invalid runner identity.");
       if (!Array.isArray(args.events) || args.events.length > 30) throw new Error("Invalid event batch.");
@@ -126,7 +161,7 @@ export class OrchestrationServer {
       });
       const previous = this.agents.get(peer.id)!;
       this.agents.set(peer.id, { ...agent, identityId: identity.id });
-      if (previous.state !== agent.state || previous.room !== agent.room || previous.error !== agent.error) this.changed();
+      if (previous.state !== agent.state || previous.room !== agent.room || previous.error !== agent.error || previous.canResume !== agent.canResume) { if (agent.persistent) await this.save("agent", peer.id, this.agents.get(peer.id)); this.changed(); }
       if (events.length) for (const [watcher, watching] of this.browsers) if (watching === peer.id) this.send(watcher, { event: "control.output", data: { agentId: peer.id, events } });
       return {};
     }
@@ -160,19 +195,47 @@ export class OrchestrationServer {
       const args = fields(params, ["agentId"]);
       if (!args.agentId) { this.browsers.set(socket, undefined); return { events: [], first: 1, next: 1 }; }
       const id = uuid(args.agentId); if (!this.agents.has(id)) throw new Error("Unknown agent.");
-      this.browsers.set(socket, id); return this.dispatch(this.runners.get(id), "logs", {});
+      this.browsers.set(socket, id); if (this.agents.get(id)?.persistent && !this.online(this.runners.get(id))) return { events: [], first: 1, next: 1 }; return this.dispatch(this.runners.get(id), "logs", {});
     }
     if (method === "control.action") {
       const args = fields(params, ["agentId", "action", "text", "room"]), id = uuid(args.agentId);
-      const action = text(args.action, "action", 32);
-      if (!["prompt", "interrupt", "stop", "resume", "room", "dispose"].includes(action)) throw new Error("Unknown agent action.");
+      let action = text(args.action, "action", 32);
+      if (!["prompt", "interrupt", "stop", "resume", "room", "dispose", "archive"].includes(action)) throw new Error("Unknown agent action.");
       if (action === "prompt") text(args.text, "instructions", 16000);
       if (action === "room" && (typeof args.room !== "string" || args.room.length > 100)) throw new Error("Invalid room name.");
+      const agent = this.agents.get(id);
+      if (action === "dispose" && agent?.persistent) action = "archive";
+      if (action === "archive") {
+        if (!agent?.persistent) throw new Error("Restart this agent with a persistence-enabled runner before archiving it.");
+        this.archived.add(id); Object.assign(agent, { archived: true, state: "stopped", online: false });
+        await this.store?.change(() => { this.store!.put("removal", id, { kind: "archived", machineId: agent.machineId }); this.store!.put("agent", id, agent); });
+        this.changed();
+        const runner = this.runners.get(id), worker = this.workers.get(agent.machineId);
+        if (this.online(runner)) await this.dispatch(runner, "archive", {});
+        else if (this.online(worker)) await this.dispatch(worker, "archive", { id });
+        return { archived: true, workspaceRetained: true };
+      }
+      if (agent?.persistent && !this.online(this.runners.get(id)) && ["resume", "stop"].includes(action)) {
+        if (!this.online(this.workers.get(agent.machineId))) throw new Error("Bring this agent's machine online before resuming or stopping it.");
+        if (action === "resume" && !agent.canResume) throw new Error(agent.error ?? "This session cannot be resumed.");
+        const wasArchived = agent.archived;
+        this.resuming.add(id);
+        try {
+          if (action === "resume") { this.archived.delete(id); agent.archived = false; await this.store?.change(() => { this.store!.remove("removal", id); this.store!.put("agent", id, agent); }); }
+          const result = await this.dispatch(this.workers.get(agent.machineId), action, { id }); this.changed(); return result;
+        } catch (error) {
+          if (wasArchived && action === "resume" && !this.online(this.runners.get(id))) {
+            this.archived.add(id); Object.assign(agent, { archived: true, online: false, state: "stopped" }); this.agents.set(id, agent);
+            await this.store?.change(() => { this.store!.put("removal", id, { kind: "archived", machineId: agent.machineId }); this.store!.put("agent", id, agent); }); this.changed();
+          }
+          throw error;
+        } finally { this.resuming.delete(id); }
+      }
       if (action === "dispose" && this.agents.has(id) && !this.online(this.runners.get(id))) {
-        this.forget(id); return { removed: true, offline: true, workspaceRetained: true };
+        await this.forget(id); return { removed: true, offline: true, workspaceRetained: true };
       }
       const result = await this.dispatch(this.runners.get(id), action, { ...(action === "prompt" ? { text: args.text } : {}), ...(action === "room" ? { room: args.room } : {}) });
-      if (action === "dispose") this.forget(id);
+      if (action === "dispose") await this.forget(id);
       return result;
     }
     throw new Error("Unknown orchestration operation.");
@@ -189,5 +252,5 @@ export class OrchestrationServer {
     }
     this.changed();
   }
-  close(): void { this.updates?.close(); for (const socket of [...this.peers.keys(), ...this.browsers.keys()]) this.disconnect(socket); this.machines.clear(); this.agents.clear(); this.runnerOwners.clear(); this.forgotten.clear(); }
+  async close(): Promise<void> { this.updates?.close(); for (const socket of [...this.peers.keys(), ...this.browsers.keys()]) this.disconnect(socket); await this.store?.close(); this.machines.clear(); this.agents.clear(); this.runnerOwners.clear(); this.forgotten.clear(); }
 }

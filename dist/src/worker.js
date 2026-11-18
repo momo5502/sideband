@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { hostname, homedir, platform } from "node:os";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
+import { AgentStore } from "./persistence.js";
 import { runUpdateCommand } from "./update-runtime.js";
 import { RoomClient } from "./room-client.js";
 import { launchSpec } from "./orchestration-protocol.js";
@@ -16,6 +18,12 @@ export class Worker {
     machine;
     root;
     launches = new Map();
+    store;
+    recovering = new Map();
+    inventory;
+    inventoryTimer;
+    closing = false;
+    inventoryErrors = new Set();
     constructor(options) {
         this.options = options;
         this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
@@ -63,6 +71,7 @@ export class Worker {
                 }
                 options.onError?.(new Error("Server does not support all worker features yet. Update the server to enable terminal launch and automatic updates."));
             }
+            await this.syncInventory();
         });
         this.client.onEvent((event, command) => { if (event === "control.command")
             void this.command(command); });
@@ -73,6 +82,14 @@ export class Worker {
         });
     }
     async start() {
+        this.store = await AgentStore.open(this.root, this.options.profile);
+        this.machine.id = await this.store.registry.change(() => {
+            const stored = this.store.registry.get("meta", "machine-id");
+            if (stored)
+                return stored;
+            this.store.registry.put("meta", "machine-id", this.machine.id);
+            return this.machine.id;
+        });
         const detected = await Promise.all(["omp", "codex", "claude"].map(async (name) => {
             const executable = this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" };
             try {
@@ -86,9 +103,100 @@ export class Worker {
         this.machine.harnesses = detected.filter(name => name !== undefined);
         this.machine.terminal = terminalLauncher()?.kind ?? "none";
         await this.client.connect();
+        this.inventoryTimer = setInterval(() => { if (this.client.state === "on")
+            void this.syncInventory().catch(error => this.options.onError?.(error)); }, 10000);
+        this.inventoryTimer.unref();
+    }
+    async savedAgent(record) {
+        if (!/^[a-f0-9-]{36}$/.test(record.agent.id))
+            throw new Error("Invalid saved agent ID.");
+        const workspace = join(this.root, record.agent.id, record.agent.repository ? "repo" : "workspace");
+        const present = await stat(workspace).then(info => info.isDirectory(), () => false);
+        const live = await this.store.live(record.agent.id);
+        return { ...record.agent, machineId: this.machine.id, machineName: this.machine.name, online: false, persistent: true, archived: record.desired === "archived",
+            state: !present && record.workspaceReady ? "failed" : record.desired !== "running" || !live ? "stopped" : record.agent.state,
+            canResume: record.workspaceReady && present,
+            ...(!present && record.workspaceReady ? { error: "The saved workspace is missing from this machine. Its record was preserved." } : {}) };
+    }
+    syncInventory() {
+        if (this.closing || !this.store)
+            return Promise.resolve();
+        if (this.inventory)
+            return this.inventory;
+        this.inventory = (async () => {
+            const records = this.store.all();
+            for (let offset = 0; offset < Math.max(records.length, 1); offset += 30) {
+                const checked = await Promise.allSettled(records.slice(offset, offset + 30).map(record => this.savedAgent(record)));
+                const agents = checked.flatMap(result => { if (result.status === "fulfilled")
+                    return [result.value]; this.options.onError?.(new Error(`A saved agent could not be loaded: ${result.reason instanceof Error ? result.reason.message : "Invalid record."}`)); return []; });
+                let response;
+                try {
+                    response = await this.client.request("control.inventory", { agents });
+                }
+                catch (error) {
+                    if (error instanceof Error && /Unknown orchestration operation/.test(error.message))
+                        return; // Server is still updating.
+                    throw error;
+                }
+                for (const error of response.errors ?? [])
+                    if (!this.inventoryErrors.has(error.id)) {
+                        this.inventoryErrors.add(error.id);
+                        this.options.onError?.(new Error(`Saved agent ${error.id}: ${error.message}`));
+                    }
+                for (const id of response.archived)
+                    if (this.store.get(id))
+                        await this.store.desired(id, "archived");
+            }
+        })().finally(() => { this.inventory = undefined; });
+        return this.inventory;
+    }
+    resume(id) {
+        const existing = this.recovering.get(id);
+        if (existing)
+            return existing;
+        const operation = (async () => {
+            let record = this.store.get(id);
+            if (!record)
+                throw new Error("No saved session exists for this agent on this machine.");
+            const agent = await this.savedAgent(record);
+            if (!agent.canResume)
+                throw new Error(agent.error ?? "This agent has no completed workspace to resume.");
+            if (record.desired === "archived") {
+                const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+                while (await this.store.live(id) && Date.now() < deadline)
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                record = this.store.get(id);
+            }
+            if (await this.store.live(id))
+                throw new Error("This agent's controller is still alive. Wait for it to reconnect before resuming.");
+            const spec = Object.fromEntries(["name", "harness", "repository", "ref", "model", "effort", "room", "terminal"].flatMap(key => {
+                const value = record.agent[key];
+                return value === undefined ? [] : [[key, value]];
+            }));
+            await this.store.desired(id, "running");
+            try {
+                return await this.spawnRunner({ profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec, recover: true,
+                    omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" }, codex: this.options.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, claude: this.options.claude ?? { command: process.env.CLAUDE_BINARY ?? "claude" }, entry: this.options.entry });
+            }
+            catch (error) {
+                await this.store.desired(id, record.desired);
+                throw error;
+            }
+        })().finally(() => { this.recovering.delete(id); });
+        this.recovering.set(id, operation);
+        return operation;
     }
     async command(command) {
         try {
+            if (["resume", "archive", "stop"].includes(command.method)) {
+                const id = command.params.id;
+                if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id) || Object.keys(command.params).length !== 1)
+                    throw new Error("Invalid saved agent ID.");
+                const result = command.method === "resume" ? await this.resume(id) : await this.store.desired(id, command.method === "archive" ? "archived" : "stopped").then(() => ({ accepted: true }));
+                await this.syncInventory();
+                await this.client.request("control.reply", { id: command.id, result });
+                return;
+            }
             if (command.method === "claude-trust") {
                 if (Object.keys(command.params).length || !this.machine.harnesses.includes("claude"))
                     throw new Error("Claude is not available on this worker.");
@@ -146,6 +254,7 @@ export class Worker {
         return { id: config.id };
     }
     /** Closing/updating a worker deliberately leaves its independently connected runners alive. */
-    async close() { this.options.updater?.close(); await this.client.close(); }
+    async close() { this.closing = true; if (this.inventoryTimer)
+        clearInterval(this.inventoryTimer); this.options.updater?.close(); await this.client.close(); await this.inventory?.catch(() => { }); await Promise.allSettled([...this.recovering.values()]); await this.store?.close(); }
 }
 //# sourceMappingURL=worker.js.map

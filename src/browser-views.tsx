@@ -7,7 +7,7 @@ import type { AgentIdentity, Room } from "./room-protocol.js";
 import type { ManagedAgent, OutputEvent } from "./orchestration-protocol.js";
 
 export const allRooms = (state: WorkspaceState) => [...new Map([...state.rooms, ...state.joined].map(room => [room.id, room])).values()];
-export const agentStatus = (agent: ManagedAgent) => agent.online ? agent.state : "offline";
+export const agentStatus = (agent: ManagedAgent) => agent.archived ? "archived" : agent.online ? agent.state : "offline";
 export const repositoryName = (repository?: string) => repository ? repository.replace(/\/+$/, "").split(/[/:]/).at(-1)?.replace(/\.git$/, "") ?? "" : "Empty workspace";
 export function Avatar({ identity, small = false }: { identity: AgentIdentity; small?: boolean }) {
   return <span className={clsx("avatar", small && "avatar-small")} style={{ color: identityColor(identity) }} aria-hidden="true">{identityLabel(identity).replace(/^#/, "").slice(0, 2).toUpperCase()}</span>;
@@ -20,13 +20,13 @@ const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digi
 export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { store: BrowserWorkspace; state: WorkspaceState; close(): void; onNew(): void; onJoin(): void; onSettings(): void }) {
   const [search, setSearch] = useState("");
   const build = state.control.updates?.current;
-  const query = search.trim().toLowerCase(), agents = state.control.agents.filter(agent => `${agent.name} ${agent.machineName}`.toLowerCase().includes(query));
+  const query = search.trim().toLowerCase(), matching = state.control.agents.filter(agent => `${agent.name} ${agent.machineName}`.toLowerCase().includes(query)), agents = matching.filter(agent => !agent.archived), archived = matching.filter(agent => agent.archived);
   const rooms = allRooms(state).filter(room => room.name.toLowerCase().includes(query)).sort((a, b) => Number(state.joined.some(room => room.id === b.id)) - Number(state.joined.some(room => room.id === a.id)) || a.name.localeCompare(b.name));
   return <aside id="room-menu" className="sidebar" aria-label="Workspace navigation">
     <div className="sidebar-brand"><button className="flex items-center gap-2.5" aria-label="Sideband home" onClick={() => { store.home(); close(); }}><Brand /></button><Button id="menu-close" className="mobile-only ml-auto" variant="ghost" icon aria-label="Close navigation" onClick={close}><X size={18} /></Button></div>
     <label className="sidebar-search"><Search size={14} /><input aria-label="Find rooms or agents" placeholder="Find rooms or agents" value={search} onChange={event => setSearch(event.target.value)} /></label>
     <nav className="sidebar-content">
-      <section className="nav-section" aria-label="Agents"><div className="nav-heading"><span>Agents <span className="ml-1 text-zinc-600">{state.control.agents.length || ""}</span></span><Button id="new-agent" variant="ghost" icon aria-label="New agent" title="New agent" onClick={onNew}><Plus size={15} /></Button></div>
+      <section className="nav-section" aria-label="Agents"><div className="nav-heading"><span>Agents <span className="ml-1 text-zinc-600">{state.control.agents.filter(agent => !agent.archived).length || ""}</span></span><Button id="new-agent" variant="ghost" icon aria-label="New agent" title="New agent" onClick={onNew}><Plus size={15} /></Button></div>
         <div id="agent-list" className="nav-list">{agents.map(agent => <button key={agent.id} type="button" data-agent-id={agent.id} className="nav-row" aria-current={state.view.kind === "agent" && state.view.id === agent.id ? "true" : undefined}
           aria-label={`${agent.name}, ${agentStatus(agent)}, ${agent.machineName}`} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}>
           <span className="nav-icon"><Bot size={18} /><Status state={agentStatus(agent)} /></span><span className="row-copy"><span className="row-name">{agent.name}</span><span className="row-description">{agent.machineName}</span></span>
@@ -34,6 +34,7 @@ export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { st
         {!agents.length && <p className="nav-empty">{query ? "No matching agents." : "No agents yet."}</p>}
         <Button variant="ghost" className="nav-add" onClick={onNew}><Plus size={13} />New agent</Button>
       </section>
+      {archived.length > 0 && <details className="nav-section" id="archived-agents"><summary className="nav-heading">Archived ({archived.length})</summary><div className="nav-list">{archived.map(agent => <button key={agent.id} type="button" className="nav-row" data-agent-id={agent.id} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}><Bot size={17} /><span className="row-copy"><span className="row-name">{agent.name}</span><span className="row-description">{agent.machineName}</span></span></button>)}</div></details>}
       <section className="nav-section" aria-label="Rooms"><div className="nav-heading"><span>Rooms</span><Button variant="ghost" icon aria-label="Join or create a room" title="Join or create a room" onClick={onJoin}><Plus size={15} /></Button></div>
         <div id="room-list" className="nav-list">{rooms.map(room => {
           const joined = state.joined.some(candidate => candidate.id === room.id), mentions = state.mentions[room.id] ?? 0, unread = state.unread[room.id] ?? 0;
@@ -93,7 +94,7 @@ export function AgentOutput({ state, agent }: { state: WorkspaceState; agent: Ma
     <Button variant="ghost" className="toolbar-toggle" aria-pressed={tools} onClick={() => setTools(!tools)}><Wrench size={13} />Tools</Button></div></div>
     <div className="log-wrapper"><div id="agent-output" ref={ref} onScroll={scroll.onScroll} className="output-log" role="log" aria-label="Agent conversation">
       {events[0] && events[0].seq > 1 && <p className="output-gap">Showing recent output. Earlier output has left the buffer.</p>}
-      {!events.length && <div className="empty-view h-full"><div className="empty-icon"><Bot size={26} /></div><h2>{!agent.online ? "Agent offline" : agent.state === "failed" ? "The agent couldn’t start" : agent.state === "stopped" ? "Agent stopped" : agent.state === "preparing" ? "Preparing workspace" : agent.state === "starting" ? "Starting the agent" : "Ready when you are"}</h2><p>{!agent.online ? "Its machine or runner is disconnected. It will return here when it reconnects." : agent.state === "failed" ? "Check the error above. You can remove this agent and launch a new one." : agent.state === "stopped" ? "Resume to continue with the same workspace and history." : agent.state === "preparing" ? (agent.repository ? "Cloning the repository on your selected machine. Progress will appear here." : "Creating an empty workspace on your selected machine.") : "Send private instructions below, or talk to this agent in its room."}</p></div>}
+      {!events.length && <div className="empty-view h-full"><div className="empty-icon"><Bot size={26} /></div><h2>{agent.archived ? "Agent archived" : !agent.online && agent.persistent ? "Saved session" : !agent.online ? "Agent offline" : agent.state === "failed" ? "The agent couldn’t start" : agent.state === "stopped" ? "Agent stopped" : agent.state === "preparing" ? "Preparing workspace" : agent.state === "starting" ? "Starting the agent" : "Ready when you are"}</h2><p>{agent.persistent && !agent.online ? "The workspace and harness history are kept on its machine. Bring that machine online and choose Resume to continue." : !agent.online ? "Its machine or runner is disconnected. It will return here when it reconnects." : agent.state === "failed" ? "Check the error above. You can remove this agent and launch a new one." : agent.state === "stopped" ? "Resume to continue with the same workspace and history." : agent.state === "preparing" ? (agent.repository ? "Cloning the repository on your selected machine. Progress will appear here." : "Creating an empty workspace on your selected machine.") : "Send private instructions below, or talk to this agent in its room."}</p></div>}
       {groups.map(group => {
         const { kind, text } = group;
         if (["assistant", "user", "room"].includes(kind)) {
@@ -112,7 +113,7 @@ export function AgentOutput({ state, agent }: { state: WorkspaceState; agent: Ma
     </div>{scroll.jump}</div></>;
 }
 export function AgentDetails({ agent }: { agent: ManagedAgent }) {
-  return <><h2>Agent details</h2><dl className="detail-grid"><div><dt>Machine</dt><dd>{agent.machineName}</dd></div><div><dt>Repository</dt><dd>{agent.repository ?? "None (empty workspace)"}</dd></div>{agent.ref && <div><dt>Branch or ref</dt><dd>{agent.ref}</dd></div>}<div><dt>Harness</dt><dd>oh-my-pi</dd></div><div><dt>Model</dt><dd>{agent.model ?? "Harness default"}</dd></div><div><dt>Reasoning</dt><dd>{agent.effort ?? "Harness default"}</dd></div><div><dt>Workspace</dt><dd>Isolated workspace. Stop and resume retain its files and history.</dd></div></dl></>;
+  return <><h2>Agent details</h2><dl className="detail-grid"><div><dt>Machine</dt><dd>{agent.machineName}</dd></div><div><dt>Repository</dt><dd>{agent.repository ?? "None (empty workspace)"}</dd></div>{agent.ref && <div><dt>Branch or ref</dt><dd>{agent.ref}</dd></div>}<div><dt>Harness</dt><dd>{({ omp: "oh-my-pi", codex: "Codex", claude: "Claude" })[agent.harness]}</dd></div><div><dt>Model</dt><dd>{agent.model ?? "Harness default"}</dd></div><div><dt>Reasoning</dt><dd>{agent.effort ?? "Harness default"}</dd></div><div><dt>Workspace</dt><dd>Isolated workspace. Stop and resume retain its files and history.</dd></div></dl></>;
 }
 export function MemberList({ state, openAgent }: { state: WorkspaceState; openAgent(id: string): void }) {
   return <><h2>Participants · {state.members.length}</h2>{state.members.map(identity => {

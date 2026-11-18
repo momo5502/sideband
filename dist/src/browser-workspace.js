@@ -569,7 +569,7 @@ export class BrowserWorkspace {
     async action(id, action, params = {}) {
         const result = await this.requireClient().request("control.action", { agentId: id, action, ...params });
         await this.refreshControl();
-        if (action === "dispose")
+        if (action === "dispose" || action === "archive")
             this.update({ view: { kind: "home" }, output: [], outputAgent: "" });
         return result;
     }

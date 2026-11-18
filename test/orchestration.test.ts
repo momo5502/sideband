@@ -223,10 +223,10 @@ const worker=new Worker(JSON.parse(data));await worker.start();console.log("read
     const internals = server as unknown as { members: Map<string, { socket?: NodeWebSocket }> };
     internals.members.get(identityId!)!.socket!.terminate();
     await until(async () => (await list()).agents[0]?.online === false);
-    const forgotten = await action("dispose") as { offline: boolean }; assert.equal(forgotten.offline, true); agentId = "";
-    await until(async () => !(await list()).agents.length);
+    const archived = await action("dispose") as { archived: boolean }; assert.equal(archived.archived, true); agentId = "";
+    await until(async () => (await list()).agents.every(agent => agent.archived));
     await until(() => { try { process.kill(processId, 0); return false; } catch { return true; } });
-    assert.equal((await list()).agents.length, 0, "forgotten runner shuts its harness down instead of re-registering");
+    assert.equal((await list()).agents.filter(agent => !agent.archived).length, 0, "archived runner shuts its harness down instead of re-registering");
     assert.ok((await stat(retained)).isFile(), "removing a runner does not delete its checkout");
   } finally {
     if (agentId) { await action("stop").catch(() => {}); await action("dispose").catch(() => {}); }

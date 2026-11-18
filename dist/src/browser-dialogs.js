@@ -154,7 +154,7 @@ export function Settings({ state, store, close }) {
 export function AgentActionDialog({ mode, agent, state, store, close }) {
     const [room, setRoom] = useState(agent.room), [busy, setBusy] = useState(false), [error, setError] = useState("");
     return _jsx(Modal, { id: "agent-action-dialog", returnFocus: 'button[aria-label="Agent actions"]', open: true, onOpenChange: open => { if (!open && !busy)
-            close(); }, title: mode === "room" ? "Change room" : `${agent.online ? "Remove" : "Forget"} ${agent.name}?`, description: mode === "room" ? "The agent leaves its current room and joins the one you choose." : agent.online ? "This stops the agent and removes it from the list. Its checkout and session files stay on the machine. You won’t be able to resume it from this panel afterward." : `This removes the offline entry. It may still be running on ${agent.machineName}; its runner will shut down when it reconnects to this server. Files stay on the machine.`, children: _jsxs("form", { id: "agent-room-form", onSubmit: event => {
+            close(); }, title: mode === "room" ? "Change room" : `${agent.persistent ? "Archive" : agent.online ? "Remove" : "Forget"} ${agent.name}?`, description: mode === "room" ? "The agent leaves its current room and joins the one you choose." : agent.persistent ? "This stops the agent and moves it to Archived. Its workspace and harness session are kept so you can resume it later, including after restarting the machine." : agent.online ? "This stops the agent and removes it from the list. Its checkout and session files stay on the machine. You won’t be able to resume it from this panel afterward." : `This removes the offline entry. It may still be running on ${agent.machineName}; its runner will shut down when it reconnects to this server. Files stay on the machine.`, children: _jsxs("form", { id: "agent-room-form", onSubmit: event => {
                 event.preventDefault();
                 if (busy)
                     return;
@@ -163,6 +163,8 @@ export function AgentActionDialog({ mode, agent, state, store, close }) {
                 void (async () => {
                     if (mode === "room")
                         await store.action(agent.id, "room", { room: room.trim() });
+                    else if (agent.persistent)
+                        await store.action(agent.id, "archive");
                     else {
                         if (agent.online && !["stopped", "failed"].includes(agent.state))
                             await store.action(agent.id, "stop");
@@ -170,7 +172,7 @@ export function AgentActionDialog({ mode, agent, state, store, close }) {
                     }
                     close();
                 })().catch(error => setError(error instanceof Error ? error.message : "Request failed.")).finally(() => setBusy(false));
-            }, children: [mode === "room" && _jsx(Field, { label: "Room", htmlFor: "agent-room", children: _jsx(RoomPicker, { id: "agent-room", rooms: allRooms(state), value: room, onChange: setRoom }) }), _jsx(ErrorMessage, { text: error }), _jsxs("div", { className: "form-actions", children: [_jsx(Button, { variant: "ghost", onClick: close, disabled: busy, children: "Cancel" }), _jsxs(Button, { id: "agent-room-apply", type: "submit", variant: mode === "remove" ? "danger" : "primary", disabled: busy, children: [busy && _jsx(Spinner, {}), mode === "room" ? "Save room" : agent.online ? "Remove agent" : "Forget agent"] })] })] }) });
+            }, children: [mode === "room" && _jsx(Field, { label: "Room", htmlFor: "agent-room", children: _jsx(RoomPicker, { id: "agent-room", rooms: allRooms(state), value: room, onChange: setRoom }) }), _jsx(ErrorMessage, { text: error }), _jsxs("div", { className: "form-actions", children: [_jsx(Button, { variant: "ghost", onClick: close, disabled: busy, children: "Cancel" }), _jsxs(Button, { id: "agent-room-apply", type: "submit", variant: mode === "remove" ? "danger" : "primary", disabled: busy, children: [busy && _jsx(Spinner, {}), mode === "room" ? "Save room" : agent.persistent ? "Archive agent" : agent.online ? "Remove agent" : "Forget agent"] })] })] }) });
 }
 export function Login({ store, state }) {
     const [key, setKey] = useState(0), saved = store.savedLogin(), busy = state.connection === "connecting";

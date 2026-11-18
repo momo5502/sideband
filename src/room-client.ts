@@ -29,8 +29,8 @@ export class RoomClient {
   private readonly seen = new Set<string>();
   private readonly endpoint: string;
   constructor(private readonly profile: ConnectionProfile, name?: string, private readonly options: { reconnectMs?: number; heartbeatTimeoutMs?: number; onError?: (error: Error) => void; proxyEnv?: NodeJS.ProcessEnv; keepAlive?: boolean;
-    retryInitial?: boolean; onConnection?: (change: ConnectionChange) => void } = {}) {
-    this.endpoint = serverUrl(profile.server); parsePassword(profile.password); this.keys = new AgentKeys(name);
+    retryInitial?: boolean; onConnection?: (change: ConnectionChange) => void; keys?: AgentKeys } = {}) {
+    this.endpoint = serverUrl(profile.server); parsePassword(profile.password); this.keys = options.keys ?? new AgentKeys(name);
   }
   get identity(): AgentIdentity { return this.keys.identity; }
   onMessage(listener: (message: SignedMessage) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }

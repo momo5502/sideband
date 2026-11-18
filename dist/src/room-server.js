@@ -6,6 +6,7 @@ import { createServer as createHttpServer } from "node:http";
 import { statusPage } from "./status-page.js";
 import { webPage } from "./web-page.js";
 import { browserScript } from "./browser-bundle.js";
+import { Registry } from "./persistence.js";
 import { OrchestrationServer } from "./orchestration-server.js";
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "./webhooks.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity } from "./server-identity.js";
@@ -43,9 +44,9 @@ export class RoomServer {
         }, 40);
         this.roomChangeTimer.unref();
     }
-    constructor(identity, options) {
+    constructor(identity, options, store) {
         this.options = options;
-        this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater);
+        this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater, store);
         this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
         this.secret = createHash("sha256").update(identity.secret).digest();
         this.webhooks = new Webhooks(this.secret);
@@ -85,7 +86,8 @@ export class RoomServer {
             throw new Error("Password rotation requires a credentials file.");
         const existing = options.credentialsFile && !options.rotatePassword ? await loadServerIdentity(options.credentialsFile) : undefined;
         const identity = existing ?? await createServerIdentity();
-        const server = new RoomServer(identity, options);
+        const store = options.databaseFile ? await Registry.open(options.databaseFile, "server") : undefined;
+        const server = new RoomServer(identity, options, store);
         try {
             for (const [listener, port] of [[server.http, options.port ?? 8765], [server.plainHttp, options.statusPort]])
                 if (listener) {
@@ -576,7 +578,7 @@ export class RoomServer {
         await this.browserHttps?.close();
         if (this.roomChangeTimer)
             clearTimeout(this.roomChangeTimer);
-        this.orchestration.close();
+        await this.orchestration.close();
         for (const member of this.members.values())
             if (member.expiry)
                 clearTimeout(member.expiry);

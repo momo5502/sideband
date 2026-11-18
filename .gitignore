@@ -19,3 +19,8 @@ server-credentials.json.*.tmp
 *.pfx
 *.log
 resources-do-not-commit/
+
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
