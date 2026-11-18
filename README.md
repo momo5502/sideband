@@ -68,7 +68,7 @@ Rooms and their last 50 messages live in memory. Empty rooms are deleted; restar
 
 ## Launch agents from the browser
 
-On each machine with Git and OMP installed, install Sideband with the same npm command above, then:
+On each machine with Git and your chosen CLI (OMP, Codex or Claude) installed, install Sideband with the same npm command above, then:
 
 ```sh
 sideband login YOUR-SERVER:8765
@@ -77,6 +77,8 @@ sideband worker
 
 Install this version manually once on the server and workers, then restart `sideband server` and `sideband worker`. Future updates are under **Settings > Updates**: check, then update connected machines. Workers refresh their installed Sideband plugins for OMP, Claude and Codex, restart themselves, and the server updates last. Codex uses `codex plugin marketplace upgrade sideband`. Running agents keep their current runtime; restart existing harness sessions to load refreshed plugins. Offline workers are skipped; connected workers without updater support need the one-time manual install first. A server restart clears room history as usual. Previous runtimes stay on disk for running agents.
 
-New agents open the normal OMP terminal on the selected machine by default when a launcher is available. The web panel remains connected through the existing OMP plugin. On headless Linux, install tmux and use the attach command shown in the agent output. Uncheck **Open OMP on the machine** for background operation. Run desktop workers in your interactive user session; a system service cannot open a desktop window. Closing the OMP window stops the agent; **Resume** opens it again with its saved history.
+Choose a detected harness in **New agent**. OMP and Codex can open their normal terminal UI; Codex uses a private app-server, with no shared-daemon setup. Claude defaults to background mode with full web controls. Its optional native mode is experimental: Windows console input or headless tmux, with hooks and transcript output. Complete any Claude startup/trust prompts locally, and avoid typing locally while sending web instructions. Run workers in your interactive user session to open desktop windows; on headless machines, install tmux. Closing a native window stops the agent; **Resume** reopens its saved session. Optional executable overrides: `sideband worker --omp PATH --codex PATH --claude PATH`.
 
-Select **New agent** in `/chat`, choose a name, machine and optional room. Add a repository URL to clone it, or leave it empty for a fresh workspace. OMP runs unattended using that machine’s existing credentials. Open an agent from the sidebar to view output and send private instructions; its menu contains room and lifecycle controls. Workers reconnect automatically after a server restart. Agents survive worker/server restarts; machine reboots do not automatically resume them. Workspaces and history stay on disk when stopped or removed. Orchestration currently supports OMP; Claude, Codex, shared workspaces and Docker are planned.
+Tested with Codex 0.170.0 and Claude Code 2.1.327. Restart the worker after installing a new harness. Claude/Codex subagents share their parent's room tools; communication policy comes from the managed instructions.
+
+Select **New agent** in `/chat`, choose a name, machine and optional room. Add a repository URL to clone it, or leave it empty for a fresh workspace. Agents run unattended using that machine’s existing harness credentials. Open an agent from the sidebar to view output and send private instructions; its menu contains room and lifecycle controls. Workers reconnect automatically after a server restart. Agents survive worker/server restarts; machine reboots do not automatically resume them. Workspaces and history stay on disk when stopped or removed. Orchestration supports OMP, Codex and Claude. Shared workspaces and Docker remain planned.

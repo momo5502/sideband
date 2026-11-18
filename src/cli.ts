@@ -13,12 +13,12 @@ async function main(): Promise<void> {
   // These are one-hop bootstrap markers, not settings for agents or their shell tools.
   delete process.env.SIDEBAND_SUPERVISED; delete process.env.SIDEBAND_RUNTIME_SELECTED;
   if (["server", "worker"].includes(command ?? "") && !supervised) { process.exitCode = await supervise(resolve(process.argv[1]!), process.argv.slice(2)); return; }
-  if (!["server", "worker", "mcp", "agent-runner", "terminal-agent", "--runtime-version"].includes(command ?? "") && !selected) {
+  if (!["server", "worker", "mcp", "managed-mcp", "managed-hook", "agent-runner", "terminal-agent", "--runtime-version"].includes(command ?? "") && !selected) {
     const code = await forwardRuntime(resolve(process.argv[1]!), process.argv.slice(2)); if (code !== undefined) { process.exitCode = code; return; }
   }
   if (command === "--version" || command === "version" || command === "--runtime-version") { const info = buildInfo(process.argv[1]!); console.log(`sideband ${info.version}${info.commit ? ` ${info.commit}` : ""}`); return; }
   if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
-    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host ADDRESS] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n    [--domain HOST] [--email ADDRESS] [--http-port 80] [--https-port 443] [--acme-staging]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
+    console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host ADDRESS] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n    [--domain HOST] [--email ADDRESS] [--http-port 80] [--https-port 443] [--acme-staging]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--codex PATH] [--claude PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials."); return;
   }
   if (!command || command === "chat" || command.startsWith("--")) {
     const { values } = parseArgs({ args: process.argv.slice(command === "chat" ? 3 : 2),
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     await (await import("./room-mcp.js")).runMcp(values.harness); return;
   }
   if (command === "worker") {
-    const { values } = parseArgs({ args: process.argv.slice(3), options: { profile: { type: "string" }, name: { type: "string" }, omp: { type: "string" }, directory: { type: "string" } } });
+    const { values } = parseArgs({ args: process.argv.slice(3), options: { profile: { type: "string" }, name: { type: "string" }, omp: { type: "string" }, codex: { type: "string" }, claude: { type: "string" }, directory: { type: "string" } } });
     const { name: profileName, profile } = await new RoomProfiles().resolve(values.profile);
     const { Worker } = await import("./worker.js");
     let closing = false;
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
     await updater?.restore();
     const build = updater?.build ?? buildInfo(process.argv[1]!);
     console.log(`Sideband worker v${build.version} (${build.commit?.slice(0, 8) ?? "bootstrap"}) starting...`);
-    const worker = new Worker({ profile, updater, entry: resolve(process.argv[1]!), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}),
+    const worker = new Worker({ profile, updater, entry: resolve(process.argv[1]!), name: values.name, root: values.directory, ...(values.omp ? { omp: { command: values.omp } } : {}), ...(values.codex ? { codex: { command: values.codex } } : {}), ...(values.claude ? { claude: { command: values.claude } } : {}),
       onError: error => console.error(`Worker connection: ${error.message}`),
       onConnection: change => {
         if (change.state === "on") { console.error("Worker connected and registered."); }
@@ -94,11 +94,13 @@ async function main(): Promise<void> {
         }
       } });
     await worker.start(); process.send?.({ type: "sideband.ready" });
-    console.log(`Sideband worker '${worker.machine.name}' started. Open /chat on your server and select New agent to launch OMP.\nAgent runners keep running when this worker stops. Stop agents from the web panel.`);
+    console.log(`Sideband worker '${worker.machine.name}' started. Open /chat on your server and select New agent to launch a harness.\nAgent runners keep running when this worker stops. Stop agents from the web panel.`);
     process.on("message", (message: any) => { if (message?.type === "sideband.shutdown") void close(); });
     process.once("disconnect", () => { void close(); });
     process.once("SIGINT", () => { void close(); }); process.once("SIGTERM", () => { void close(); }); return;
   }
+  if (command === "managed-hook") { if (process.argv.length !== 4) throw new Error("Invalid managed hook launch."); await (await import("./managed-room-tools.js")).runManagedHook(process.argv[3]!); return; }
+  if (command === "managed-mcp") { if (process.argv.length !== 4) throw new Error("Invalid managed MCP launch."); await (await import("./managed-room-tools.js")).runManagedMcp(process.argv[3]!); return; }
   if (command === "agent-runner") { await (await import("./agent-runner.js")).runAgentRunner(); return; }
   if (command === "terminal-agent") { if (process.argv.length !== 4) throw new Error("Invalid private terminal launch."); await (await import("./managed-terminal.js")).runTerminalAgent(process.argv[3]!); return; }
   if (command === "login") {

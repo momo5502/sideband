@@ -3,7 +3,8 @@ import type { BuildInfo, LocalUpdate, FleetUpdates } from "./update-types.js";
 
 export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
-export type LaunchSpec = { name: string; harness: "omp"; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
+export type HarnessName = "omp" | "codex" | "claude";
+export type LaunchSpec = { name: string; harness: HarnessName; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
 export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
@@ -13,7 +14,7 @@ export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; ser
 export function launchSpec(input: unknown): LaunchSpec {
   const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
   const name = agentName(value.name); if (!name) throw new Error("Choose an agent name.");
-  if (value.harness !== "omp") throw new Error("This milestone supports OMP; Claude and Codex adapters follow.");
+  if (!["omp", "codex", "claude"].includes(value.harness as string)) throw new Error("Choose OMP, Codex or Claude.");
   const repository = value.repository === undefined || value.repository === "" ? undefined : text(value.repository, "repository URL", 2048).trim() || undefined;
   // Only remote Git URLs, never a local path, option, helper protocol or shell command.
   const ssh = !!repository && /^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+:[^\s]+$/.test(repository);
@@ -24,7 +25,7 @@ export function launchSpec(input: unknown): LaunchSpec {
     if (url.protocol === "https:" && url.username) remote = false;
   } catch { /* Invalid URL. */ }
   if (repository && (!remote || /[\s\x00-\x1f]/.test(repository))) throw new Error("Use an HTTPS or SSH Git repository URL, without embedded credentials.");
-  const result: LaunchSpec = { name, harness: "omp", ...(repository ? { repository } : {}) };
+  const result: LaunchSpec = { name, harness: value.harness as HarnessName, ...(repository ? { repository } : {}) };
   if (value.terminal !== undefined) { if (typeof value.terminal !== "boolean") throw new Error("Invalid terminal mode."); result.terminal = value.terminal; }
   for (const key of ["ref", "model", "effort", "room", "prompt"] as const) {
     if (value[key] === undefined || value[key] === "") continue;

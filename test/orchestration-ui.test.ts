@@ -54,7 +54,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} works
     page = await browserPage(server, { mobile }); const p = page; await p.login(); await p.view(room.id, room.name); await p.navigation();
     p.click("#new-agent"); await until(() => !!p.doc.querySelector("#new-agent-dialog"));
     assert.equal(p.get<HTMLSelectElement>("#launch-room").value, "orchestrator"); assert.equal(p.get<HTMLSelectElement>("#agent-machine").value, machineId);
-    assert.equal(p.doc.querySelectorAll("#agent-harness [role=radio]").length, 3); assert.equal(p.doc.querySelectorAll("#agent-harness [role=radio]:disabled").length, 2);
+    assert.equal(p.doc.querySelectorAll("#agent-harness [role=radio]").length, 3); assert.equal(p.doc.querySelectorAll("#agent-harness [role=radio]:disabled").length, 0);
     const options = [...p.get<HTMLSelectElement>("#agent-machine").options]; assert.ok(options.find(option => option.textContent?.includes("offline-machine"))?.disabled); assert.ok(options.find(option => option.textContent?.includes("OMP not installed"))?.disabled);
     assert.equal(p.get<HTMLDetailsElement>(".advanced-section").open, false);
     p.fill("#agent-repository", "https://example.org/_tools.git"); await until(() => p.get<HTMLInputElement>("#agent-name").value === "tools");

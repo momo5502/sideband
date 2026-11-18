@@ -7,6 +7,9 @@ import { RoomError } from "./room-protocol.js";
 import { ManagedOmp } from "./managed-omp.js";
 import { ManagedTerminal } from "./managed-terminal.js";
 import { OutputBuffer, launchSpec } from "./orchestration-protocol.js";
+import { ManagedCodex } from "./managed-codex.js";
+import { ManagedClaudeNative } from "./managed-claude-native.js";
+import { ManagedClaude } from "./managed-claude.js";
 import { terminateTree } from "./process-tree.js";
 const errorText = (error) => (error instanceof Error ? error.message : "Operation failed.").slice(0, 2048);
 /** Independent of the worker: owns the harness, room identity, and bounded output. */
@@ -211,8 +214,14 @@ export class AgentRunner {
             },
             tool: (name, args) => this.tool(name, args),
         };
-        const driver = this.agent.terminal ? new ManagedTerminal(this.config.omp, this.workspace, join(this.directory, "sessions"), host, this.config.entry ?? resolve(process.argv[1]))
-            : new ManagedOmp(this.config.omp, this.workspace, join(this.directory, "sessions"), host);
+        const entry = this.config.entry ?? resolve(process.argv[1]);
+        const sessions = join(this.directory, "sessions");
+        const driver = this.agent.harness === "codex"
+            ? new ManagedCodex(this.config.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, this.workspace, sessions, host, entry, this.agent.terminal)
+            : this.agent.harness === "claude"
+                ? this.agent.terminal ? new ManagedClaudeNative(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry) : new ManagedClaude(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry)
+                : this.agent.terminal ? new ManagedTerminal(this.config.omp, this.workspace, sessions, host, entry)
+                    : new ManagedOmp(this.config.omp, this.workspace, sessions, host);
         this.driver = driver;
         try {
             await driver.start({ model: this.agent.model, effort: this.agent.effort, resume: this.sessionFile });
@@ -224,7 +233,7 @@ export class AgentRunner {
             throw error;
         }
         this.sessionFile = driver.sessionFile;
-        if (!this.closed && !this.stopRequested)
+        if (!this.closed && !this.stopRequested && this.agent.state === "starting")
             this.state("idle");
     }
     async changeRoom(room) {

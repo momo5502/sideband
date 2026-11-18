@@ -12,7 +12,7 @@ import type { Executable } from "./managed-omp.js";
 import { terminalLauncher } from "./terminal-launch.js";
 import type { RuntimeUpdater } from "./updater.js";
 
-export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable;
+export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable; codex?: Executable; claude?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
 export class Worker {
   readonly client: RoomClient;
@@ -28,10 +28,17 @@ export class Worker {
     if (options.updater) { this.machine.build = options.updater.build; this.machine.updater = true; this.machine.update = options.updater.state; }
     this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
     this.client.onConnected(async () => {
-      try { await this.client.request("control.worker", { machine: this.machine }); }
-      catch (error) {
+      let machine = this.machine;
+      try { await this.client.request("control.worker", { machine }); }
+      catch (original) {
+        let error = original;
+        if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
+          machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name === "omp") };
+          try { await this.client.request("control.worker", { machine }); options.onError?.(new Error("This server needs an update to launch Codex and Claude. Worker update metadata remains available.")); return; }
+          catch (fallback) { error = fallback; }
+        }
         if (!(error instanceof RoomError) || error.code !== "INVALID_ARGUMENT" || !this.machine.terminal) throw error;
-        const { build: _build, updater: _updater, update: _update, ...terminalKnown } = this.machine;
+        const { build: _build, updater: _updater, update: _update, ...terminalKnown } = machine;
         try { if (!options.updater) throw error; await this.client.request("control.worker", { machine: terminalKnown }); }
         catch (fallback) {
           if (!(fallback instanceof RoomError) || fallback.code !== "INVALID_ARGUMENT") throw fallback;
@@ -47,9 +54,12 @@ export class Worker {
     });
   }
   async start(): Promise<void> {
-    const executable = this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" };
-    const probe = crossSpawn.sync(executable.command, [...(executable.args ?? []), "--version"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
-    this.machine.harnesses = probe.status === 0 ? ["omp"] : [];
+    this.machine.harnesses = [];
+    for (const name of ["omp", "codex", "claude"] as const) {
+      const executable = this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" };
+      const probe = crossSpawn.sync(executable.command, [...(executable.args ?? []), "--version"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+      if (probe.status === 0) this.machine.harnesses.push(name);
+    }
     this.machine.terminal = terminalLauncher()?.kind ?? "none";
     await this.client.connect();
   }
@@ -67,7 +77,7 @@ export class Worker {
       let launched = this.launches.get(id);
       if (!launched) {
         const config: RunnerConfig = { profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec,
-          omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" }, entry: this.options.entry };
+          omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" }, codex: this.options.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, claude: this.options.claude ?? { command: process.env.CLAUDE_BINARY ?? "claude" }, entry: this.options.entry };
         launched = this.spawnRunner(config); this.launches.set(id, launched);
         if (this.launches.size > 1000) this.launches.delete(this.launches.keys().next().value!);
       }

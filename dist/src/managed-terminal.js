@@ -255,10 +255,11 @@ export async function runTerminalAgent(path) {
     } };
     await new Promise((resolve, reject) => {
         socket.once("error", reject);
-        socket.once("connect", () => writeLocal(socket, { type: "hello", role: "owner", token: bootstrap.token }));
+        socket.once("connect", () => writeLocal(socket, { type: "hello", role: "owner", token: bootstrap.token, pid: process.pid }));
         readLocal(socket, packet => {
             if (packet.type === "start" && !child) {
                 child = spawn(packet.executable, packet.args, { cwd: packet.cwd, env: packet.env, stdio: "inherit", windowsHide: false });
+                child.once("spawn", () => writeLocal(socket, { type: "spawned" }));
                 child.on("error", reject);
                 child.on("exit", code => { writeLocal(socket, { type: "exit", code }); socket.end(); process.exitCode = code ?? 0; resolve(); });
             }

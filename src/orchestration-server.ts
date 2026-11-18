@@ -67,7 +67,7 @@ export class OrchestrationServer {
         if (machine.terminal !== undefined && !["window", "tmux", "none"].includes(String(machine.terminal))) throw new Error("Invalid terminal capability.");
         const id = uuid(machine.id);
         if (existing && (existing.kind !== kind || existing.id !== id)) throw new Error("Connection already registered.");
-        if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => h !== "omp")) throw new Error("Invalid harness list.");
+        if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => !["omp", "codex", "claude"].includes(String(h)))) throw new Error("Invalid harness list.");
         if (machine.updater !== undefined && typeof machine.updater !== "boolean") throw new Error("Invalid updater capability.");
         const metadata = { ...(machine.build !== undefined ? { build: parseBuild(machine.build) } : {}),
           ...(machine.update !== undefined ? { update: parseUpdate(machine.update) } : {}), ...(machine.updater !== undefined ? { updater: machine.updater } : {}) };
@@ -143,6 +143,7 @@ export class OrchestrationServer {
       const machine = this.machines.get(uuid(machineId)); if (!machine?.online) throw new Error("Select an online machine.");
       const spec = launchSpec(specInput); if (!machine.harnesses.includes(spec.harness)) throw new Error("This harness is not available on that machine.");
       if (spec.terminal && (!machine.terminal || machine.terminal === "none")) throw new Error("This worker cannot open a terminal. Update it, add a terminal launcher, or choose Background mode.");
+      if (spec.terminal && spec.harness === "claude" && machine.platform !== "win32" && machine.terminal !== "tmux") throw new Error("Native Claude input requires Windows or tmux. Choose Background mode.");
       const id = randomUUID();
       await this.dispatch(this.workers.get(machine.id), "launch", { id, spec });
       return { id };

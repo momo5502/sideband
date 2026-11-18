@@ -9,6 +9,7 @@ import { RoomProfiles } from "../src/room-profiles.js";
 import { Worker } from "../src/worker.js";
 import { generate } from "selfsigned";
 import { RoomError } from "../src/room-protocol.js";
+import { RuntimeUpdater } from "../src/updater.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, timeout = 15000) {
@@ -23,6 +24,23 @@ function worker(directory: string) {
   const exited = new Promise<number | null>(resolve => child.once("exit", resolve));
   return { child, exited, get log() { return log; } };
 }
+
+test("new workers retain updater metadata while an older server accepts only OMP", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-worker-harnesses-"));
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0 }); const registrations: any[] = [];
+  const updater = new RuntimeUpdater("worker", resolve("dist/src/cli.js"), directory, async () => {}); updater.build.commit = "a".repeat(40);
+  const fixture = { command: process.execPath };
+  const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, entry: resolve("dist/src/cli.js"), root: directory, omp: fixture, codex: fixture, claude: fixture, updater });
+  const request = worker.client.request.bind(worker.client);
+  worker.client.request = async (method, params) => {
+    if (method === "control.worker") { registrations.push(params!.machine); if ((params!.machine as any).harnesses.some((name: string) => name !== "omp")) throw new RoomError("CONTROL", "Invalid harness list."); }
+    return request(method, params) as never;
+  };
+  try {
+    await worker.start(); assert.deepEqual(worker.machine.harnesses, ["omp", "codex", "claude"]);
+    assert.deepEqual(registrations.at(-1).harnesses, ["omp"]); assert.equal(registrations.at(-1).build.commit, updater.build.commit); assert.equal(registrations.at(-1).updater, true);
+  } finally { await worker.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-harnesses-"))); await rm(directory, { recursive: true, force: true }); }
+});
 async function stop(child: ChildProcess) { if (child.exitCode === null && child.signalCode === null) { child.kill(); await new Promise<void>(resolve => child.once("exit", () => resolve())); } }
 
 test("machine identity survives a server address/port migration", async () => {
