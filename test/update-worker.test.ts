@@ -23,7 +23,7 @@ if(command==='npm') {
  if(!args.includes('--ignore-scripts')||!args.includes('git+https://github.com/momo5502/sideband.git#${target}'))throw Error('unexpected install');
  await mkdir(join(root,'dist','src'),{recursive:true});await writeFile(join(root,'package.json'),JSON.stringify({name:'sideband',version:'99.0.0'}));
  await copyFile(${JSON.stringify(resolve("dist/sideband.cjs"))},join(root,'dist','src','cli.js'));
-} else { if(args.join(' ')!=='plugin list --json')throw Error('unexpected harness mutation');console.log(command==='omp'?'{"npm":[]}':command==='codex'?'{"installed":[]}':'[]'); }
+} else { if(command==='codex'&&args.shift()!=='--no-daemon')throw Error('Codex must not use the shared daemon');if(args.join(' ')!=='plugin list --json')throw Error('unexpected harness mutation');console.log(command==='omp'?'{"npm":[]}':command==='codex'?'{"installed":[]}':'[]'); }
 `);
   for (const command of ["npm", "omp", "claude", "codex"]) {
     await writeFile(join(bin, command + (process.platform === "win32" ? ".cmd" : "")), process.platform === "win32" ? `@"${process.execPath}" "${commands}" ${command} %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${commands}" ${command} "$@"\n`, { mode: 0o700 });

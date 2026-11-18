@@ -24,7 +24,7 @@ const fixture = `import {createInterface} from 'node:readline';import{appendFile
 const harness=process.argv[2],args=process.argv.slice(3),id='11111111-1111-4111-8111-111111111111';let active=false,turn=0;
 const send=x=>console.log(JSON.stringify(x));const notify=(method,params={})=>send({method,params:{threadId:id,...params}});
 if(args.includes('--version')){console.log('fixture '+harness);process.exit(0);}
-createInterface({input:process.stdin}).on('line',async line=>{
+async function handle(line){
 const x=JSON.parse(line);await appendFile(join(process.cwd(),'requests.jsonl'),line+'\\n');
 if(harness==='codex'){
  const reply=result=>send({id:x.id,result});
@@ -60,7 +60,8 @@ if(harness==='codex'){
   send({type:'user',message:{content:[{type:'tool_result',tool_use_id:'tool',content:'tool result'}]}});
   await writeFile(join(process.cwd(),'saved-session'),x.session_id);send({type:'result',is_error:false});return;
  }
-}});
+}}
+let queue=Promise.resolve();createInterface({input:process.stdin}).on('line',line=>{queue=queue.then(()=>handle(line)).catch(error=>{console.error(error);process.exit(1);});});
 `;
 
 for (const name of ["codex", "claude"] as const) test(`${name} driver keeps one session, streams output, steers, interrupts and resumes`, { timeout: 20000 }, async () => {

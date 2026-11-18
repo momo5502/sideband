@@ -28,8 +28,9 @@ test("plugin refresh uses official installed sources, exact Codex marketplace co
   const temp = await temporary(), path = join(temp.directory, "node_modules", "sideband");
   await mkdir(path, { recursive: true }); await writeFile(join(temp.directory, "package.json"), JSON.stringify({ dependencies: { sideband: "github:momo5502/sideband#main" } }));
   const calls: string[] = [], counts = new Map<string, number>();
-  const run: RunUpdateCommand = async (command, args) => {
+  const run: RunUpdateCommand = async (command, args, options) => {
     calls.push(`${command} ${args.join(" ")}`);
+    if (command === "codex") { assert.equal(args[0], "--no-daemon"); assert.equal(options?.killTree, false); args = args.slice(1); }
     if (args.join(" ") === "plugin marketplace list --json") return JSON.stringify([{ name: "sideband", source: "github", repo: "momo5502/sideband" }]);
     if (args.join(" ") === "plugin list --json") {
       const count = counts.get(command) ?? 0; counts.set(command, count + 1); const version = count ? "99.0.0" : "0.20.0";
@@ -42,8 +43,40 @@ test("plugin refresh uses official installed sources, exact Codex marketplace co
     assert.ok(results.every(result => result.state === "updated" && result.from === "0.20.0" && result.to === "99.0.0" && result.restartRequired));
     assert.ok(calls.includes("omp plugin upgrade sideband"));
     assert.ok(calls.includes("claude plugin update sideband@sideband --json -y --scope user"));
-    assert.ok(calls.includes("codex plugin marketplace upgrade sideband"));
+    assert.ok(calls.includes("codex --no-daemon plugin marketplace upgrade sideband"));
     assert.ok(!calls.some(call => /plugin (add|install|remove)/.test(call)));
+  } finally { await temp.close(); }
+});
+
+test("plugin refresh failures identify the Codex operation that timed out", async () => {
+  const results = await updateHarnessPlugins(async (command, args) => {
+    if (command !== "codex") return "[]";
+    if (args.includes("upgrade")) throw new Error("codex timed out.");
+    return JSON.stringify({ installed: [{ pluginId: "sideband@sideband", version: "0.22.0", marketplaceSource: { sourceType: "git", source: UPDATE_REPOSITORY } }] });
+  });
+  assert.equal(results[2]!.state, "failed"); assert.equal(results[2]!.message, "Refresh marketplace: codex timed out.");
+});
+
+test("update commands settle after parent exit without waiting for or killing inherited-pipe descendants", { timeout: 20000 }, async () => {
+  const temp = await temporary();
+  try {
+    for (const mode of [0, 7, "timeout"] as const) {
+      const marker = join(temp.directory, `descendant-${mode}.pid`);
+      const parent = `import{spawn}from'node:child_process';import{writeFileSync}from'node:fs';
+const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore',1,2],windowsHide:true,detached:process.platform==='win32'});
+writeFileSync(process.argv[1],String(child.pid));child.unref();
+${mode === "timeout" ? "setInterval(()=>{},1000);" : `process.stdout.write('parent-finished',()=>process.exit(${mode}));`}`;
+      try {
+        const result = runUpdateCommand(process.execPath, ["--input-type=module", "-e", parent, marker], { timeout: 4000, killTree: false });
+        if (mode === 0) assert.equal(await result, "parent-finished");
+        else await assert.rejects(result, mode === "timeout" ? /timed out/ : /exited \(7\): parent-finished/);
+        const pid = Number(await readFile(marker, "utf8"));
+        assert.doesNotThrow(() => process.kill(pid, 0), "the updater must leave the surviving descendant running");
+      } finally {
+        const pid = Number(await readFile(marker, "utf8").catch(() => "0"));
+        if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid) try { process.kill(pid, "SIGKILL"); } catch { /* Own fixture already exited. */ }
+      }
+    }
   } finally { await temp.close(); }
 });
 

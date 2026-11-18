@@ -27,8 +27,10 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
     const results = [];
     for (const harness of ["omp", "claude", "codex"]) {
         let from;
+        let step = "List installed plugins";
+        const invoke = (command, args, options) => run(command, command === "codex" ? ["--no-daemon", ...args] : args, { ...options, ...(command === "codex" ? { killTree: false } : {}) });
         try {
-            const listing = JSON.parse(await run(harness, ["plugin", "list", "--json"], { timeout: 30_000 }));
+            const listing = JSON.parse(await invoke(harness, ["plugin", "list", "--json"], { timeout: 30_000 }));
             const installed = harness === "omp" ? listing.npm?.find((plugin) => plugin.name === "sideband")
                 : harness === "claude" ? (Array.isArray(listing) ? listing : listing.installed ?? []).find((plugin) => plugin.id?.toLowerCase() === "sideband@sideband")
                     : listing.installed?.find((plugin) => plugin.pluginId?.toLowerCase() === "sideband@sideband");
@@ -44,7 +46,8 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
             else if (harness === "codex")
                 official = installed.marketplaceSource?.sourceType === "git" && officialSidebandSource(installed.marketplaceSource.source);
             else {
-                const raw = JSON.parse(await run("claude", ["plugin", "marketplace", "list", "--json"], { timeout: 30_000 }));
+                step = "Inspect marketplace source";
+                const raw = JSON.parse(await invoke("claude", ["plugin", "marketplace", "list", "--json"], { timeout: 30_000 }));
                 const marketplace = (Array.isArray(raw) ? raw : raw.marketplaces ?? []).find((item) => item.name?.toLowerCase() === "sideband");
                 const source = marketplace?.source;
                 official = officialSidebandSource(marketplace?.repo ?? marketplace?.url ?? (typeof source === "string" ? source : source?.repo ?? source?.url));
@@ -54,16 +57,22 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
                 progress([...results]);
                 continue;
             }
+            step = "Refresh Sideband plugin";
             if (harness === "omp")
-                await run("omp", ["plugin", "upgrade", "sideband"]);
+                await invoke("omp", ["plugin", "upgrade", "sideband"]);
             else if (harness === "claude") {
-                await run("claude", ["plugin", "marketplace", "update", "sideband"]);
+                step = "Refresh marketplace";
+                await invoke("claude", ["plugin", "marketplace", "update", "sideband"]);
                 const scope = installed.scope;
-                await run("claude", ["plugin", "update", "sideband@sideband", "--json", "-y", ...(["user", "project", "local"].includes(scope) ? ["--scope", scope] : [])]);
+                step = "Refresh Sideband plugin";
+                await invoke("claude", ["plugin", "update", "sideband@sideband", "--json", "-y", ...(["user", "project", "local"].includes(scope) ? ["--scope", scope] : [])]);
             }
-            else
-                await run("codex", ["plugin", "marketplace", "upgrade", "sideband"]);
-            const refreshed = JSON.parse(await run(harness, ["plugin", "list", "--json"], { timeout: 30_000 }));
+            else {
+                step = "Refresh marketplace";
+                await invoke("codex", ["plugin", "marketplace", "upgrade", "sideband"]);
+            }
+            step = "Verify refreshed plugin";
+            const refreshed = JSON.parse(await invoke(harness, ["plugin", "list", "--json"], { timeout: 30_000 }));
             const updated = harness === "omp" ? refreshed.npm?.find((item) => item.name === "sideband")
                 : harness === "claude" ? (Array.isArray(refreshed) ? refreshed : refreshed.installed ?? []).find((item) => item.id?.toLowerCase() === "sideband@sideband")
                     : refreshed.installed?.find((item) => item.pluginId?.toLowerCase() === "sideband@sideband");
@@ -72,7 +81,7 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
             results.push({ harness, from, to: updated.version, state: "updated", message: from === updated.version ? "Version unchanged after refresh. Restart running harness sessions to load refreshed files." : "Updated. Running harness sessions load the new plugin after restart.", restartRequired: true });
         }
         catch (error) {
-            results.push({ harness, from, state: missing(error) ? "skipped" : "failed", message: missing(error) ? "Harness CLI is not installed." : failure(error) });
+            results.push({ harness, from, state: missing(error) ? "skipped" : "failed", message: missing(error) ? "Harness CLI is not installed." : `${step}: ${failure(error)}` });
         }
         progress([...results]);
     }

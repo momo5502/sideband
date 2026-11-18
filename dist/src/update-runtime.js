@@ -66,11 +66,19 @@ export const runUpdateCommand = (command, args, options = {}) => new Promise((re
     }
     const child = spawn(command, args, { cwd: options.cwd, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes", npm_config_yes: "true" } });
-    let stdout = "", stderr = "", settled = false;
+    let stdout = "", stderr = "", settled = false, exited = false;
+    let drain;
     const cancelled = () => fail(new Error("Update cancelled."));
-    const clean = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", cancelled); };
+    const clean = () => { clearTimeout(timer); if (drain)
+        clearTimeout(drain); options.signal?.removeEventListener("abort", cancelled); };
+    const detach = () => { child.stdout?.destroy(); child.stderr?.destroy(); };
     const fail = (error) => { if (settled)
-        return; settled = true; clean(); terminateTree(child); reject(error); };
+        return; settled = true; clean(); if (!exited && child.exitCode === null && child.signalCode === null) {
+        if (options.killTree === false)
+            child.kill("SIGKILL");
+        else
+            terminateTree(child);
+    } detach(); reject(error); };
     const timer = setTimeout(() => fail(new Error(`${command} timed out.`)), options.timeout ?? 5 * 60_000);
     options.signal?.addEventListener("abort", cancelled, { once: true });
     child.stdout.setEncoding("utf8");
@@ -80,13 +88,24 @@ export const runUpdateCommand = (command, args, options = {}) => new Promise((re
         fail(new Error(`${command} produced too much output.`)); });
     child.stderr.on("data", value => { if (!settled)
         stderr = (stderr + value).slice(-16000); });
-    child.once("error", fail);
-    child.once("close", code => {
+    const finish = (code) => {
         if (settled)
             return;
         settled = true;
         clean();
+        detach();
         code === 0 ? resolvePromise(stdout) : reject(new Error(`${command} exited (${code}): ${redactUpdateOutput(stderr || stdout)}`));
+    };
+    child.once("error", fail);
+    child.once("close", finish);
+    child.once("exit", code => {
+        exited = true;
+        if (settled)
+            return;
+        clearTimeout(timer);
+        // A background daemon may inherit these pipes. Bound the final output drain rather
+        // than timing out a CLI that already exited, or killing its surviving descendants.
+        drain = setTimeout(() => finish(code), 1000);
     });
 });
 async function latestManifest(commit) {
