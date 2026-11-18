@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../dist/src/timeouts.js";
 // Optional Windows integration smoke: opens only an owned fake TUI, never another terminal.
 import { mkdtemp, writeFile, readFile, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +18,7 @@ const view = new NativeView(directory, resolve("dist/src/cli.js"), { event() {
 }, tool: async () => ({}) }, (error) => closed(error));
 try {
   await view.start({ command: process.execPath }, [script], directory);
-  const end = Date.now() + 8e3;
+  const end = Date.now() + STARTUP_TIMEOUT_MS;
   while (true) {
     try {
       await access(ready);
@@ -30,7 +31,7 @@ try {
   const text = "Hello\nWorld: " + String.fromCodePoint(228, 128512) + " $() `literal`";
   await view.input("", true);
   await view.input(text);
-  await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(Error("input not received")), 5e3))]);
+  await Promise.race([exited, new Promise((_, reject) => { const timer = setTimeout(() => reject(Error("input not received")), REQUEST_TIMEOUT_MS); timer.unref(); })]);
   const actual = JSON.parse(await readFile(result, "utf8"));
   assert.equal(actual, "\x1B\x1B[200~" + text + "\x1B[201~\r");
   console.log("Real Windows console: owned terminal, Escape, bracketed multiline paste, Unicode and Enter passed.");

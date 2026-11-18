@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -11,7 +12,7 @@ const target = "c".repeat(40), other = "d".repeat(40);
 async function run(script: string, directory: string) {
   const child = spawn(process.execPath, [script], { env: { ...process.env, SIDEBAND_STATE_DIR: directory }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let output = ""; child.stdout.on("data", data => { output += data; }); child.stderr.on("data", data => { output += data; });
-  const timer = setTimeout(() => child.kill(), 15000);
+  const timer = setTimeout(() => child.kill(), testTimeout(15000));
   try { const code = await new Promise<number | null>((resolvePromise, reject) => { child.once("error", reject); child.once("exit", resolvePromise); }); return { code, output }; }
   finally { clearTimeout(timer); }
 }

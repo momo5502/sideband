@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -10,7 +11,7 @@ import { RuntimeUpdater } from "../src/updater.js";
 import { Worker } from "../src/worker.js";
 import { browserPage, until } from "./browser-fixture.js";
 
-test("authenticated web Updates checks, starts and displays per-worker plugin results; native peers cannot trigger updates", { timeout: 20000 }, async () => {
+test("authenticated web Updates checks, starts and displays per-worker plugin results; native peers cannot trigger updates", { timeout: testTimeout(20000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-update-ui-")), target = "e".repeat(40), entry = resolve("dist/src/cli.js");
   const order: string[] = [];
   const serverUpdater = new RuntimeUpdater("server", entry, directory, async () => { order.push("server"); }, undefined, async () => ({ entry, build: { version: "99.0.0", commit: target } }));
@@ -61,7 +62,7 @@ test("browser update controls reject extra parameters and show one-time bootstra
   } finally { await page.close(); await server.close(); }
 });
 
-test("browser automatically refreshes a changed server build after editable dialogs close", { timeout: 20000 }, async () => {
+test("browser automatically refreshes a changed server build after editable dialogs close", { timeout: testTimeout(20000) }, async () => {
   const updater = new RuntimeUpdater("server", resolve("dist/src/cli.js"), resolve(".cache/reload-ui-fixture"), async () => {});
   updater.build.commit = "a".repeat(40);
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, updater });

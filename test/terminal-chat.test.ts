@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
@@ -144,7 +145,7 @@ test("terminal join history and live overlap is shown once, without replaying hi
   } finally { await human.close(); await agent.close(); await server.close(); }
 });
 
-test("packaged CLI with no arguments selects a saved login, joins, receives, sends and quits", { timeout: 15_000 }, async () => {
+test("packaged CLI with no arguments selects a saved login, joins, receives, sends and quits", { timeout: testTimeout(15_000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-chat-cli-"));
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0 });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
@@ -163,7 +164,7 @@ test("packaged CLI with no arguments selects a saved login, joins, receives, sen
     let output = ""; let errors = "";
     child.stdout!.on("data", chunk => { output += chunk; }); child.stderr!.on("data", chunk => { errors += chunk; });
     const untilOutput = async (text: string) => {
-      const deadline = Date.now() + 5000;
+      const deadline = Date.now() + testTimeout(5000);
       while (!stripVTControlCharacters(output).includes(text)) {
         if (Date.now() > deadline || child!.exitCode !== null) throw new Error(`Missing CLI output: ${text}; stderr: ${errors}`);
         await new Promise(resolve => setTimeout(resolve, 10));

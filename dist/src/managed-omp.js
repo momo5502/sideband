@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS } from "./timeouts.js";
 import spawn from "cross-spawn";
 import { StringDecoder } from "node:string_decoder";
 import { terminateTree } from "./process-tree.js";
@@ -70,7 +71,7 @@ export class ManagedOmp {
             if (!this.stopping)
                 this.host.exit(this.failed);
         });
-        const timer = setTimeout(() => this.readyReject?.(new Error("OMP startup timed out.")), 60_000);
+        const timer = setTimeout(() => this.readyReject?.(new Error("OMP startup timed out.")), STARTUP_TIMEOUT_MS);
         try {
             await ready;
             await this.request("set_host_tools", { tools: managedTools });
@@ -135,7 +136,7 @@ export class ManagedOmp {
     request(type, params = {}) {
         const id = `sb-${++this.nextId}`;
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`OMP ${type} timed out; acceptance is unknown.`)); }, 25_000);
+            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`OMP ${type} timed out; acceptance is unknown.`)); }, REQUEST_TIMEOUT_MS);
             this.pending.set(id, { resolve, reject, timer });
             try {
                 this.send({ id, type, ...params });
@@ -159,7 +160,7 @@ export class ManagedOmp {
         if (child.exitCode !== null || child.signalCode !== null)
             return;
         await new Promise(resolve => {
-            const timer = setTimeout(() => terminateTree(child), 5000);
+            const timer = setTimeout(() => terminateTree(child), SHUTDOWN_TIMEOUT_MS);
             child.once("close", () => { clearTimeout(timer); resolve(); });
             child.stdin.end();
         });

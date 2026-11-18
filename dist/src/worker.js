@@ -1,8 +1,9 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { createHash } from "node:crypto";
 import { hostname, homedir, platform } from "node:os";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
-import crossSpawn from "cross-spawn";
+import { runUpdateCommand } from "./update-runtime.js";
 import { RoomClient } from "./room-client.js";
 import { launchSpec } from "./orchestration-protocol.js";
 import { stateDirectory } from "./room-profiles.js";
@@ -71,13 +72,17 @@ export class Worker {
         });
     }
     async start() {
-        this.machine.harnesses = [];
-        for (const name of ["omp", "codex", "claude"]) {
+        const detected = await Promise.all(["omp", "codex", "claude"].map(async (name) => {
             const executable = this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" };
-            const probe = crossSpawn.sync(executable.command, [...(executable.args ?? []), "--version"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
-            if (probe.status === 0)
-                this.machine.harnesses.push(name);
-        }
+            try {
+                await runUpdateCommand(executable.command, [...(executable.args ?? []), "--version"], { timeout: REQUEST_TIMEOUT_MS, killTree: false });
+                return name;
+            }
+            catch {
+                return undefined;
+            }
+        }));
+        this.machine.harnesses = detected.filter(name => name !== undefined);
         this.machine.terminal = terminalLauncher()?.kind ?? "none";
         await this.client.connect();
     }
@@ -115,7 +120,7 @@ export class Worker {
         await new Promise((resolvePromise, reject) => {
             // The runner has no stdout/stderr pipe to its parent, and owns the harness pipes itself.
             const child = spawn(process.execPath, [this.options.entry, "agent-runner"], { detached: true, windowsHide: true, stdio: ["pipe", "ignore", "ignore", "ipc"] });
-            const timer = setTimeout(() => { child.kill(); reject(new Error("Runner registration timed out. Check the server connection.")); }, 15_000);
+            const timer = setTimeout(() => { child.kill(); reject(new Error("Runner registration timed out. Check the server connection.")); }, STARTUP_TIMEOUT_MS);
             const fail = (error) => { clearTimeout(timer); if (child.connected)
                 child.disconnect(); child.unref(); reject(error); };
             child.once("error", fail);

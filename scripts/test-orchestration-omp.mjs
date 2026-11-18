@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../dist/src/timeouts.js";
 // Real OMP, real Git clone and real web-control protocol, with a loopback-only model fixture.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -25,7 +26,7 @@ const web = new BrowserRoomClient(`${origin.replace("https:", "wss:")}/browser-w
 let worker, model, repository, agentId, failure, announced = false, replied = false;
 const received = [];
 async function until(check) {
-  const deadline = Date.now() + 45000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (!(await check())) { if (failure) throw failure; if (Date.now() > deadline) throw new Error("Real OMP orchestration timed out."); await new Promise(resolve => setTimeout(resolve, 50)); }
 }
 const action = (action, params = {}) => web.request("control.action", { agentId, action, ...params });

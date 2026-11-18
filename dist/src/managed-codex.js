@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -59,7 +60,7 @@ export class ManagedCodex {
             const token = randomBytes(32).toString("base64url");
             await writeFile(this.tokenFile, token, { mode: 0o600 });
             const listening = new Promise((resolve, reject) => { this.listener = { resolve, reject }; });
-            const timer = setTimeout(() => this.listener?.reject(new Error("Codex did not announce its private listener. Update Codex or choose Background mode.")), 15000);
+            const timer = setTimeout(() => this.listener?.reject(new Error("Codex did not announce its private listener. Update Codex or choose Background mode.")), STARTUP_TIMEOUT_MS);
             this.process.start(this.executable, ["app-server", "--listen", "ws://127.0.0.1:0", "--ws-auth", "capability-token", "--ws-token-file", this.tokenFile], this.cwd);
             let url;
             try {
@@ -69,9 +70,9 @@ export class ManagedCodex {
                 clearTimeout(timer);
                 this.listener = undefined;
             }
-            const deadline = Date.now() + 15000;
+            const deadline = Date.now() + STARTUP_TIMEOUT_MS;
             while (!this.socket) {
-                const socket = new WebSocket(url, { agent: false, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 1000, headers: { Authorization: `Bearer ${token}` } });
+                const socket = new WebSocket(url, { agent: false, maxPayload: 8 * 1024 * 1024, handshakeTimeout: REQUEST_TIMEOUT_MS, headers: { Authorization: `Bearer ${token}` } });
                 try {
                     await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
                     this.socket = socket;

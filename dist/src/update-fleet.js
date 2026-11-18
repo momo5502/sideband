@@ -1,3 +1,4 @@
+import { ROLLOUT_TIMEOUT_MS } from "./timeouts.js";
 import { setTimeout as sleep } from "node:timers/promises";
 export class UpdateFleet {
     updater;
@@ -62,7 +63,7 @@ export class UpdateFleet {
                 const accepted = await this.updateWorker(row.id, target);
                 if (!accepted?.attempt)
                     throw new Error("Worker did not identify its update attempt. Update it manually once.");
-                const deadline = Date.now() + 20 * 60_000;
+                const deadline = Date.now() + ROLLOUT_TIMEOUT_MS;
                 while (true) {
                     const machine = this.machines().find(machine => machine.id === row.id);
                     this.abort.signal.throwIfAborted();

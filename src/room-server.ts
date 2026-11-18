@@ -1,3 +1,4 @@
+import { HANDSHAKE_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { createServer, type Server as HttpsServer } from "node:https";
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -68,8 +69,8 @@ export class RoomServer {
       this.plainHttp.on("upgrade", (req, socket, head) => this.upgrade(req, socket, head, false));
     }
     for (const listener of [this.http, this.plainHttp]) if (listener) {
-      listener.headersTimeout = 10_000;
-      listener.requestTimeout = 10_000;
+      listener.headersTimeout = HANDSHAKE_TIMEOUT_MS;
+      listener.requestTimeout = REQUEST_TIMEOUT_MS;
       listener.maxConnections = (options.maxClients ?? 1024) * 2;
       listener.on("connection", socket => { this.tcpSockets.add(socket); socket.once("close", () => this.tcpSockets.delete(socket)); });
     }
@@ -213,7 +214,7 @@ export class RoomServer {
   private accept(socket: WebSocket, browser: boolean): void {
     const connection: Connection = {
       browser, alive: true, challenge: randomBytes(32).toString("base64url"), tokens: 200, lastRefill: Date.now(),
-      authTimer: setTimeout(() => socket.close(1008, "Authentication required"), this.options.authTimeoutMs ?? 5000),
+      authTimer: setTimeout(() => socket.close(1008, "Authentication required"), this.options.authTimeoutMs ?? REQUEST_TIMEOUT_MS),
     };
     connection.authTimer.unref();
     this.connections.set(socket, connection);

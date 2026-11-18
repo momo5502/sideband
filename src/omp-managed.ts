@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { connect, type Socket } from "node:net";
 import { isMainThread } from "node:worker_threads";
 import { writeLocal, readLocal } from "./local-wire.js";
@@ -34,7 +35,7 @@ export function managedOmp(api: OmpApi): boolean {
   (globalThis as GlobalOwner)[ownerKey] = true;
   let current: OmpContext | undefined, socket: Socket | undefined, ready = false, closed = false, token = bootstrap.token;
   let retry: NodeJS.Timeout | undefined, flush: NodeJS.Timeout | undefined, sequence = 0, bytes = 0, nextId = 0;
-  let reconnects = 0;
+  let reconnects = 0, reconnectUntil = 0;
   let textStreamed = false, thinkingStreamed = false;
   const pending = new Map<string, { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   const hideLegacyTools = guardLegacyTools(api);
@@ -50,7 +51,7 @@ export function managedOmp(api: OmpApi): boolean {
   const request = (type: string, params: object): Promise<any> => {
     const id = `omp-${++nextId}`;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error("Sideband controller request timed out; acceptance is unknown.")); }, 25_000);
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error("Sideband controller request timed out; acceptance is unknown.")); }, REQUEST_TIMEOUT_MS);
       pending.set(id, { resolve, reject, timer });
       if (!ready || !writeLocal(socket, { type, id, ...params })) { clearTimeout(timer); pending.delete(id); reject(new Error("Sideband controller is disconnected.")); }
     });
@@ -86,7 +87,7 @@ export function managedOmp(api: OmpApi): boolean {
     const connection = connect(bootstrap.port, "127.0.0.1"); socket = connection;
     connection.once("connect", () => writeLocal(connection, { type: "hello", role: "plugin", token, sessionFile: file, hasUI: current?.hasUI, mode: current?.mode, busy: current?.isIdle ? !current.isIdle() : false }));
     readLocal(connection, packet => {
-      if (packet.type === "ready" && typeof packet.token === "string") { token = packet.token; ready = true; reconnects = 0; publishSession(); return; }
+      if (packet.type === "ready" && typeof packet.token === "string") { token = packet.token; ready = true; reconnects = 0; reconnectUntil = 0; publishSession(); return; }
       if (!ready) return;
       if (packet.type === "command" && typeof packet.id === "string") void command(packet);
       if (packet.type === "reply") {
@@ -98,7 +99,8 @@ export function managedOmp(api: OmpApi): boolean {
     connection.on("close", () => {
       if (socket !== connection) return; socket = undefined; ready = false;
       for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error("Sideband controller connection was lost; acceptance is unknown.")); } pending.clear();
-      if (!closed && ++reconnects <= 20) { retry = setTimeout(open, 500); retry.unref(); }
+      reconnectUntil ||= Date.now() + STARTUP_TIMEOUT_MS;
+      if (!closed && Date.now() < reconnectUntil) { retry = setTimeout(open, Math.min(10000, 500 * 2 ** Math.min(reconnects++, 5), reconnectUntil - Date.now())); retry.unref(); }
       else if (!closed) { current?.ui.notify("Sideband controller was lost. This OMP terminal remains available locally; managed controls are disconnected.", "warning"); shutdown(); }
     });
   };

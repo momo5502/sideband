@@ -1,3 +1,4 @@
+import { ROLLOUT_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID } from "node:crypto";
 import { open, readFile, stat, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -50,7 +51,7 @@ export class RuntimeUpdater {
   private async perform(target: string): Promise<void> {
     await this.save(); const lockPath = join(runtimeDirectory(this.directory), "install.lock");
     let lock: Awaited<ReturnType<typeof open>> | undefined;
-    const deadline = Date.now() + 10 * 60_000;
+    const deadline = Date.now() + ROLLOUT_TIMEOUT_MS;
     while (!lock) {
       this.abort.signal.throwIfAborted();
       try { lock = await open(lockPath, "wx", 0o600); await lock.writeFile(String(process.pid)); }

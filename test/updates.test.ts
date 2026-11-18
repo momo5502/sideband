@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -31,6 +32,8 @@ test("plugin refresh uses official installed sources, exact Codex marketplace co
   const run: RunUpdateCommand = async (command, args, options) => {
     calls.push(`${command} ${args.join(" ")}`);
     if (command === "codex") { assert.equal(args[0], "--no-daemon"); assert.equal(options?.killTree, false); args = args.slice(1); }
+    if (args.includes("list")) assert.equal(options?.timeout, 120_000, "metadata queries allow a loaded machine two minutes");
+    if (command === "codex" && args[1] === "list") { assert.deepEqual(args, ["plugin", "list", "--marketplace", "sideband", "--json"]); args = [...args.slice(0, 2), ...args.slice(4)]; }
     if (args.join(" ") === "plugin marketplace list --json") return JSON.stringify([{ name: "sideband", source: "github", repo: "momo5502/sideband" }]);
     if (args.join(" ") === "plugin list --json") {
       const count = counts.get(command) ?? 0; counts.set(command, count + 1); const version = count ? "99.0.0" : "0.20.0";
@@ -57,7 +60,7 @@ test("plugin refresh failures identify the Codex operation that timed out", asyn
   assert.equal(results[2]!.state, "failed"); assert.equal(results[2]!.message, "Refresh marketplace: codex timed out.");
 });
 
-test("update commands settle after parent exit without waiting for or killing inherited-pipe descendants", { timeout: 20000 }, async () => {
+test("update commands settle after parent exit without waiting for or killing inherited-pipe descendants", { timeout: testTimeout(20000) }, async () => {
   const temp = await temporary();
   try {
     for (const mode of [0, 7, "timeout"] as const) {

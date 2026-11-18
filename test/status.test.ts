@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:https";
@@ -15,13 +16,13 @@ function get(server: RoomServer, path = "/", method = "GET", tls = true) {
       let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; });
       res.once("end", () => resolve({ status: res.statusCode!, headers: res.headers, body }));
     });
-    req.setTimeout(4000, () => req.destroy(new Error("Status request timed out.")));
+    req.setTimeout(testTimeout(4000), () => req.destroy(new Error("Status request timed out.")));
     req.once("error", reject); req.end();
   });
 }
 async function status(server: RoomServer) { const response = await get(server, "/status.json"); assert.equal(response.status, 200); return JSON.parse(response.body); }
 async function until(check: () => Promise<boolean>) {
-  const deadline = Date.now() + 4000;
+  const deadline = Date.now() + testTimeout(4000);
   while (!(await check())) { if (Date.now() > deadline) throw new Error("Status counts did not update."); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
@@ -90,7 +91,7 @@ test("HEAD, method restrictions and unknown paths expose no additional informati
   } finally { await server.close(); }
 });
 
-test("plain HTTP rejects agent WebSocket upgrades and shutdown closes unfinished status requests", { timeout: 5000 }, async () => {
+test("plain HTTP rejects agent WebSocket upgrades and shutdown closes unfinished status requests", { timeout: testTimeout(5000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const plaintext = new WebSocket(`ws://127.0.0.1:${server.statusPort}/ws`);
   const idle = connect(server.statusPort!, "127.0.0.1"); idle.on("error", () => {});

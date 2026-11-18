@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS } from "./timeouts.js";
 import spawn from "cross-spawn";
 import { StringDecoder } from "node:string_decoder";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -49,7 +50,7 @@ export class HarnessProcess {
     if (this.pending.size >= 128) return Promise.reject(new Error("Harness request backlog is full."));
     const id = `sideband-${++this.sequence}`;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`${method} timed out; acceptance is unknown. Check output before resending.`)); }, 25000);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`${method} timed out; acceptance is unknown. Check output before resending.`)); }, REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       try { this.send(this.protocol === "claude" ? { type: "control_request", request_id: id, request: { subtype: method, ...params } } : { id, method, params }); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
@@ -64,6 +65,6 @@ export class HarnessProcess {
   async stop(): Promise<void> {
     this.stopping = true;
     const child = this.child; if (!child || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
-    await new Promise<void>(resolve => { const timer = setTimeout(() => terminateTree(child), 5000); child.once("close", () => { clearTimeout(timer); resolve(); }); child.stdin.end(); });
+    await new Promise<void>(resolve => { const timer = setTimeout(() => terminateTree(child), SHUTDOWN_TIMEOUT_MS); child.once("close", () => { clearTimeout(timer); resolve(); }); child.stdin.end(); });
   }
 }

@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, copyFile } from "node:fs/promises";
@@ -12,7 +13,7 @@ import { RoomClient } from "../src/room-client.js";
 import { sidebandInstructions } from "../src/room-tools.js";
 
 async function until(check: () => boolean) {
-  const deadline = Date.now() + 4000;
+  const deadline = Date.now() + testTimeout(4000);
   while (!check()) { if (Date.now() > deadline) throw new Error("No native OMP delivery."); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 class Host implements OmpApi {

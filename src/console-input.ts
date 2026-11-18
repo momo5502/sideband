@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { terminateTree } from "./process-tree.js";
@@ -52,7 +53,7 @@ export async function consoleInput(pid: number, text: string, escape = false): P
   await new Promise<void>((resolve, reject) => {
     const child = spawn(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
     let error = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", value => { error = (error + value).slice(-2048); });
-    const timer = setTimeout(() => { terminateTree(child); reject(new Error("Console input timed out; acceptance is unknown. Check the terminal before retrying.")); }, 10000);
+    const timer = setTimeout(() => { terminateTree(child); reject(new Error("Console input timed out; acceptance is unknown. Check the terminal before retrying.")); }, REQUEST_TIMEOUT_MS);
     child.once("error", failure => { clearTimeout(timer); reject(failure); }); child.stdin.once("error", failure => { clearTimeout(timer); reject(failure); });
     child.once("close", code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`Console input failed: ${error || code}`)); });
     child.stdin.end(JSON.stringify({ pid, text: text.replace(/\r\n?/g, "\n"), escape }));

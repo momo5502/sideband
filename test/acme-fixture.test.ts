@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, get } from "node:http";
@@ -6,7 +7,7 @@ import { Pkcs10CertificateRequest, X509CertificateGenerator, SubjectAlternativeN
 import * as acme from "acme-client";
 import { issueBrowserCertificate } from "../src/browser-https.js";
 
-for (const mode of ["fast", "slow", "abort", "cancel-fails", "invalid"] as const) test(`real ACME lifecycle: ${mode}`, { timeout: 45000 }, async () => {
+for (const mode of ["fast", "slow", "abort", "cancel-fails", "invalid"] as const) test(`real ACME lifecycle: ${mode}`, { timeout: testTimeout(45000) }, async () => {
   const challenges = new Map<string, string>(), requests: string[] = [], domain = "127.0.0.1";
   let challengeValid = false, certificate = "", origin = "", validationStarted = 0, deactivated = false;
   const controller = new AbortController();

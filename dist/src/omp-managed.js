@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { connect } from "node:net";
 import { isMainThread } from "node:worker_threads";
 import { writeLocal, readLocal } from "./local-wire.js";
@@ -37,7 +38,7 @@ export function managedOmp(api) {
     globalThis[ownerKey] = true;
     let current, socket, ready = false, closed = false, token = bootstrap.token;
     let retry, flush, sequence = 0, bytes = 0, nextId = 0;
-    let reconnects = 0;
+    let reconnects = 0, reconnectUntil = 0;
     let textStreamed = false, thinkingStreamed = false;
     const pending = new Map();
     const hideLegacyTools = guardLegacyTools(api);
@@ -56,7 +57,7 @@ export function managedOmp(api) {
     const request = (type, params) => {
         const id = `omp-${++nextId}`;
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { pending.delete(id); reject(new Error("Sideband controller request timed out; acceptance is unknown.")); }, 25_000);
+            const timer = setTimeout(() => { pending.delete(id); reject(new Error("Sideband controller request timed out; acceptance is unknown.")); }, REQUEST_TIMEOUT_MS);
             pending.set(id, { resolve, reject, timer });
             if (!ready || !writeLocal(socket, { type, id, ...params })) {
                 clearTimeout(timer);
@@ -132,6 +133,7 @@ export function managedOmp(api) {
                 token = packet.token;
                 ready = true;
                 reconnects = 0;
+                reconnectUntil = 0;
                 publishSession();
                 return;
             }
@@ -158,8 +160,9 @@ export function managedOmp(api) {
                 item.reject(new Error("Sideband controller connection was lost; acceptance is unknown."));
             }
             pending.clear();
-            if (!closed && ++reconnects <= 20) {
-                retry = setTimeout(open, 500);
+            reconnectUntil ||= Date.now() + STARTUP_TIMEOUT_MS;
+            if (!closed && Date.now() < reconnectUntil) {
+                retry = setTimeout(open, Math.min(10000, 500 * 2 ** Math.min(reconnects++, 5), reconnectUntil - Date.now()));
                 retry.unref();
             }
             else if (!closed) {

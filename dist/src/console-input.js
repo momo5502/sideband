@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { terminateTree } from "./process-tree.js";
@@ -54,7 +55,7 @@ export async function consoleInput(pid, text, escape = false) {
         let error = "";
         child.stderr.setEncoding("utf8");
         child.stderr.on("data", value => { error = (error + value).slice(-2048); });
-        const timer = setTimeout(() => { terminateTree(child); reject(new Error("Console input timed out; acceptance is unknown. Check the terminal before retrying.")); }, 10000);
+        const timer = setTimeout(() => { terminateTree(child); reject(new Error("Console input timed out; acceptance is unknown. Check the terminal before retrying.")); }, REQUEST_TIMEOUT_MS);
         child.once("error", failure => { clearTimeout(timer); reject(failure); });
         child.stdin.once("error", failure => { clearTimeout(timer); reject(failure); });
         child.once("close", code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`Console input failed: ${error || code}`)); });

@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -15,7 +16,7 @@ import { launchSpec, OutputBuffer, type ControlSnapshot, type OutputSnapshot } f
 import { AgentRunner } from "../src/agent-runner.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean | Promise<boolean>, ms = 15000) {
+async function until(check: () => boolean | Promise<boolean>, ms = testTimeout(15000)) {
   const end = Date.now() + ms;
   while (!(await check())) { if (Date.now() > end) throw new Error("Orchestration condition timed out."); await pause(25); }
 }
@@ -119,7 +120,7 @@ createInterface({input:process.stdin}).on("line", async line => {
   }
 }).on("close",()=>process.exit(0));`;
 
-test("an agent without a repository gets an empty workspace, joins a room and resumes with its files and history", { timeout: 20000 }, async () => {
+test("an agent without a repository gets an empty workspace, joins a room and resumes with its files and history", { timeout: testTimeout(20000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-empty-workspace-"));
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, web = browser(server), peer = new RoomClient(profile, "peer");
@@ -143,7 +144,7 @@ test("an agent without a repository gets an empty workspace, joins a room and re
   } finally { await runner.close(); web.disconnect(); await peer.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-empty-workspace-"))); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("detached OMP runner: remote clone, pushed rooms, output, worker death/restart, controller restart and manual resume", { timeout: 90000 }, async () => {
+test("detached OMP runner: remote clone, pushed rooms, output, worker death/restart, controller restart and manual resume", { timeout: testTimeout(90000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-orchestration-"));
   const credentialsFile = join(directory, "server.json"), root = join(directory, "workspaces");
   let server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, credentialsFile });

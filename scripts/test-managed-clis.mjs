@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../dist/src/timeouts.js";
 // Real installed CLIs against loopback-only model fixtures. No account credentials or paid model calls.
 // SIDEBAND_TEST_NATIVE=1 also opens real native windows; requires an interactive desktop (or tmux).
 import { fileURLToPath } from "node:url";
@@ -100,7 +101,7 @@ try {
     try {
       driver = new Type({ command: name.endsWith("-native") ? name.split("-")[0] : name }, cwd, join(cwd, "sessions"), host, resolve("dist/src/cli.js"), ...name === "codex-native" ? [true] : []);
       await Promise.race([driver.start({ model: name.startsWith("claude") ? "sonnet" : "sideband-smoke" }), new Promise((_, reject) => {
-        const timer = setTimeout(() => reject(Error("native startup still needs local confirmation")), 2e4);
+        const timer = setTimeout(() => reject(Error("native startup still needs local confirmation")), STARTUP_TIMEOUT_MS);
         timer.unref();
       })]);
       if (name === "codex-native") {
@@ -110,7 +111,7 @@ try {
         assert.deepEqual(loaded.data, [driver.sessionFile]);
       }
       await driver.prompt("Announce readiness using sideband_room_send, then say DONE.");
-      const end = Date.now() + 35e3;
+      const end = Date.now() + REQUEST_TIMEOUT_MS;
       while (!(calls.length && state === "idle" && events.some((e) => e.kind === "assistant" && e.text.includes("DONE")))) {
         if (failure) throw failure;
         if (Date.now() > end) throw Error("model fixture timed out");
@@ -120,14 +121,14 @@ try {
       {
         const held = holds, cancelled = cancellations;
         await driver.prompt("SIDEBAND_HOLD_STREAM");
-        const holdEnd = Date.now() + 15e3;
+        const holdEnd = Date.now() + REQUEST_TIMEOUT_MS;
         while (holds === held) {
           if (failure) throw failure;
           if (Date.now() > holdEnd) throw Error("hold request never reached the local model");
           await new Promise((r) => setTimeout(r, 25));
         }
         await driver.interrupt();
-        const interruptEnd = Date.now() + 8e3;
+        const interruptEnd = Date.now() + REQUEST_TIMEOUT_MS;
         while (state !== "idle" || cancellations === cancelled) {
           if (failure) throw failure;
           if (Date.now() > interruptEnd) throw Error("interrupt did not return to idle");
@@ -142,7 +143,7 @@ try {
       assert.equal(driver.sessionFile, id);
       const count = calls.length;
       await driver.prompt("Announce readiness using sideband_room_send again, then say DONE.");
-      const resumedEnd = Date.now() + 35e3;
+      const resumedEnd = Date.now() + REQUEST_TIMEOUT_MS;
       while (!(calls.length > count && state === "idle")) {
         if (failure) throw failure;
         if (Date.now() > resumedEnd) throw Error("resumed model fixture timed out");

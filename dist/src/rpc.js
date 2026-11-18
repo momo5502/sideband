@@ -1,3 +1,4 @@
+import { HANDSHAKE_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { spawn } from "node:child_process";
 import { Duplex } from "node:stream";
 import { Agent as HttpAgent } from "node:http";
@@ -57,7 +58,7 @@ export class CodexRpc {
                 throw new Error("Sideband accepts only a local ws:// Codex endpoint.");
             }
             const agent = new HttpAgent({ keepAlive: false });
-            socket = new WebSocket(options.url, { agent, handshakeTimeout: options.timeoutMs ?? 10_000 });
+            socket = new WebSocket(options.url, { agent, handshakeTimeout: options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS });
             socket.once("close", () => agent.destroy());
         }
         else {
@@ -69,7 +70,7 @@ export class CodexRpc {
             child.stderr.resume();
             socket = new WebSocket("ws://localhost/rpc", {
                 createConnection: () => stream,
-                handshakeTimeout: options.timeoutMs ?? 10_000,
+                handshakeTimeout: options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
             });
         }
         const connection = new CodexRpc(socket, child);
@@ -100,7 +101,7 @@ export class CodexRpc {
                 this.pending.delete(id);
                 // A timeout has ambiguous delivery status. Never automatically resubmit the input.
                 reject(new Error(`Codex ${method} timed out; delivery status is unknown.`));
-            }, 10_000);
+            }, REQUEST_TIMEOUT_MS);
             this.pending.set(id, { resolve: (value) => resolve(value), reject, timer });
             this.socket.send(JSON.stringify({ id, method, params }), (error) => {
                 if (error) {

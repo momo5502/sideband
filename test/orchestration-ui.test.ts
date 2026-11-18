@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -18,7 +19,7 @@ test("streamed output merges snapshots without duplicates and remains bounded by
   assert.equal(mentionsUsername("Hey @MOMO!", "momo"), true); assert.equal(mentionsUsername("momo@example.com, @momoz @momo-other", "momo"), false);
 });
 
-for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} workspace: focused launch, agent conversation, private instructions, menus and offline forgetting`, { timeout: 30000 }, async () => {
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} workspace: focused launch, agent conversation, private instructions, menus and offline forgetting`, { timeout: testTimeout(30000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const worker = new RoomClient(profile), migratedWorker = new RoomClient(profile), unavailable = new RoomClient(profile), offline = new RoomClient(profile), runner = new RoomClient(profile, "tools"), peer = new RoomClient(profile, "peer");

@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS } from "./timeouts.js";
 import { createServer, type Socket, connect } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -61,7 +62,7 @@ export class ManagedTerminal implements ManagedHarness {
     const script = process.platform === "win32" ? `@echo off\r\nsetlocal DisableDelayedExpansion\r\n${command.map(value => `"${value.replace(/%/g, "%%")}"`).join(" ")}\r\n` : `#!/bin/sh\nexec ${command.map(shellQuote).join(" ")}\n`;
     await writeFile(this.scriptFile, script, { flag: "wx", mode: 0o700 });
     const ready = new Promise<void>((resolve, reject) => { this.ready = { resolve, reject }; });
-    const timer = setTimeout(() => this.ready?.reject(new Error("OMP's terminal did not register within 60 seconds. Check the terminal window and the worker's desktop access, or choose Background mode.")), 60_000);
+    const timer = setTimeout(() => this.ready?.reject(new Error("OMP's terminal did not register within five minutes. Check the terminal window and the worker's desktop access, or choose Background mode.")), STARTUP_TIMEOUT_MS);
     try {
       if (this.stopped) throw new Error("OMP terminal was stopped.");
       const child = this.openTerminal(launcher, this.scriptFile, unique);
@@ -79,7 +80,7 @@ export class ManagedTerminal implements ManagedHarness {
   private accept(socket: Socket): void {
     if (this.stopped || this.sockets.size >= 8) { socket.destroy(); return; }
     this.sockets.add(socket); let role = "";
-    const timer = setTimeout(() => socket.destroy(), 5000); timer.unref();
+    const timer = setTimeout(() => socket.destroy(), REQUEST_TIMEOUT_MS); timer.unref();
     readLocal(socket, packet => {
       if (!role) {
         if (packet.type !== "hello") { socket.destroy(); return; }
@@ -129,7 +130,7 @@ export class ManagedTerminal implements ManagedHarness {
     for (const path of [this.bootstrapFile, this.scriptFile]) if (path) void unlink(path).catch(() => {});
   }
   private rejectPending(message: string): void { for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error(message)); } this.pending.clear(); }
-  private request(method: string, params: object = {}, timeout = 25_000): Promise<any> {
+  private request(method: string, params: object = {}, timeout = REQUEST_TIMEOUT_MS): Promise<any> {
     const id = `terminal-${++this.id}`;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`OMP ${method} timed out; acceptance is unknown.`)); }, timeout);
@@ -143,14 +144,14 @@ export class ManagedTerminal implements ManagedHarness {
   stop(): Promise<void> { return this.stopping ??= this.closeTerminal(); }
   private async closeTerminal(): Promise<void> {
     this.stopped = true; this.ready?.reject(new Error("OMP terminal was stopped."));
-    if (this.plugin && !this.plugin.destroyed) await this.request("shutdown", {}, 1000).catch(() => {});
+    if (this.plugin && !this.plugin.destroyed) await this.request("shutdown", {}, SHUTDOWN_TIMEOUT_MS).catch(() => {});
     if (!this.exited && this.owner) {
       await new Promise<void>(resolve => {
         let cap: NodeJS.Timeout | undefined;
         const timer = setTimeout(() => {
           writeLocal(this.owner, { type: "kill" }); this.owner?.end();
-          cap = setTimeout(resolve, 2000);
-        }, 5000);
+          cap = setTimeout(resolve, SHUTDOWN_TIMEOUT_MS);
+        }, SHUTDOWN_TIMEOUT_MS);
         this.owner!.once("close", () => { clearTimeout(timer); if (cap) clearTimeout(cap); resolve(); });
       });
     }

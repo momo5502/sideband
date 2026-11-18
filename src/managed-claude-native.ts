@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -45,7 +46,7 @@ export class ManagedClaudeNative implements ManagedHarness {
       this.setupTimer = setInterval(() => { if (!this.ready && this.sessionStarted && !this.blocked && !this.stopping) void this.bypassApproved().then(approved => { if (approved && !this.ready && !this.blocked && !this.stopping) this.markReady(false); }); }, 1000); this.setupTimer.unref();
     }
     const command = [process.execPath, this.entry, "managed-hook", this.tools.path].map(value => process.platform === "win32" ? `"${value.replace(/%/g, "%%")}"` : `'${value.replace(/'/g, `'"'"'`)}'`).join(" ");
-    const hooks = Object.fromEntries(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop", "StopFailure", "SubagentStop"].map(event => [event, [{ hooks: [{ type: "command", command, timeout: 5 }] }]]));
+    const hooks = Object.fromEntries(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop", "StopFailure", "SubagentStop"].map(event => [event, [{ hooks: [{ type: "command", command, timeout: (REQUEST_TIMEOUT_MS + 30_000) / 1000 }] }]]));
     const settings = { enabledPlugins: { "sideband@sideband": false }, skipDangerousModePermissionPrompt: true, hooks };
     const mcp = { mcpServers: { sideband_managed: { command: process.execPath, args: [this.entry, "managed-mcp", this.tools.path] } } };
     const initialized = new Promise<void>((resolve, reject) => { this.initialized = { resolve, reject }; });

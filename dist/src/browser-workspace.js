@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS } from "./timeouts.js";
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
 export const loginStorage = "sideband.login.v1", identityStorage = "sideband.identity.v1", roomsStorage = "sideband.rooms.v1";
 export const draftsStorage = "sideband.drafts.v1", reloadStorage = "sideband.reloaded-build.v1";
@@ -550,7 +551,7 @@ export class BrowserWorkspace {
             if (generation !== this.generation || !this.pendingLaunches.delete(result.id))
                 return;
             this.update({ control: { ...this.state.control, agents: this.state.control.agents.filter(agent => agent.id !== result.id) }, error: "The agent did not become available. Check its machine before launching again." });
-        }, 30000);
+        }, STARTUP_TIMEOUT_MS);
         this.pendingLaunches.set(result.id, { agent: pending, after: this.controlSequence, timer });
         const { machineId: _machine, ...savedSpec } = spec;
         this.launchSpecs.set(result.id, savedSpec);

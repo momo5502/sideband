@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -12,7 +13,7 @@ import type { DeliveryAdapter } from "../src/adapters/codex.js";
 import type { Delivery } from "../src/protocol.js";
 
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
-  const end = Date.now() + 4000;
+  const end = Date.now() + testTimeout(4000);
   while (!(await check())) { if (Date.now() > end) throw new Error("Condition timed out."); await new Promise((resolve) => setTimeout(resolve, 10)); }
 }
 async function fixture(options: { graceMs?: number } = {}) {
@@ -159,7 +160,7 @@ async function rawPeer(endpoint: string) {
   await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
   return { socket, request(method: string, params: object) {
     return new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Raw test peer timeout")), 2000);
+      const timer = setTimeout(() => reject(new Error("Raw test peer timeout")), testTimeout(2000));
       socket.once("message", (raw) => { clearTimeout(timer); resolve(JSON.parse(raw.toString())); });
       socket.send(JSON.stringify({ v: 1, id: randomUUID(), method, params }));
     });
@@ -188,7 +189,7 @@ test("in-memory server instances without a credentials file are isolated", async
   try { assert.notEqual(next.server.password, oldPassword); assert.deepEqual(await (await next.client()).listRooms(), []); }
   finally { await next.close(); }
 });
-test("server shutdown closes incomplete TLS handshakes as well as authenticated sockets", { timeout: 3000 }, async () => {
+test("server shutdown closes incomplete TLS handshakes as well as authenticated sockets", { timeout: testTimeout(3000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0 });
   const socket = connectTcp(server.port, "127.0.0.1"); socket.on("error", () => {});
   await new Promise<void>((resolve) => socket.once("connect", resolve));

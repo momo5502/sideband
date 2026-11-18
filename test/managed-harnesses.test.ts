@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm } from "node:fs/promises";
@@ -16,7 +17,7 @@ import type { OmpHost } from "../src/managed-omp.js";
 import { readLocal, writeLocal } from "../src/local-wire.js";
 
 const entry = resolve("dist/src/cli.js"), pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean, timeout = 8000) { const end = Date.now() + timeout; while (!check()) { if (Date.now() > end) throw new Error("Harness fixture did not settle."); await pause(10); } }
+async function until(check: () => boolean, timeout = testTimeout(8000)) { const end = Date.now() + timeout; while (!check()) { if (Date.now() > end) throw new Error("Harness fixture did not settle."); await pause(10); } }
 async function temporary() { const directory = await mkdtemp(join(tmpdir(), "sideband-harness-")); return { directory, async close() { assert.ok(directory.startsWith(join(tmpdir(), "sideband-harness-"))); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } }; }
 
 // The fixture exercises the real subprocess boundary and response/event ordering, without a model.
@@ -64,7 +65,7 @@ if(harness==='codex'){
 let queue=Promise.resolve();createInterface({input:process.stdin}).on('line',line=>{queue=queue.then(()=>handle(line)).catch(error=>{console.error(error);process.exit(1);});});
 `;
 
-for (const name of ["codex", "claude"] as const) test(`${name} driver keeps one session, streams output, steers, interrupts and resumes`, { timeout: 20000 }, async () => {
+for (const name of ["codex", "claude"] as const) test(`${name} driver keeps one session, streams output, steers, interrupts and resumes`, { timeout: testTimeout(20000) }, async () => {
   const temp = await temporary(), events: { kind: string; text: string }[] = [], states: string[] = [], exits: unknown[] = [];
   const script = join(temp.directory, "fixture.mjs"); await writeFile(script, fixture);
   const host: OmpHost = { event: (kind, text) => events.push({ kind, text }), state: state => states.push(state), exit: error => exits.push(error), tool: async () => ({ room: null }) };

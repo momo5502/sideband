@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import NodeWebSocket from "ws";
@@ -9,7 +10,7 @@ import { AgentKeys, identityFor, verifyMessage, type SignedMessage } from "../sr
 import { BrowserRoomClient, browserIdentity, browserVerify } from "../src/browser-protocol.js";
 
 const waitFor = <T>(listen: (resolve: (value: T) => void) => void) => new Promise<T>((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error("Browser push did not arrive.")), 4000);
+  const timer = setTimeout(() => reject(new Error("Browser push did not arrive.")), testTimeout(4000));
   listen(value => { clearTimeout(timer); resolve(value); });
 });
 function browser(server: RoomServer, tls: boolean, password = server.password, name = "web-human", key?: Uint8Array) {
@@ -76,7 +77,7 @@ for (const tls of [false, true]) test(`browser multi-room subscriptions over ${t
     assert.ok((await a.members()).some(member => member.id === web.identity.id)); assert.ok((await b.members()).some(member => member.id === web.identity.id));
     const received: SignedMessage[] = []; web.onMessage = message => received.push(message);
     await a.send("alpha message"); await b.send("beta message");
-    const deadline = Date.now() + 4000;
+    const deadline = Date.now() + testTimeout(4000);
     while (received.length !== 2) { if (Date.now() > deadline) throw new Error("Multi-room push timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
     assert.deepEqual(new Set(received.map(message => message.roomId)), new Set([alpha.id, beta.id])); assert.ok(received.every(browserVerify));
     assert.deepEqual((await web.history()).map(message => message.text), ["beta message"]);
@@ -97,7 +98,7 @@ for (const tls of [false, true]) test(`browser multi-room subscriptions over ${t
     assert.equal(resumed.joinedRooms.size, 1); assert.equal((await a.members()).length, 2); assert.equal((await b.members()).length, 1);
     await resumed.subscribe(beta.id); resumed.disconnect();
     // Wait behind logout using a separate connection, rather than assuming the socket has already closed.
-    const end = Date.now() + 4000;
+    const end = Date.now() + testTimeout(4000);
     while ((await a.members()).length !== 1 || (await b.members()).length !== 1) { if (Date.now() > end) throw new Error("Multi-room logout timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
   } finally { web.disconnect(); resumed?.disconnect(); await a.close(); await b.close(); await outside.close(); await server.close(); }
 });

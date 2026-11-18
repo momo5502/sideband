@@ -1,10 +1,11 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
 import { browserPage, until } from "./browser-fixture.js";
 
-for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} React chat: signed messages, grouped Markdown, navigation, members, drafts, settings and saved login`, { timeout: 30000 }, async () => {
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} React chat: signed messages, grouped Markdown, navigation, members, drafts, settings and saved login`, { timeout: testTimeout(30000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const agent = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "agent-peer");
   const pages: Awaited<ReturnType<typeof browserPage>>[] = [];
@@ -51,7 +52,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} React
   } finally { for (const page of pages) await page.close(); await agent.close(); await server.close(); }
 });
 
-test("browser automatically reconnects and rejoins after a lost socket, preserving identity, draft and bfcache navigation", { timeout: 15000 }, async () => {
+test("browser automatically reconnects and rejoins after a lost socket, preserving identity, draft and bfcache navigation", { timeout: testTimeout(15000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, graceMs: 60 });
   const peer = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "peer");
   const pages: Awaited<ReturnType<typeof browserPage>>[] = [];

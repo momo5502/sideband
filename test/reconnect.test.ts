@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -11,7 +12,7 @@ import type { Room, SignedMessage } from "../src/room-protocol.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean | Promise<boolean>) {
-  const end = Date.now() + 5000;
+  const end = Date.now() + testTimeout(5000);
   while (!(await check())) { if (Date.now() > end) throw new Error("Reconnect condition timed out."); await pause(10); }
 }
 async function fixture(graceMs = 25, reconnectMs = 180) {

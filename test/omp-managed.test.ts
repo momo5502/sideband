@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, connect, type Socket } from "node:net";
@@ -7,7 +8,7 @@ import sideband, { type OmpApi, type OmpContext, type OmpTool } from "../src/omp
 import { writeLocal, readLocal } from "../src/local-wire.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean) { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error("Managed plugin condition timed out."); await pause(10); } }
+async function until(check: () => boolean) { const end = Date.now() + testTimeout(5000); while (!check()) { if (Date.now() > end) throw new Error("Managed plugin condition timed out."); await pause(10); } }
 class Host implements OmpApi {
   zod = zod;
   tools = new Map<string, OmpTool>(); handlers = new Map<string, Function[]>();

@@ -1,3 +1,4 @@
+import { HANDSHAKE_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createPrivateKey, randomUUID, X509Certificate } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
@@ -34,7 +35,7 @@ const issuanceSignal = new AsyncLocalStorage<AbortSignal>();
 (acme.axios.defaults as typeof acme.axios.defaults & { acmeSettings: { retryMaxAttempts: number } }).acmeSettings.retryMaxAttempts = 0;
 acme.axios.interceptors.request.use(config => {
   const signal = issuanceSignal.getStore();
-  if (signal) { config.signal = signal; config.timeout = 15_000; }
+  if (signal) { config.signal = signal; config.timeout = REQUEST_TIMEOUT_MS; }
   return config;
 });
 export async function issueBrowserCertificate(request: CertificateRequest): Promise<BrowserCertificate> {
@@ -169,7 +170,7 @@ export class BrowserHttps {
       handler(req, res);
     });
     for (const listener of [this.http, this.https]) {
-      listener.headersTimeout = 10_000; listener.requestTimeout = 10_000; listener.maxConnections = 2048;
+      listener.headersTimeout = HANDSHAKE_TIMEOUT_MS; listener.requestTimeout = REQUEST_TIMEOUT_MS; listener.maxConnections = 2048;
       listener.on("connection", socket => { this.sockets.add(socket); socket.once("close", () => this.sockets.delete(socket)); });
     }
   }

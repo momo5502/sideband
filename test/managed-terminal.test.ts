@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { spawn } from "node:child_process";
 import { ManagedTerminal } from "../src/managed-terminal.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 10000; while (!(await check())) { if (Date.now() > end) throw new Error("Terminal fixture timed out."); await pause(20); } }
+async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + testTimeout(10000); while (!(await check())) { if (Date.now() > end) throw new Error("Terminal fixture timed out."); await pause(20); } }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const fixtureCode = `import {connect} from "node:net";
 import {writeFile,access} from "node:fs/promises";
@@ -38,7 +39,7 @@ async function fixture(args: string[] = [], linked = false) {
   return { directory, driver, events, get exits() { return exits; }, async pid() { return Number(await readFile(join(directory, "pid.txt"), "utf8")); },
     async close() { await driver.stop(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-native-terminal-"))); await rm(directory, { recursive: true, force: true }); } };
 }
-test("native driver sends private instructions/asides and cleans up after a local window close", { timeout: 20000 }, async () => {
+test("native driver sends private instructions/asides and cleans up after a local window close", { timeout: testTimeout(20000) }, async () => {
   const f = await fixture();
   try {
     await f.driver.start({}); const pid = await f.pid(); assert.equal(alive(pid), true);
@@ -50,12 +51,12 @@ test("native driver sends private instructions/asides and cleans up after a loca
     assert.ok(f.driver.sessionFile?.endsWith("fixture.jsonl"));
   } finally { await f.close(); }
 });
-test("native launch resolves companion plugin assets through an npm-style linked CLI", { timeout: 20000 }, async () => {
+test("native launch resolves companion plugin assets through an npm-style linked CLI", { timeout: testTimeout(20000) }, async () => {
   const f = await fixture([], true);
   try { await f.driver.start({}); await f.driver.prompt("linked entry works"); await until(() => f.events.some(event => event.text === "linked entry works")); }
   finally { await f.close(); }
 });
-for (const flag of ["--no-plugin", "--ignore-shutdown"]) test(`stop waits for actual OMP termination when ${flag}`, { timeout: 20000 }, async () => {
+for (const flag of ["--no-plugin", "--ignore-shutdown"]) test(`stop waits for actual OMP termination when ${flag}`, { timeout: testTimeout(20000) }, async () => {
   const f = await fixture([flag]); let startup: Promise<void> | undefined;
   try {
     startup = f.driver.start({}); void startup.catch(() => {});

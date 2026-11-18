@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS } from "./timeouts.js";
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -38,11 +39,11 @@ export async function supervise(entry, args, directory = stateDirectory) {
         const stop = () => { stopping = true; if (child.connected)
             child.send({ type: "sideband.shutdown" });
         else
-            child.kill(); stopTimer ??= setTimeout(() => child.kill(), 15000); };
+            child.kill(); stopTimer ??= setTimeout(() => child.kill(), SHUTDOWN_TIMEOUT_MS); };
         process.on("SIGINT", stop);
         process.on("SIGTERM", stop);
         const timer = switched ? setTimeout(() => { if (!ready)
-            child.kill(); }, 60_000) : undefined;
+            child.kill(); }, STARTUP_TIMEOUT_MS) : undefined;
         let nextArgs = args;
         child.on("message", (message) => {
             if (message?.type === "sideband.ready") {

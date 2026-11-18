@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS } from "./timeouts.js";
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
 import type { AgentIdentity, Room, SignedMessage, PresenceEvent } from "./room-protocol.js";
 import type { ControlSnapshot, OutputEvent, OutputSnapshot, LaunchSpec, ManagedAgent } from "./orchestration-protocol.js";
@@ -359,7 +360,7 @@ export class BrowserWorkspace {
     const timer = this.window.setTimeout(() => {
       if (generation !== this.generation || !this.pendingLaunches.delete(result.id)) return;
       this.update({ control: { ...this.state.control, agents: this.state.control.agents.filter(agent => agent.id !== result.id) }, error: "The agent did not become available. Check its machine before launching again." });
-    }, 30000);
+    }, STARTUP_TIMEOUT_MS);
     this.pendingLaunches.set(result.id, { agent: pending, after: this.controlSequence, timer });
     const { machineId: _machine, ...savedSpec } = spec; this.launchSpecs.set(result.id, savedSpec);
     if (this.launchSpecs.size > 50) this.launchSpecs.delete(this.launchSpecs.keys().next().value!);

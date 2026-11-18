@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -11,7 +12,7 @@ import { BrowserRoomClient } from "../src/browser-protocol.js";
 import { RuntimeUpdater } from "../src/updater.js";
 import type { ControlSnapshot } from "../src/orchestration-protocol.js";
 
-test("real worker supervisor installs an isolated candidate, refreshes fake harnesses, restarts and re-registers before server update", { timeout: 45000 }, async () => {
+test("real worker supervisor installs an isolated candidate, refreshes fake harnesses, restarts and re-registers before server update", { timeout: testTimeout(45000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-update-worker-")), target = "f".repeat(40), entry = resolve("dist/src/cli.js"), bin = join(directory, "bin");
   await mkdir(bin);
   // Only these isolated commands can run. No real npm or harness configuration is changed.
@@ -23,7 +24,7 @@ if(command==='npm') {
  if(!args.includes('--ignore-scripts')||!args.includes('git+https://github.com/momo5502/sideband.git#${target}'))throw Error('unexpected install');
  await mkdir(join(root,'dist','src'),{recursive:true});await writeFile(join(root,'package.json'),JSON.stringify({name:'sideband',version:'99.0.0'}));
  await copyFile(${JSON.stringify(resolve("dist/sideband.cjs"))},join(root,'dist','src','cli.js'));
-} else { if(command==='codex'&&args.shift()!=='--no-daemon')throw Error('Codex must not use the shared daemon');if(args.join(' ')!=='plugin list --json')throw Error('unexpected harness mutation');console.log(command==='omp'?'{"npm":[]}':command==='codex'?'{"installed":[]}':'[]'); }
+} else { if(command==='codex'){if(args.shift()!=='--no-daemon'||args.join(' ')!=='plugin list --marketplace sideband --json')throw Error('Codex must use a filtered daemon-free listing');args.splice(2,2);}if(args.join(' ')!=='plugin list --json')throw Error('unexpected harness mutation');console.log(command==='omp'?'{"npm":[]}':command==='codex'?'{"installed":[]}':'[]'); }
 `);
   for (const command of ["npm", "omp", "claude", "codex"]) {
     await writeFile(join(bin, command + (process.platform === "win32" ? ".cmd" : "")), process.platform === "win32" ? `@"${process.execPath}" "${commands}" ${command} %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${commands}" ${command} "$@"\n`, { mode: 0o700 });
@@ -41,7 +42,7 @@ if(command==='npm') {
   });
   let log = ""; child.stdout.on("data", data => { log += data; }); child.stderr.on("data", data => { log += data; });
   const exited = new Promise(resolve => child.once("exit", resolve));
-  const wait = async (check: () => Promise<boolean>) => { const end = Date.now() + 30000; while (!await check()) { if (Date.now() > end) throw new Error(`Worker update did not settle: ${log}`); await new Promise(resolve => setTimeout(resolve, 30)); } };
+  const wait = async (check: () => Promise<boolean>) => { const end = Date.now() + testTimeout(30000); while (!await check()) { if (Date.now() > end) throw new Error(`Worker update did not settle: ${log}`); await new Promise(resolve => setTimeout(resolve, 30)); } };
   try {
     await web.connect();
     await wait(async () => (await web.request<ControlSnapshot>("control.list")).machines.some(machine => machine.online));

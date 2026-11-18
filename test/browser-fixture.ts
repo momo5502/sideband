@@ -1,10 +1,11 @@
+import { testTimeout } from "./waits.js";
 import assert from "node:assert/strict";
 import { JSDOM, VirtualConsole } from "jsdom";
 import WebSocket from "ws";
 import { RoomServer } from "../src/room-server.js";
 
 export async function until(check: () => boolean | Promise<boolean>, message = "Browser state did not settle.") {
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + testTimeout(8000);
   while (!await check()) { if (Date.now() > deadline) throw new Error(message); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 export type SavedBrowserState = { login?: string | null; identity?: string | null; rooms?: string | null };

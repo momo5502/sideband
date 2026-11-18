@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../dist/src/timeouts.js";
 // Smoke-test an isolated npm installation, not the source tree. Never print its ephemeral password.
 import { spawn } from "node:child_process";
 import { resolve, join } from "node:path";
@@ -27,7 +28,7 @@ const clients = [];
 try {
   const profile = await new Promise((resolve, reject) => {
     let stdout = ""; let stderr = "";
-    timer = setTimeout(() => reject(new Error("Installed server did not start.")), 10000);
+    timer = setTimeout(() => reject(new Error("Installed server did not start.")), STARTUP_TIMEOUT_MS);
     child.on("error", reject); child.on("exit", () => reject(new Error(`Installed server exited: ${stderr}`)));
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-1000); });
     child.stdout.on("data", (chunk) => {
@@ -42,7 +43,7 @@ try {
   const alice = new RoomClient(profile, "installed-alice", { proxyEnv: {} }); const bob = new RoomClient(profile, "installed-bob", { proxyEnv: {} }); clients.push(alice, bob);
   await alice.connect(); await bob.connect(); const room = await alice.joinRoom("installed-smoke"); await bob.joinRoom(room.id);
   const arrived = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error("Installed client did not receive push.")), 3000);
+    timer = setTimeout(() => reject(new Error("Installed client did not receive push.")), REQUEST_TIMEOUT_MS);
     bob.onMessage((message) => message.text === "Package push check" ? resolve(message) : reject(new Error("Wrong message.")));
   });
   await alice.send("Package push check"); await arrived; clearTimeout(timer);
@@ -55,7 +56,7 @@ try {
         let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; });
         res.once("end", () => resolve({ code: res.statusCode, body })); res.once("error", reject);
       });
-      req.setTimeout(3000, () => req.destroy(new Error("Installed status request timed out.")));
+      req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error("Installed status request timed out.")));
       req.once("error", reject); req.end();
     });
     assert.equal(status.code, 200); assert.deepEqual(JSON.parse(status.body), { rooms: 1, connectedParticipants: 2 });
@@ -66,7 +67,7 @@ try {
           let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; });
           res.once("end", () => resolve({ code: res.statusCode, body })); res.once("error", reject);
         });
-        req.setTimeout(3000, () => req.destroy(new Error("Installed browser page request timed out."))); req.once("error", reject); req.end();
+        req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error("Installed browser page request timed out."))); req.once("error", reject); req.end();
       });
       assert.equal(page.code, 200); assert.ok(page.body.length > 1000); assert.ok(!page.body.includes(profile.password));
     }
@@ -78,11 +79,11 @@ try {
     const req = httpRequest(`http://127.0.0.1:${profile.statusPort}${path}`, { method: "POST", agent: false, headers: { "Content-Type": "application/json", "X-GitHub-Event": "issues" } }, res => {
       res.resume(); res.once("end", () => resolve(res.statusCode)); res.once("error", reject);
     });
-    req.setTimeout(3000, () => req.destroy(new Error("Installed webhook timed out."))); req.once("error", reject);
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error("Installed webhook timed out."))); req.once("error", reject);
     req.end(JSON.stringify({ action: "opened", repository: { full_name: "owner/repo", owner: { avatar_url: "metadata-noise" } }, issue: { number: 1, title: "Bug", body: "body-noise" } }));
   });
   assert.equal(webhookCode, 204);
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
   while (!webhookReceived) { if (Date.now() > deadline) throw new Error("Installed webhook push did not arrive."); await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.equal((await bob.history()).length, 2);
   const origin = `http://127.0.0.1:${profile.statusPort}`;
@@ -93,7 +94,7 @@ try {
   let backgroundPush;
   web.onMessage = message => { if (message.text === "@installed-web-user background mention") backgroundPush = message; };
   await alice.send("@installed-web-user background mention");
-  const pushedBy = Date.now() + 3000;
+  const pushedBy = Date.now() + REQUEST_TIMEOUT_MS;
   while (!backgroundPush) { if (Date.now() > pushedBy) throw new Error("Installed multi-room browser push timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.equal(backgroundPush.roomId, firstRoom.id);
   await web.send("Only in the second room"); assert.deepEqual((await web.history()).map(message => message.text), ["Only in the second room"]);
@@ -101,7 +102,7 @@ try {
   await web.join(secondRoom.id); assert.ok((await web.rooms()).some(room => room.id === secondRoom.id));
   await web.subscribe(firstRoom.id); await web.leave(); assert.deepEqual([...web.joinedRooms.keys()], [secondRoom.id]);
   web.disconnect();
-  const loggedOutBy = Date.now() + 3000;
+  const loggedOutBy = Date.now() + REQUEST_TIMEOUT_MS;
   while ((await alice.listRooms()).some(room => room.id === secondRoom.id)) { if (Date.now() > loggedOutBy) throw new Error("Installed browser memberships did not clean up."); await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.equal((await alice.members()).length, 2);
   console.log("Installed npm package: server, pinned TLS, signed push/history, status, browser assets, YAML webhooks, multi-room browser delivery and membership cleanup passed.");

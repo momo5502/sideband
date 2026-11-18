@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS } from "./timeouts.js";
 import { createServer, type Socket } from "node:net";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -19,7 +20,7 @@ export class NativeView {
   private readonly token = randomBytes(32).toString("base64url");
   private readonly server = createServer(socket => {
     if (this.sockets.size >= 8) { socket.destroy(); return; }
-    this.sockets.add(socket); const timer = setTimeout(() => socket.destroy(), 5000);
+    this.sockets.add(socket); const timer = setTimeout(() => socket.destroy(), REQUEST_TIMEOUT_MS);
     socket.once("close", () => { clearTimeout(timer); this.sockets.delete(socket); if (this.owner === socket && !this.stopped) this.closed(); });
     readLocal(socket, packet => {
       if (socket !== this.owner) {
@@ -54,7 +55,7 @@ export class NativeView {
     if (process.platform === "win32" && command.some(value => /[\r\n%!"]/.test(value))) throw new Error("Unsupported characters in the native terminal path.");
     await writeFile(this.script, process.platform === "win32" ? `@echo off\r\n@chcp 65001 >nul\r\nsetlocal DisableDelayedExpansion\r\n${command.map(value => `"${value}"`).join(" ")}\r\n` : `#!/bin/sh\nexec ${command.map(shellQuote).join(" ")}\n`, { flag: "wx", mode: 0o700 });
     const ready = new Promise<void>((resolve, reject) => { this.ready = { resolve, reject }; });
-    const timer = setTimeout(() => this.ready?.reject(new Error("Native terminal did not start within 60 seconds. Check desktop access.")), 60000);
+    const timer = setTimeout(() => this.ready?.reject(new Error("Native terminal did not start within five minutes. Check desktop access.")), STARTUP_TIMEOUT_MS);
     try {
       const child = launchTerminal(launcher, this.script, id); child.on("error", error => this.ready?.reject(error)); child.stderr?.on("data", chunk => this.host.event("terminal", String(chunk))); child.unref();
       this.host.event("terminal", launcher.kind === "tmux" ? `Attach locally: tmux attach -t sb-${id}` : "Opening the native harness terminal on this machine.");
@@ -68,14 +69,14 @@ export class NativeView {
     if (process.platform === "win32" && this.ownerPid) { await consoleInput(this.ownerPid, text, escape); return; }
     if (!this.tmux) throw new Error("Native input requires Windows or tmux. Choose Background mode.");
     const { command, target } = this.tmux;
-    if (!escape) await runUpdateCommand(command, ["send-keys", "-t", target, "-l", "--", `\x1b[200~${text.replace(/\r\n?/g, "\n")}\x1b[201~`], { timeout: 5000 });
-    await runUpdateCommand(command, ["send-keys", "-t", target, escape ? "Escape" : "Enter"], { timeout: 5000 });
+    if (!escape) await runUpdateCommand(command, ["send-keys", "-t", target, "-l", "--", `\x1b[200~${text.replace(/\r\n?/g, "\n")}\x1b[201~`], { timeout: REQUEST_TIMEOUT_MS });
+    await runUpdateCommand(command, ["send-keys", "-t", target, escape ? "Escape" : "Enter"], { timeout: REQUEST_TIMEOUT_MS });
   }
   stop(): Promise<void> { return this.closing ??= this.close(); }
   private async close(): Promise<void> {
     this.stopped = true; this.ready?.reject(new Error("Native terminal stopped."));
     if (this.owner && !this.owner.destroyed) await new Promise<void>(resolve => {
-      const timer = setTimeout(resolve, 5000); this.owner!.once("close", () => { clearTimeout(timer); resolve(); }); writeLocal(this.owner, { type: "kill" }); this.owner!.end();
+      const timer = setTimeout(resolve, SHUTDOWN_TIMEOUT_MS); this.owner!.once("close", () => { clearTimeout(timer); resolve(); }); writeLocal(this.owner, { type: "kill" }); this.owner!.end();
     });
     for (const socket of this.sockets) socket.destroy(); await new Promise<void>(resolve => this.server.close(() => resolve())); await this.cleanup();
   }

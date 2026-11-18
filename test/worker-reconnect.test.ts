@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -12,7 +13,7 @@ import { RoomError } from "../src/room-protocol.js";
 import { RuntimeUpdater } from "../src/updater.js";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean, timeout = 15000) {
+async function until(check: () => boolean, timeout = testTimeout(15000)) {
   const end = Date.now() + timeout;
   while (!check()) { if (Date.now() > end) throw new Error("Worker recovery timed out."); await pause(25); }
 }
@@ -65,7 +66,7 @@ test("an updated worker still registers with a server that rejects terminal capa
   finally { await worker.close(); await server.close(); }
 });
 
-test("worker on shared HTTPS retries a prolonged outage, re-registers after server restart and reports rotated credentials", { timeout: 65000 }, async () => {
+test("worker on shared HTTPS retries a prolonged outage, re-registers after server restart and reports rotated credentials", { timeout: testTimeout(65000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-worker-reconnect-")), credentialsFile = join(directory, "identity.json");
   const certificate = await generate([{ name: "commonName", value: "sideband.example.com" }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
   const browserHttps = { domain: "sideband.example.com", directory: join(directory, "https"), httpPort: 0, httpsPort: 0, issue: async () => ({ key: certificate.private, cert: certificate.cert }) };
@@ -89,7 +90,7 @@ test("worker on shared HTTPS retries a prolonged outage, re-registers after serv
     assert.equal(await process.exited, 1, "permanent failures exit nonzero instead of silently abandoning recovery");
   } finally { await stop(process.child); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-reconnect-"))); await rm(directory, { recursive: true, force: true }); }
 });
-test("worker started during an outage waits for the server instead of exiting", { timeout: 15000 }, async () => {
+test("worker started during an outage waits for the server instead of exiting", { timeout: testTimeout(15000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-worker-initial-")), credentialsFile = join(directory, "identity.json");
   let server = await RoomServer.start({ host: "127.0.0.1", port: 0, credentialsFile }); const port = server.port;
   await new RoomProfiles(directory).save("test", { server: `127.0.0.1:${port}`, password: server.password }); await server.close();

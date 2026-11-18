@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { dirname, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { runUpdateCommand } from "./update-runtime.js";
@@ -8,6 +9,7 @@ export function officialSidebandSource(value) {
     return ["https://github.com/momo5502/sideband", "git@github.com:momo5502/sideband", "ssh://git@github.com/momo5502/sideband", "github:momo5502/sideband", "momo5502/sideband"].includes(source);
 }
 const missing = (error) => error.code === "ENOENT";
+const listingTimeout = REQUEST_TIMEOUT_MS;
 const failure = (error) => (error instanceof Error ? error.message : "Plugin update failed.").slice(0, 2048);
 async function ompSource(path) {
     if (typeof path !== "string")
@@ -28,9 +30,10 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
     for (const harness of ["omp", "claude", "codex"]) {
         let from;
         let step = "List installed plugins";
+        const listArgs = harness === "codex" ? ["plugin", "list", "--marketplace", "sideband", "--json"] : ["plugin", "list", "--json"];
         const invoke = (command, args, options) => run(command, command === "codex" ? ["--no-daemon", ...args] : args, { ...options, ...(command === "codex" ? { killTree: false } : {}) });
         try {
-            const listing = JSON.parse(await invoke(harness, ["plugin", "list", "--json"], { timeout: 30_000 }));
+            const listing = JSON.parse(await invoke(harness, listArgs, { timeout: listingTimeout }));
             const installed = harness === "omp" ? listing.npm?.find((plugin) => plugin.name === "sideband")
                 : harness === "claude" ? (Array.isArray(listing) ? listing : listing.installed ?? []).find((plugin) => plugin.id?.toLowerCase() === "sideband@sideband")
                     : listing.installed?.find((plugin) => plugin.pluginId?.toLowerCase() === "sideband@sideband");
@@ -47,7 +50,7 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
                 official = installed.marketplaceSource?.sourceType === "git" && officialSidebandSource(installed.marketplaceSource.source);
             else {
                 step = "Inspect marketplace source";
-                const raw = JSON.parse(await invoke("claude", ["plugin", "marketplace", "list", "--json"], { timeout: 30_000 }));
+                const raw = JSON.parse(await invoke("claude", ["plugin", "marketplace", "list", "--json"], { timeout: listingTimeout }));
                 const marketplace = (Array.isArray(raw) ? raw : raw.marketplaces ?? []).find((item) => item.name?.toLowerCase() === "sideband");
                 const source = marketplace?.source;
                 official = officialSidebandSource(marketplace?.repo ?? marketplace?.url ?? (typeof source === "string" ? source : source?.repo ?? source?.url));
@@ -72,7 +75,7 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
                 await invoke("codex", ["plugin", "marketplace", "upgrade", "sideband"]);
             }
             step = "Verify refreshed plugin";
-            const refreshed = JSON.parse(await invoke(harness, ["plugin", "list", "--json"], { timeout: 30_000 }));
+            const refreshed = JSON.parse(await invoke(harness, listArgs, { timeout: listingTimeout }));
             const updated = harness === "omp" ? refreshed.npm?.find((item) => item.name === "sideband")
                 : harness === "claude" ? (Array.isArray(refreshed) ? refreshed : refreshed.installed ?? []).find((item) => item.id?.toLowerCase() === "sideband@sideband")
                     : refreshed.installed?.find((item) => item.pluginId?.toLowerCase() === "sideband@sideband");

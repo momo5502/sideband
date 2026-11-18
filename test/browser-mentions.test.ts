@@ -1,10 +1,11 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
 import { browserPage, until } from "./browser-fixture.js";
 
-for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} multi-room chat: unread messages, exact mentions, notifications, visibility and live room discovery`, { timeout: 20000 }, async () => {
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} multi-room chat: unread messages, exact mentions, notifications, visibility and live room discovery`, { timeout: testTimeout(20000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const a = new RoomClient(profile, "alice"), b = new RoomClient(profile, "bob"); let page: Awaited<ReturnType<typeof browserPage>> | undefined;

@@ -1,3 +1,4 @@
+import { HANDSHAKE_TIMEOUT_MS, REQUEST_TIMEOUT_MS, CONTROL_TIMEOUT_MS } from "./timeouts.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type { AgentIdentity, Room, SignedMessage, PresenceEvent, Login } from "./room-protocol.js";
@@ -72,7 +73,7 @@ export class BrowserRoomClient {
     });
     try {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => { socket.close(); reject(new Error("Connection timed out.")); }, 10000);
+        const timer = setTimeout(() => { socket.close(); reject(new Error("Connection timed out.")); }, HANDSHAKE_TIMEOUT_MS);
         const done = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
         socket.addEventListener("open", () => done(), { once: true });
         socket.addEventListener("error", () => done(new Error("Cannot connect to this server.")), { once: true });
@@ -94,7 +95,7 @@ export class BrowserRoomClient {
     if (this.socket?.readyState !== 1) return Promise.reject(new Error("Disconnected."));
     const id = randomId();
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timed out. Check history before resending.")); }, method.startsWith("control.") ? 35000 : 7000);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timed out. Check history before resending.")); }, method.startsWith("control.") ? CONTROL_TIMEOUT_MS + 60_000 : REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       this.socket!.send(JSON.stringify({ v: 1, id, method, params }));
     });

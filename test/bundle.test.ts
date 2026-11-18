@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, copyFile, rm } from "node:fs/promises";
@@ -39,7 +40,7 @@ test("standalone plugin runs without node_modules and uses native Claude credent
     await sender.connect(); const room = await sender.joinRoom("standalone");
     assert.equal((await call("sideband_join_room", { room: room.id, name: "receiver" })).isError, undefined);
     const arrived = new Promise<unknown>((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error("Missing standalone notification")), 4000);
+      timer = setTimeout(() => reject(new Error("Missing standalone notification")), testTimeout(4000));
       client.setNotificationHandler(NotificationSchema.extend({ method: z.literal("notifications/claude/channel") }), notification => resolve(notification.params));
     });
     await sender.send("Bundled client works");

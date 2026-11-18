@@ -1,3 +1,4 @@
+import { HANDSHAKE_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Agent as HttpsAgent } from "node:https";
 import WebSocket from "ws";
@@ -91,7 +92,7 @@ export class RoomClient {
         const socket = new WebSocket(this.endpoint, {
             // This isn't unverified TLS: the exact SHA-256 certificate pin is verified below,
             // before any password, public identity or message is sent.
-            rejectUnauthorized: false, ...{ servername: NATIVE_TLS_SERVERNAME }, handshakeTimeout: proxy ? 10_000 : 5000, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
+            rejectUnauthorized: false, ...{ servername: NATIVE_TLS_SERVERNAME }, handshakeTimeout: HANDSHAKE_TIMEOUT_MS, maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
             // Explicitly bypass Node's global proxy agent when NO_PROXY (or no proxy) selects direct access.
             agent,
         });
@@ -295,7 +296,7 @@ export class RoomClient {
             return Promise.reject(new Error("Room server is disconnected."));
         const id = randomUUID();
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timed out; acceptance is unknown. Check history before resending.")); }, 5000);
+            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Request timed out; acceptance is unknown. Check history before resending.")); }, REQUEST_TIMEOUT_MS);
             this.pending.set(id, { resolve: (value) => resolve(value), reject, timer });
             socket.send(JSON.stringify({ v: VERSION, id, method, params }), (error) => {
                 if (error) {

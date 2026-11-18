@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -187,7 +188,7 @@ test("end-to-end TLS broadcast reaches an MCP native channel notification with n
     const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args });
     assert.equal((await call("sideband_join_room", { room: room.id, name: "receiver" })).isError, undefined);
     const arrived = new Promise<void>((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error("No pushed MCP notification")), 4000);
+      timer = setTimeout(() => reject(new Error("No pushed MCP notification")), testTimeout(4000));
       const interval = setInterval(() => { if (notifications.length) { clearInterval(interval); resolve(); } }, 10);
       interval.unref();
     });
@@ -196,7 +197,7 @@ test("end-to-end TLS broadcast reaches an MCP native channel notification with n
     assert.equal(notifications.length, 1);
     assert.deepEqual(notifications[0].params, { content: '<sideband sender="sender">\nPushed from a real WebSocket peer\n</sideband>' });
     await visitor.connect(); await visitor.joinRoom(room.id); await visitor.close();
-    const deadline = Date.now() + 4000;
+    const deadline = Date.now() + testTimeout(4000);
     while (notifications.length < 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert.deepEqual(notifications.slice(1).map(notification => notification.params), [
       { content: '<sideband event="joined" participant="visitor" />' },

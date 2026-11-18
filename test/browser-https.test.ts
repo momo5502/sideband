@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -16,7 +17,7 @@ import { BrowserRoomClient } from "../src/browser-protocol.js";
 
 const domain = "sideband.example.com";
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean) { const end = Date.now() + 6000; while (!check()) { if (Date.now() > end) throw new Error("HTTPS condition timed out."); await pause(10); } }
+async function until(check: () => boolean) { const end = Date.now() + testTimeout(6000); while (!check()) { if (Date.now() > end) throw new Error("HTTPS condition timed out."); await pause(10); } }
 async function certificate(): Promise<BrowserCertificate> {
   const pair = await generate([{ name: "commonName", value: domain }], { keyType: "ec", curve: "P-256", algorithm: "sha256" });
   return { key: pair.private, cert: pair.cert };

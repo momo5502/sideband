@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS, COMMAND_TIMEOUT_MS, INSTALL_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID } from "node:crypto";
 import { realpathSync, existsSync, readFileSync } from "node:fs";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
@@ -51,7 +52,8 @@ export const runUpdateCommand: RunUpdateCommand = (command, args, options = {}) 
   const clean = () => { clearTimeout(timer); if (drain) clearTimeout(drain); options.signal?.removeEventListener("abort", cancelled); };
   const detach = () => { child.stdout?.destroy(); child.stderr?.destroy(); };
   const fail = (error: Error) => { if (settled) return; settled = true; clean(); if (!exited && child.exitCode === null && child.signalCode === null) { if (options.killTree === false) child.kill("SIGKILL"); else terminateTree(child); } detach(); reject(error); };
-  const timer = setTimeout(() => fail(new Error(`${command} timed out.`)), options.timeout ?? 5 * 60_000);
+  const started = Date.now(), timeout = options.timeout ?? COMMAND_TIMEOUT_MS;
+  const timer = setTimeout(() => fail(new Error(`${command} timed out after ${Math.round((Date.now() - started) / 1000)}s (limit ${timeout / 1000}s).`)), timeout);
   options.signal?.addEventListener("abort", cancelled, { once: true });
   child.stdout!.setEncoding("utf8"); child.stderr!.setEncoding("utf8");
   child.stdout!.on("data", value => { if (settled) return; stdout += value; if (stdout.length > 4 * 1024 * 1024) fail(new Error(`${command} produced too much output.`)); });
@@ -69,7 +71,7 @@ export const runUpdateCommand: RunUpdateCommand = (command, args, options = {}) 
   });
 });
 async function latestManifest(commit: string): Promise<{ version: string }> {
-  const url = `https://raw.githubusercontent.com/momo5502/sideband/${commit}/package.json`, signal = AbortSignal.timeout(15000);
+  const url = `https://raw.githubusercontent.com/momo5502/sideband/${commit}/package.json`, signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const proxy = roomProxyUrl(url), agent = proxy ? roomProxyAgent(proxy, signal) : false;
   return new Promise((resolvePromise, reject) => {
     const req = request(url, { agent, signal, headers: { "User-Agent": "Sideband updater" } }, res => {
@@ -81,7 +83,7 @@ async function latestManifest(commit: string): Promise<{ version: string }> {
   });
 }
 export async function latestBuild(run: RunUpdateCommand = runUpdateCommand): Promise<LatestBuild> {
-  const output = await run("git", ["ls-remote", UPDATE_REPOSITORY, "refs/heads/main"], { timeout: 15000 });
+  const output = await run("git", ["ls-remote", UPDATE_REPOSITORY, "refs/heads/main"], { timeout: REQUEST_TIMEOUT_MS });
   const commit = /^([a-f0-9]{40})\s+refs\/heads\/main\s*$/m.exec(output)?.[1];
   if (!validCommit(commit)) throw new Error("Cannot resolve Sideband's main branch.");
   return { commit, ...(await latestManifest(commit)) };
@@ -92,12 +94,12 @@ export async function installRuntime(commit: string, directory = stateDirectory,
   let installed = false; try { installed = buildInfo(entry).commit === commit; } catch { /* Retry an incomplete installation. */ }
   if (!installed) {
     await mkdir(prefix, { recursive: true, mode: 0o700 });
-    await run("npm", ["install", "--prefix", prefix, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", `git+${UPDATE_REPOSITORY}#${commit}`], { timeout: 10 * 60_000 });
+    await run("npm", ["install", "--prefix", prefix, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", `git+${UPDATE_REPOSITORY}#${commit}`], { timeout: INSTALL_TIMEOUT_MS });
     const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
     if (pkg.name !== "sideband" || typeof pkg.version !== "string" || !existsSync(entry)) throw new Error("Installed update is missing Sideband's CLI.");
     await privateJson(join(root, ".sideband-install.json"), { commit, source: UPDATE_REPOSITORY });
   }
-  const version = await run(process.execPath, [entry, "--runtime-version"], { timeout: 15000 });
+  const version = await run(process.execPath, [entry, "--runtime-version"], { timeout: REQUEST_TIMEOUT_MS });
   if (!version.includes(commit)) throw new Error("The new Sideband runtime failed its version check. The current process is unchanged.");
   return { entry, build: buildInfo(entry) };
 }

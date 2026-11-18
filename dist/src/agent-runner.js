@@ -1,3 +1,4 @@
+import { INSTALL_TIMEOUT_MS } from "./timeouts.js";
 import { mkdir } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import spawn from "cross-spawn";
@@ -146,7 +147,7 @@ export class AgentRunner {
             child.stderr?.setEncoding("utf8");
             child.stdout?.on("data", chunk => this.record("git", String(chunk)));
             child.stderr?.on("data", chunk => this.record("git", String(chunk)));
-            const timer = setTimeout(() => { terminateTree(child); reject(new Error("Repository operation timed out.")); }, 10 * 60_000);
+            const timer = setTimeout(() => { terminateTree(child); reject(new Error("Repository operation timed out.")); }, INSTALL_TIMEOUT_MS);
             child.once("error", error => { clearTimeout(timer); reject(error); });
             child.once("close", code => { clearTimeout(timer); this.preparing = undefined; code === 0 ? resolvePromise() : reject(new Error(`Git exited (${code}). Check the repository URL and this machine's Git credentials.`)); });
         });

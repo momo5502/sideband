@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -21,7 +22,7 @@ import { loginAndSave } from "../src/terminal-login.js";
 import { CodexRpc } from "../src/rpc.js";
 
 async function until(check: () => boolean): Promise<void> {
-  const end = Date.now() + 4000;
+  const end = Date.now() + testTimeout(4000);
   while (!check()) { if (Date.now() > end) throw new Error("Proxy condition timed out."); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
@@ -186,7 +187,7 @@ test("local Codex RPC stays direct even if the global HTTP agent is configured t
   finally { http.globalAgent = original; await rpc?.close(); global.destroy(); for (const socket of ws.clients) socket.terminate(); await new Promise<void>(resolve => ws.close(() => resolve())); await tunnel.close(); }
 });
 
-test("bundled MCP supports a trusted HTTPS proxy while untrusted proxy TLS is rejected", { timeout: 15_000 }, async () => {
+test("bundled MCP supports a trusted HTTPS proxy while untrusted proxy TLS is rejected", { timeout: testTimeout(15_000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-proxy-mcp-"));
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0 }); const tunnel = await proxy(server.port, { secure: true });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password };

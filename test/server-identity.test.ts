@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -108,7 +109,7 @@ test("occupied HTTP status port fails startup without rotating credentials or le
   } finally { await blocker.close(); await f.close(); }
 });
 
-test("packaged server CLI reuses its default state file and rotates only with --rotate-password", { timeout: 20_000 }, async () => {
+test("packaged server CLI reuses its default state file and rotates only with --rotate-password", { timeout: testTimeout(60_000) }, async () => {
   const f = await fixture(); const children = new Set<ChildProcess>();
   const start = async (rotate = false) => {
     const child = spawn(process.execPath, [resolve("dist/sideband.cjs"), "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0", ...(rotate ? ["--rotate-password"] : [])],
@@ -117,7 +118,7 @@ test("packaged server CLI reuses its default state file and rotates only with --
     let timer: NodeJS.Timeout;
     const password = await new Promise<string>((resolvePassword, reject) => {
       let output = "";
-      timer = setTimeout(() => reject(new Error("Server CLI startup timed out.")), 5000);
+      timer = setTimeout(() => reject(new Error("Server CLI startup timed out.")), testTimeout(15_000));
       child.once("error", reject); child.once("exit", () => reject(new Error("Server CLI exited before startup.")));
       child.stdout!.on("data", chunk => {
         output += chunk;

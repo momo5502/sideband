@@ -1,3 +1,4 @@
+import { CONTROL_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { fields, text, RoomError } from "./room-protocol.js";
@@ -54,7 +55,7 @@ export class OrchestrationServer {
             throw new Error("Too many pending control requests.");
         const id = randomUUID();
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Control request timed out; acceptance is unknown. Check the agent before retrying.")); }, 30_000);
+            const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Control request timed out; acceptance is unknown. Check the agent before retrying.")); }, CONTROL_TIMEOUT_MS);
             this.pending.set(id, { socket: peer.socket, resolve, reject, timer });
             this.send(peer.socket, { event: "control.command", data: { id, method, params } });
         });

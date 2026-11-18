@@ -1,3 +1,4 @@
+import { testTimeout } from "./waits.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -15,7 +16,7 @@ import { verifyMessage, MAX_TEXT_BYTES, type SignedMessage } from "../src/room-p
 import { Webhooks, webhookText, MAX_WEBHOOK_BYTES } from "../src/webhooks.js";
 
 async function until(check: () => boolean) {
-  const deadline = Date.now() + 4000;
+  const deadline = Date.now() + testTimeout(4000);
   while (!check()) { if (Date.now() > deadline) throw new Error("Webhook push did not arrive."); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 function browser(server: RoomServer, key?: Uint8Array) {

@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { createServer, connect } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
@@ -22,7 +23,7 @@ export class ManagedRoomTools {
         this.sockets.add(socket);
         socket.once("close", () => this.sockets.delete(socket));
         let authenticated = false, active = 0;
-        const timer = setTimeout(() => socket.destroy(), 5000);
+        const timer = setTimeout(() => socket.destroy(), REQUEST_TIMEOUT_MS);
         socket.once("close", () => clearTimeout(timer));
         readLocal(socket, packet => {
             if (!authenticated) {
@@ -78,7 +79,7 @@ export async function runManagedHook(path) {
             return;
         socket = connect({ host: "127.0.0.1", port: config.port });
         await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { socket.destroy(); reject(new Error("Hook timed out.")); }, 3000);
+            const timer = setTimeout(() => { socket.destroy(); reject(new Error("Hook timed out.")); }, REQUEST_TIMEOUT_MS);
             const finish = (error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
             socket.once("error", finish);
             socket.once("close", () => finish(new Error("Controller disconnected.")));
@@ -103,7 +104,7 @@ export async function runManagedMcp(path) {
     const pending = new Map();
     const server = new Server({ name: "sideband-managed", version: "1.0.0" }, { capabilities: { tools: {} } });
     const ready = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { socket.destroy(); reject(new Error("Managed room bridge timed out.")); }, 5000);
+        const timer = setTimeout(() => { socket.destroy(); reject(new Error("Managed room bridge timed out.")); }, STARTUP_TIMEOUT_MS);
         socket.once("error", reject);
         socket.once("connect", () => writeLocal(socket, { type: "hello", token: config.token }));
         socket.once("close", () => { clearTimeout(timer); reject(new Error("Managed room bridge disconnected.")); });
@@ -126,7 +127,7 @@ export async function runManagedMcp(path) {
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
             const result = await new Promise((resolve, reject) => {
-                const id = String(++next), timer = setTimeout(() => { pending.delete(id); reject(new Error("Room tool timed out; acceptance is unknown.")); }, 25000);
+                const id = String(++next), timer = setTimeout(() => { pending.delete(id); reject(new Error("Room tool timed out; acceptance is unknown.")); }, REQUEST_TIMEOUT_MS);
                 if (pending.size >= 16) {
                     clearTimeout(timer);
                     reject(new Error("Too many room requests."));

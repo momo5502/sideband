@@ -1,3 +1,4 @@
+import { STARTUP_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS } from "./timeouts.js";
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -29,9 +30,9 @@ export async function supervise(entry: string, args: string[], directory = state
     const child = spawn(process.execPath, [selected, ...args], { stdio: ["inherit", "inherit", "inherit", "ipc"], windowsHide: true,
       env: { ...process.env, SIDEBAND_SUPERVISED: "1", SIDEBAND_STATE_DIR: resolve(directory) } });
     let stopTimer: NodeJS.Timeout | undefined;
-    const stop = () => { stopping = true; if (child.connected) child.send({ type: "sideband.shutdown" }); else child.kill(); stopTimer ??= setTimeout(() => child.kill(), 15000); };
+    const stop = () => { stopping = true; if (child.connected) child.send({ type: "sideband.shutdown" }); else child.kill(); stopTimer ??= setTimeout(() => child.kill(), SHUTDOWN_TIMEOUT_MS); };
     process.on("SIGINT", stop); process.on("SIGTERM", stop);
-    const timer = switched ? setTimeout(() => { if (!ready) child.kill(); }, 60_000) : undefined;
+    const timer = switched ? setTimeout(() => { if (!ready) child.kill(); }, STARTUP_TIMEOUT_MS) : undefined;
     let nextArgs = args;
     child.on("message", (message: any) => {
       if (message?.type === "sideband.ready") { ready = true; if (timer) clearTimeout(timer); if (active) void privateJson(join(runtimeDirectory(directory), "active.json"), active).catch(() => {}); }
