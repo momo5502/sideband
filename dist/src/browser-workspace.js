@@ -1,5 +1,6 @@
 import { BrowserRoomClient, base64, unbase64 } from "./browser-protocol.js";
 export const loginStorage = "sideband.login.v1", identityStorage = "sideband.identity.v1", roomsStorage = "sideband.rooms.v1";
+export const draftsStorage = "sideband.drafts.v1", reloadStorage = "sideband.reloaded-build.v1";
 export const identityLabel = (identity) => identity.name || `#${identity.id.replace(/^agent-/, "").slice(0, 12)}`;
 const colors = ["#8ab4f8", "#81c995", "#fdd663", "#f28b82", "#c58af9", "#78d9ec", "#ffb4d2", "#ffb86b"];
 const assignedColors = new Map();
@@ -45,6 +46,7 @@ const errorText = (error) => error instanceof Error ? error.message : "Request f
 export class BrowserWorkspace {
     window;
     createClient;
+    reloadPage;
     state = initial();
     listeners = new Set();
     client;
@@ -68,9 +70,16 @@ export class BrowserWorkspace {
     controlSequence = 0;
     launchSpecs = new Map();
     drafts = new Map();
-    constructor(window, createClient = (endpoint, password, name, key) => new BrowserRoomClient(endpoint, password, name, key)) {
+    pageBuild;
+    reloading = false;
+    draftEditedAt = 0;
+    constructor(window, createClient = (endpoint, password, name, key) => new BrowserRoomClient(endpoint, password, name, key), reloadPage = () => window.location.reload()) {
         this.window = window;
         this.createClient = createClient;
+        this.reloadPage = reloadPage;
+        this.pageBuild = window.document.querySelector('meta[name="sideband-build"]')?.getAttribute("content") || undefined;
+        window.document.addEventListener("input", event => { if (event.target?.closest?.(".composer"))
+            this.draftEditedAt = Date.now(); });
         window.addEventListener("online", () => this.retry());
         const visible = () => { if (window.document.visibilityState === "visible") {
             this.retry();
@@ -96,6 +105,7 @@ export class BrowserWorkspace {
                 this.window[kind].removeItem(key);
             else
                 this.window[kind].setItem(key, JSON.stringify(value));
+            return true;
         }
         catch { /* Storage may be unavailable in a private/embedded browser. */ }
     }
@@ -180,6 +190,7 @@ export class BrowserWorkspace {
         }
     }
     async open(client, generation, remembered) {
+        const previousRooms = this.state.joined;
         await client.connect();
         const current = () => this.client === client && this.wanted && generation === this.generation;
         if (!current()) {
@@ -205,6 +216,27 @@ export class BrowserWorkspace {
             }
         }
         const active = [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === last?.toLowerCase());
+        for (const old of previousRooms) {
+            const replacement = [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === old.name.toLowerCase());
+            const draft = this.drafts.get(`room:${old.id}`);
+            if (replacement && replacement.id !== old.id && draft !== undefined) {
+                this.drafts.set(`room:${replacement.id}`, draft);
+                this.drafts.delete(`room:${old.id}`);
+            }
+        }
+        const savedDrafts = this.storage("sessionStorage", draftsStorage);
+        if (savedDrafts?.name === (client.identity.name ?? "") && Array.isArray(savedDrafts.entries)) {
+            for (const entry of savedDrafts.entries.slice(0, 200)) {
+                if (typeof entry?.text !== "string" || entry.text.length > 16000 || typeof entry.id !== "string")
+                    continue;
+                const room = entry.kind === "room" ? [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === entry.id.toLowerCase()) : undefined;
+                if (room)
+                    this.drafts.set(`room:${room.id}`, entry.text);
+                else if (entry.kind === "agent" && /^[a-f0-9-]{36}$/.test(entry.id))
+                    this.drafts.set(`agent:${entry.id}`, entry.text);
+            }
+        }
+        this.storage("sessionStorage", draftsStorage, null);
         client.room = active ?? null;
         const mentions = { ...this.state.mentions };
         if (Array.isArray(remembered?.pings))
@@ -265,9 +297,9 @@ export class BrowserWorkspace {
     }
     saveRooms() {
         if (!this.state.identity)
-            return;
-        this.storage("sessionStorage", roomsStorage, { name: this.state.identity.name ?? "", rooms: [...this.restore], active: this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? null,
-            pings: this.state.joined.filter(room => this.state.mentions[room.id]).map(room => ({ room: room.name, count: this.state.mentions[room.id] })) });
+            return false;
+        return this.storage("sessionStorage", roomsStorage, { name: this.state.identity.name ?? "", rooms: [...this.restore], active: this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? null,
+            pings: this.state.joined.filter(room => this.state.mentions[room.id]).map(room => ({ room: room.name, count: this.state.mentions[room.id] })) }) === true;
     }
     receive(item) {
         const previous = this.state.messages[item.roomId] ?? [];
@@ -374,7 +406,10 @@ export class BrowserWorkspace {
                 const view = this.state.view;
                 if (view.kind === "agent" && !this.state.control.agents.find(agent => agent.id === view.id)?.online && control.agents.find(agent => agent.id === view.id)?.online)
                     this.watched = "";
-                this.update({ control, controlError: "" });
+                const build = control.updates?.current, identity = build && (build.commit ?? `v${build.version}`);
+                this.pageBuild ??= identity;
+                const serverUpdate = identity && this.pageBuild && identity !== this.pageBuild ? { build: identity, automatic: this.storage("sessionStorage", reloadStorage) !== identity } : undefined;
+                this.update({ control, controlError: "", serverUpdate });
                 if (view.kind === "agent" && !this.watched && control.agents.find(agent => agent.id === view.id)?.online)
                     await this.watchAgent(view.id);
             } while (this.controlDirty && this.client === client && this.state.connection === "on");
@@ -539,6 +574,27 @@ export class BrowserWorkspace {
         await this.requireClient().request(start ? "control.updates.start" : "control.updates.check");
         await this.refreshControl();
     }
+    reloadUpdated(manual = false) {
+        const update = this.state.serverUpdate;
+        if (!update || this.reloading || !manual && !update.automatic || this.state.connection !== "on")
+            return;
+        if (!manual && this.window.document.activeElement?.closest(".composer") && Date.now() - this.draftEditedAt < 5000)
+            return;
+        const roomsSaved = this.saveRooms();
+        const entries = [...this.drafts].filter(([, text]) => text).slice(-200).flatMap(([key, text]) => {
+            if (key.startsWith("agent:"))
+                return [{ kind: "agent", id: key.slice(6), text }];
+            const room = this.state.joined.find(room => `room:${room.id}` === key);
+            return room ? [{ kind: "room", id: room.name, text }] : [];
+        });
+        if (!this.storage("sessionStorage", draftsStorage, { name: this.state.identity?.name ?? "", entries }) || !roomsSaved) {
+            this.update({ serverUpdate: { ...update, automatic: false }, error: "Could not save this tab for refresh. Copy your drafts before reloading the page." });
+            return;
+        }
+        this.storage("sessionStorage", reloadStorage, update.build);
+        this.reloading = true;
+        this.reloadPage();
+    }
     home() { this.update({ view: { kind: "home" }, error: "" }); this.watched = ""; ++this.watchGeneration; if (this.client)
         void this.client.request("control.watch", { agentId: "" }).catch(() => { }); }
     clearError() { this.update({ error: "" }); }
@@ -571,6 +627,8 @@ export class BrowserWorkspace {
         this.pinged.clear();
         this.storage("sessionStorage", identityStorage, null);
         this.storage("sessionStorage", roomsStorage, null);
+        this.storage("sessionStorage", draftsStorage, null);
+        this.reloading = false;
         this.update(initial());
     }
     forget() { this.logout(); this.storage("localStorage", loginStorage, null); this.update({ error: "Saved login removed." }); }

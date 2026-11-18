@@ -60,3 +60,24 @@ test("browser update controls reject extra parameters and show one-time bootstra
     assert.equal(page.doc.querySelector("#updates-install"), null);
   } finally { await page.close(); await server.close(); }
 });
+
+test("browser automatically refreshes a changed server build after editable dialogs close", { timeout: 20000 }, async () => {
+  const updater = new RuntimeUpdater("server", resolve("dist/src/cli.js"), resolve(".cache/reload-ui-fixture"), async () => {});
+  updater.build.commit = "a".repeat(40);
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, updater });
+  const page = await browserPage(server), peer = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password });
+  try {
+    assert.equal(page.doc.querySelector('meta[name="sideband-build"]')?.getAttribute("content"), updater.build.commit);
+    await page.login(); await page.navigation(); page.click("#new-agent");
+    await until(() => !!page.doc.querySelector("#new-agent-dialog")); page.fill("#agent-name", "unsaved-name");
+    updater.build.commit = "b".repeat(40);
+    await peer.connect(); await peer.request("control.worker", { machine: { id: randomUUID(), name: "machine", platform: "test", harnesses: ["omp"] } });
+    await until(() => !!page.doc.querySelector("#server-update-banner"));
+    await new Promise(resolve => setTimeout(resolve, 2300));
+    assert.equal(page.errors.length, 0, "an editable launch dialog defers the automatic refresh");
+    assert.equal(page.get<HTMLInputElement>("#agent-name").value, "unsaved-name"); page.click(page.button("Cancel"));
+    // jsdom reports navigation instead of navigating; this proves the actual App effect
+    // invoked location.reload(), while BrowserWorkspace tests exercise restored state.
+    await until(() => page.errors.length === 1); assert.match(page.errors[0]!.message, /Not implemented: navigation/);
+  } finally { await page.close(); await peer.close(); await server.close(); }
+});

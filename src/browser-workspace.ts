@@ -10,8 +10,10 @@ export type WorkspaceState = {
   rooms: Room[]; joined: Room[]; messages: Record<string, ChatItem[]>; unread: Record<string, number>; mentions: Record<string, number>;
   members: AgentIdentity[]; control: ControlSnapshot; controlError: string;
   output: OutputEvent[]; outputAgent: string; loading: boolean;
+  serverUpdate?: { build: string; automatic: boolean };
 };
 export const loginStorage = "sideband.login.v1", identityStorage = "sideband.identity.v1", roomsStorage = "sideband.rooms.v1";
+export const draftsStorage = "sideband.drafts.v1", reloadStorage = "sideband.reloaded-build.v1";
 export const identityLabel = (identity: AgentIdentity) => identity.name || `#${identity.id.replace(/^agent-/, "").slice(0, 12)}`;
 const colors = ["#8ab4f8", "#81c995", "#fdd663", "#f28b82", "#c58af9", "#78d9ec", "#ffb4d2", "#ffb86b"];
 const assignedColors = new Map<string, string>();
@@ -70,7 +72,12 @@ export class BrowserWorkspace {
   private controlSequence = 0;
   readonly launchSpecs = new Map<string, LaunchSpec>();
   readonly drafts = new Map<string, string>();
-  constructor(private readonly window: Window, private readonly createClient = (endpoint: string, password: string, name: string, key: Uint8Array) => new BrowserRoomClient(endpoint, password, name, key)) {
+  private pageBuild?: string;
+  private reloading = false;
+  private draftEditedAt = 0;
+  constructor(private readonly window: Window, private readonly createClient = (endpoint: string, password: string, name: string, key: Uint8Array) => new BrowserRoomClient(endpoint, password, name, key), private readonly reloadPage = () => window.location.reload()) {
+    this.pageBuild = window.document.querySelector('meta[name="sideband-build"]')?.getAttribute("content") || undefined;
+    window.document.addEventListener("input", event => { if ((event.target as Element | null)?.closest?.(".composer")) this.draftEditedAt = Date.now(); });
     window.addEventListener("online", () => this.retry());
     const visible = () => { if (window.document.visibilityState === "visible") { this.retry(); if (this.state.view.kind === "room") this.markRead(this.state.view.id); } };
     window.document.addEventListener("visibilitychange", visible);
@@ -85,6 +92,7 @@ export class BrowserWorkspace {
     try {
       if (value === undefined) return JSON.parse(this.window[kind].getItem(key) ?? "null");
       if (value === null) this.window[kind].removeItem(key); else this.window[kind].setItem(key, JSON.stringify(value));
+      return true;
     } catch { /* Storage may be unavailable in a private/embedded browser. */ }
   }
   savedLogin(): { name: string; password: string } | undefined {
@@ -136,6 +144,7 @@ export class BrowserWorkspace {
     }
   }
   private async open(client: BrowserRoomClient, generation: number, remembered?: any): Promise<void> {
+    const previousRooms = this.state.joined;
     await client.connect();
     const current = () => this.client === client && this.wanted && generation === this.generation;
     if (!current()) { client.disconnect(); return; }
@@ -147,6 +156,21 @@ export class BrowserWorkspace {
     let last = this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? (typeof remembered?.active === "string" ? remembered.active : undefined);
     for (const name of this.restore) { await client.subscribe(name); if (!current()) { client.disconnect(); return; } }
     const active = [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === last?.toLowerCase());
+    for (const old of previousRooms) {
+      const replacement = [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === old.name.toLowerCase());
+      const draft = this.drafts.get(`room:${old.id}`);
+      if (replacement && replacement.id !== old.id && draft !== undefined) { this.drafts.set(`room:${replacement.id}`, draft); this.drafts.delete(`room:${old.id}`); }
+    }
+    const savedDrafts = this.storage("sessionStorage", draftsStorage);
+    if (savedDrafts?.name === (client.identity.name ?? "") && Array.isArray(savedDrafts.entries)) {
+      for (const entry of savedDrafts.entries.slice(0, 200)) {
+        if (typeof entry?.text !== "string" || entry.text.length > 16000 || typeof entry.id !== "string") continue;
+        const room = entry.kind === "room" ? [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === entry.id.toLowerCase()) : undefined;
+        if (room) this.drafts.set(`room:${room.id}`, entry.text);
+        else if (entry.kind === "agent" && /^[a-f0-9-]{36}$/.test(entry.id)) this.drafts.set(`agent:${entry.id}`, entry.text);
+      }
+    }
+    this.storage("sessionStorage", draftsStorage, null);
     client.room = active ?? null;
     const mentions: Record<string, number> = { ...this.state.mentions };
     if (Array.isArray(remembered?.pings)) for (const ping of remembered.pings) {
@@ -184,9 +208,9 @@ export class BrowserWorkspace {
     if (this.timer !== undefined) this.window.clearTimeout(this.timer); this.timer = undefined; this.attempt = 0; this.schedule();
   }
   private saveRooms() {
-    if (!this.state.identity) return;
-    this.storage("sessionStorage", roomsStorage, { name: this.state.identity.name ?? "", rooms: [...this.restore], active: this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? null,
-      pings: this.state.joined.filter(room => this.state.mentions[room.id]).map(room => ({ room: room.name, count: this.state.mentions[room.id] })) });
+    if (!this.state.identity) return false;
+    return this.storage("sessionStorage", roomsStorage, { name: this.state.identity.name ?? "", rooms: [...this.restore], active: this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? null,
+      pings: this.state.joined.filter(room => this.state.mentions[room.id]).map(room => ({ room: room.name, count: this.state.mentions[room.id] })) }) === true;
   }
   private receive(item: ChatItem) {
     const previous = this.state.messages[item.roomId] ?? [];
@@ -250,7 +274,10 @@ export class BrowserWorkspace {
         control = { ...control, agents: [...control.agents, ...[...this.pendingLaunches.values()].map(pending => pending.agent)] };
         const view = this.state.view;
         if (view.kind === "agent" && !this.state.control.agents.find(agent => agent.id === view.id)?.online && control.agents.find(agent => agent.id === view.id)?.online) this.watched = "";
-        this.update({ control, controlError: "" });
+        const build = control.updates?.current, identity = build && (build.commit ?? `v${build.version}`);
+        this.pageBuild ??= identity;
+        const serverUpdate = identity && this.pageBuild && identity !== this.pageBuild ? { build: identity, automatic: this.storage("sessionStorage", reloadStorage) !== identity } : undefined;
+        this.update({ control, controlError: "", serverUpdate });
         if (view.kind === "agent" && !this.watched && control.agents.find(agent => agent.id === view.id)?.online) await this.watchAgent(view.id);
       } while (this.controlDirty && this.client === client && this.state.connection === "on");
     })().catch(error => { if (this.client === client) this.update({ controlError: errorText(error) }); }).finally(() => {
@@ -350,6 +377,22 @@ export class BrowserWorkspace {
     await this.requireClient().request(start ? "control.updates.start" : "control.updates.check");
     await this.refreshControl();
   }
+  reloadUpdated(manual = false): void {
+    const update = this.state.serverUpdate;
+    if (!update || this.reloading || !manual && !update.automatic || this.state.connection !== "on") return;
+    if (!manual && this.window.document.activeElement?.closest(".composer") && Date.now() - this.draftEditedAt < 5000) return;
+    const roomsSaved = this.saveRooms();
+    const entries = [...this.drafts].filter(([, text]) => text).slice(-200).flatMap(([key, text]) => {
+      if (key.startsWith("agent:")) return [{ kind: "agent", id: key.slice(6), text }];
+      const room = this.state.joined.find(room => `room:${room.id}` === key);
+      return room ? [{ kind: "room", id: room.name, text }] : [];
+    });
+    if (!this.storage("sessionStorage", draftsStorage, { name: this.state.identity?.name ?? "", entries }) || !roomsSaved) {
+      this.update({ serverUpdate: { ...update, automatic: false }, error: "Could not save this tab for refresh. Copy your drafts before reloading the page." }); return;
+    }
+    this.storage("sessionStorage", reloadStorage, update.build); this.reloading = true;
+    this.reloadPage();
+  }
   home() { this.update({ view: { kind: "home" }, error: "" }); this.watched = ""; ++this.watchGeneration; if (this.client) void this.client.request("control.watch", { agentId: "" }).catch(() => {}); }
   clearError() { this.update({ error: "" }); }
   private requireClient(): BrowserRoomClient { if (!this.client || this.state.connection !== "on") throw new Error("Reconnecting. Your draft is kept; send it once connected."); return this.client; }
@@ -360,7 +403,7 @@ export class BrowserWorkspace {
     if (this.timer !== undefined) this.window.clearTimeout(this.timer); this.timer = undefined;
     const client = this.client; this.client = undefined; client?.disconnect(); this.restore.clear(); this.watched = "";
     for (const notification of this.notifications.values()) notification.close(); this.notifications.clear(); this.pinged.clear();
-    this.storage("sessionStorage", identityStorage, null); this.storage("sessionStorage", roomsStorage, null); this.update(initial());
+    this.storage("sessionStorage", identityStorage, null); this.storage("sessionStorage", roomsStorage, null); this.storage("sessionStorage", draftsStorage, null); this.reloading = false; this.update(initial());
   }
   forget() { this.logout(); this.storage("localStorage", loginStorage, null); this.update({ error: "Saved login removed." }); }
   private clearPending() { for (const pending of this.pendingLaunches.values()) this.window.clearTimeout(pending.timer); this.pendingLaunches.clear(); }

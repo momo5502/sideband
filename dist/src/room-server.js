@@ -179,7 +179,7 @@ export class RoomServer {
         }
         else if (path === "/chat") {
             contentType = "text/html; charset=utf-8";
-            body = webPage();
+            body = webPage(this.options.updater?.build);
         }
         else if (path === "/chat.js") {
             contentType = "text/javascript; charset=utf-8";

@@ -69,7 +69,7 @@ export function useLogScroll(ref, view, tail, label = "New messages") {
 export function Composer({ id, placeholder, context, disabled, onSend, drafts, draftKey, room = false }) {
     const [sending, setSending] = useState(false), [error, setError] = useState("");
     const field = useRef(null);
-    return _jsxs("form", { id: room ? "compose" : "agent-instructions", className: "composer", onSubmit: event => {
+    return _jsxs("form", { id: room ? "compose" : "agent-instructions", className: "composer", "data-sending": sending || undefined, onSubmit: event => {
             event.preventDefault();
             const input = field.current, text = input?.value ?? "";
             if (!text.trim() || disabled || sending)

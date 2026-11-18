@@ -149,7 +149,7 @@ export class RoomServer {
     let code = 200; let body: string; let contentType = "text/plain; charset=utf-8";
     if (!known) { code = 404; body = "Not found.\n"; }
     else if (!methodAllowed) { code = 405; headers.Allow = "GET, HEAD"; body = "Method not allowed.\n"; }
-    else if (path === "/chat") { contentType = "text/html; charset=utf-8"; body = webPage(); }
+    else if (path === "/chat") { contentType = "text/html; charset=utf-8"; body = webPage(this.options.updater?.build); }
     else if (path === "/chat.js") { contentType = "text/javascript; charset=utf-8"; body = browserScript; }
     else if (path === "/status.json") { contentType = "application/json; charset=utf-8"; body = `${JSON.stringify(this.publicStatus())}\n`; }
     else { contentType = "text/html; charset=utf-8"; body = statusPage(this.publicStatus()); }

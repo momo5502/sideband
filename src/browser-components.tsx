@@ -60,7 +60,7 @@ export function useLogScroll(ref: RefObject<HTMLDivElement | null>, view: string
 export function Composer({ id, placeholder, context, disabled, onSend, drafts, draftKey, room = false }: { id: string; placeholder: string; context: ReactNode; disabled: boolean; onSend(text: string): Promise<unknown>; drafts: Map<string, string>; draftKey: string; room?: boolean }) {
   const [sending, setSending] = useState(false), [error, setError] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
-  return <form id={room ? "compose" : "agent-instructions"} className="composer" onSubmit={event => {
+  return <form id={room ? "compose" : "agent-instructions"} className="composer" data-sending={sending || undefined} onSubmit={event => {
     event.preventDefault(); const input = field.current, text = input?.value ?? ""; if (!text.trim() || disabled || sending) return;
     setSending(true); setError(""); drafts.set(draftKey, text);
     void onSend(text).then(() => {

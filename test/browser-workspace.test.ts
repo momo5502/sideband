@@ -9,14 +9,67 @@ import { BrowserRoomClient } from "../src/browser-protocol.js";
 import { BrowserWorkspace } from "../src/browser-workspace.js";
 import type { ControlCommand, ManagedAgent } from "../src/orchestration-protocol.js";
 import { until } from "./browser-fixture.js";
+import { RuntimeUpdater } from "../src/updater.js";
+import { resolve } from "node:path";
+import { draftsStorage, identityStorage, loginStorage, roomsStorage, reloadStorage } from "../src/browser-workspace.js";
 
-function workspace(server: RoomServer) {
+function workspace(server: RoomServer, options: { build?: string; saved?: Record<string, string>; reload?: () => void } = {}) {
   const origin = `http://127.0.0.1:${server.statusPort}`, dom = new JSDOM("", { url: `${origin}/chat`, pretendToBeVisual: true });
   const sockets = new Set<WebSocket>();
+  if (options.build) { const meta = dom.window.document.createElement("meta"); meta.name = "sideband-build"; meta.content = options.build; dom.window.document.head.append(meta); }
+  for (const [key, value] of Object.entries(options.saved ?? {})) (key === loginStorage ? dom.window.localStorage : dom.window.sessionStorage).setItem(key, value);
   const store = new BrowserWorkspace(dom.window as unknown as Window, (url, password, name, key) => new BrowserRoomClient(url, password, name, key,
-    address => { const socket = new WebSocket(address, { origin }); sockets.add(socket); socket.once("close", () => sockets.delete(socket)); return socket as unknown as globalThis.WebSocket; }));
-  return { store, sockets, close() { store.dispose(); dom.window.close(); } };
+    address => { const socket = new WebSocket(address, { origin }); sockets.add(socket); socket.once("close", () => sockets.delete(socket)); return socket as unknown as globalThis.WebSocket; }), options.reload);
+  return { store, dom, sockets, close() { store.dispose(); dom.window.close(); } };
 }
+
+test("browser update reload preserves identity, room membership and drafts across new room IDs, and prevents stale-page loops", async () => {
+  const updater = new RuntimeUpdater("server", resolve("dist/src/cli.js"), resolve(".cache/reload-fixture"), async () => {});
+  updater.build.commit = "a".repeat(40);
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0, graceMs: 0, updater });
+  let reloads = 0;
+  const page = workspace(server, { build: updater.build.commit, reload: () => reloads++ });
+  const pages = [page];
+  try {
+    await page.store.login("human", server.password); await page.store.openRoom("work");
+    const firstRoom = page.store.snapshot().joined[0]!;
+    page.store.drafts.set(`room:${firstRoom.id}`, "Unsent\n**room draft**");
+    const agentId = randomUUID(); page.store.drafts.set(`agent:${agentId}`, "Private draft");
+    await page.store.refreshControl(); assert.equal(page.store.snapshot().serverUpdate, undefined);
+    // Same package version, different commit: reconnect is enough, without clicking Check.
+    updater.build.commit = "b".repeat(40);
+    for (const socket of page.sockets) socket.terminate();
+    await until(() => page.store.snapshot().serverUpdate?.build === updater.build.commit);
+    const recreated = page.store.snapshot().joined[0]!;
+    assert.notEqual(recreated.id, firstRoom.id);
+    assert.equal(page.store.drafts.get(`room:${recreated.id}`), "Unsent\n**room draft**");
+    const composer = page.dom.window.document.createElement("form"), input = page.dom.window.document.createElement("textarea");
+    composer.className = "composer"; composer.append(input); page.dom.window.document.body.append(composer); input.focus();
+    input.dispatchEvent(new page.dom.window.Event("input", { bubbles: true })); page.store.reloadUpdated(); assert.equal(reloads, 0, "active typing defers automatic reload"); input.blur();
+    const prototype = Object.getPrototypeOf(page.dom.window.sessionStorage), write = prototype.setItem;
+    prototype.setItem = function(key: string, value: string) { if (key === draftsStorage) throw new Error("Storage is full"); return write.call(this, key, value); };
+    page.store.reloadUpdated(); assert.equal(reloads, 0); assert.match(page.store.snapshot().error, /Copy your drafts/);
+    prototype.setItem = write;
+    page.store.reloadUpdated(true); page.store.reloadUpdated(true); assert.equal(reloads, 1);
+    const saved = Object.fromEntries([loginStorage, identityStorage, roomsStorage, draftsStorage, reloadStorage].map(key => [key, (key === loginStorage ? page.dom.window.localStorage : page.dom.window.sessionStorage).getItem(key)!]));
+    const identity = JSON.parse(saved[identityStorage]!).key;
+    page.close();
+    await until(() => (server as unknown as { rooms: Map<string, unknown> }).rooms.size === 0);
+    const fresh = workspace(server, { build: updater.build.commit, saved }); pages.push(fresh); fresh.store.start();
+    await until(() => fresh.store.snapshot().view.kind === "room");
+    const room = fresh.store.snapshot().joined[0]!;
+    assert.equal(room.name, "work"); assert.notEqual(room.id, recreated.id);
+    assert.equal(fresh.store.drafts.get(`room:${room.id}`), "Unsent\n**room draft**"); assert.equal(fresh.store.drafts.get(`agent:${agentId}`), "Private draft");
+    assert.equal(JSON.parse(fresh.dom.window.sessionStorage.getItem(identityStorage)!).key, identity);
+    assert.equal(fresh.store.snapshot().serverUpdate, undefined);
+    // A stale cache may serve the old HTML again. It must not repeatedly reload itself.
+    fresh.close();
+    const stale = workspace(server, { build: "a".repeat(40), saved, reload: () => reloads++ }); pages.push(stale); stale.store.start();
+    await until(() => !!stale.store.snapshot().serverUpdate);
+    assert.equal(stale.store.snapshot().serverUpdate?.automatic, false); stale.store.reloadUpdated(); assert.equal(reloads, 1);
+    stale.store.reloadUpdated(true); assert.equal(reloads, 2);
+  } finally { for (const page of pages) page.close(); await server.close(); }
+});
 test("leaving while the browser reconnects cancels room restoration", async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), page = workspace(server);
   const peer = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "peer");

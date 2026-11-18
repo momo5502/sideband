@@ -18,6 +18,16 @@ export function App({ store }: { store: BrowserWorkspace }) {
   const [launchTemplate, setLaunchTemplate] = useState<ManagedAgent | undefined>();
   const view = state.view, room = view.kind === "room" ? allRooms(state).find(room => room.id === view.id) : undefined, agent = view.kind === "agent" ? state.control.agents.find(agent => agent.id === view.id) : undefined;
   useEffect(() => { store.start(); }, [store]);
+  useEffect(() => {
+    if (!state.serverUpdate?.automatic || state.connection !== "on" || state.loading || actionBusy) return;
+    const timer = window.setInterval(() => {
+      // Keep unsaved launch/settings forms and in-flight messages intact. The Updates
+      // panel has no editable form, so it may refresh as soon as the rollout returns.
+      if ([...document.querySelectorAll('[role="dialog"]')].some(dialog => !dialog.querySelector("#updates-panel")) || document.querySelector('[data-sending="true"]')) return;
+      store.reloadUpdated();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [store, state.serverUpdate?.build, state.serverUpdate?.automatic, state.connection, state.loading, actionBusy]);
   const mentionCount = Object.values(state.mentions).reduce((sum, count) => sum + count, 0);
   useEffect(() => { document.title = `${mentionCount ? `(${mentionCount}) ` : ""}${room?.name ?? agent?.name ?? "Sideband"}${room || agent ? " — Sideband" : ""}`; }, [room?.name, agent?.name, mentionCount]);
   useEffect(() => { setActionError(""); setActionDialog(null); setDetails(false); }, [view.kind, view.kind === "home" ? "" : view.id]);
@@ -45,6 +55,7 @@ export function App({ store }: { store: BrowserWorkspace }) {
         {!room && !agent && <Button onClick={() => openDialog("new")}><Plus size={14} /><span className="header-label">New agent</span></Button>}
       </div></header>
       {state.connection === "reconnecting" && <div className="connection-banner" role="status"><Spinner size={13} />Reconnecting… Your session and drafts are kept.</div>}
+      {state.serverUpdate && <div id="server-update-banner" className="connection-banner flex items-center justify-between gap-3" role="status"><span>Sideband was updated. {state.serverUpdate.automatic ? "Refreshing when you finish editing; drafts are kept." : "Reload to load the latest interface."}</span><Button onClick={() => store.reloadUpdated(true)}>Reload now</Button></div>}
       {agent?.error && <div className="pane-error" role="status">{agent.error}</div>}
       {state.error && <div className="pane-error flex items-center justify-between gap-3" role="alert"><span>{state.error}</span><Button variant="ghost" icon aria-label="Dismiss error" onClick={() => store.clearError()}><X size={14} /></Button></div>}
       {actionError && <div className="pane-error flex items-center justify-between gap-3" role="alert"><span>{actionError}</span><Button variant="ghost" icon aria-label="Dismiss action error" onClick={() => setActionError("")}><X size={14} /></Button></div>}
