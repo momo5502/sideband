@@ -12,8 +12,11 @@ import { stateDirectory } from "./room-profiles.js";
 import { RoomError } from "./room-protocol.js";
 import { terminalLauncher } from "./terminal-launch.js";
 import { trustClaudeWorkspaces } from "./claude-trust.js";
+import { ModelDiscovery } from "./model-discovery.js";
 export class Worker {
     options;
+    models;
+    modelSupport = false;
     client;
     machine;
     root;
@@ -31,6 +34,7 @@ export class Worker {
     constructor(options) {
         this.options = options;
         this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
+        this.models = new ModelDiscovery(name => this.executable(name), this.root, options.entry);
         // Machines belong to a server's in-memory registry; changing that server's address must not change the machine.
         const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root])).digest("hex").slice(0, 32);
         const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
@@ -43,8 +47,10 @@ export class Worker {
         this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
         this.client.onConnected(async () => {
             let machine = this.machine;
+            this.modelSupport = false;
             try {
-                await this.client.request("control.worker", { machine });
+                const response = await this.client.request("control.worker", { machine });
+                this.modelSupport = response.capabilities?.models === true;
             }
             catch (original) {
                 let error = original;
@@ -77,6 +83,10 @@ export class Worker {
             }
             // Inventory is optional recovery metadata, never part of transport readiness.
             this.scheduleInventory(true);
+            // Optional capabilities are never sent to an older server or awaited by registration.
+            if (this.modelSupport)
+                for (const harness of this.machine.harnesses)
+                    void this.refreshModels(harness).catch(() => { });
         });
         this.client.onEvent((event, command) => { if (event === "control.command")
             void this.command(command); });
@@ -85,6 +95,12 @@ export class Worker {
             if (this.client.state === "on")
                 void this.client.request("control.worker_update", { update: this.machine.update }).catch(() => { });
         });
+    }
+    executable(name) { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" }; }
+    async refreshModels(harness, fresh = false) {
+        const catalog = !fresh && this.models.catalogs[harness] || await this.models.refresh(harness);
+        if (!this.closing && this.modelSupport)
+            await this.client.request("control.models", { harness, catalog });
     }
     async start() {
         this.store = await AgentStore.open(this.root, this.options.profile);
@@ -215,6 +231,14 @@ export class Worker {
     }
     async command(command) {
         try {
+            if (command.method === "models") {
+                const harness = command.params.harness;
+                if (Object.keys(command.params).length !== 1 || !this.machine.harnesses.includes(harness) || !this.modelSupport)
+                    throw new Error("Model discovery is unavailable for this harness.");
+                await this.refreshModels(harness, true);
+                await this.client.request("control.reply", { id: command.id, result: {} });
+                return;
+            }
             if (["resume", "archive", "stop"].includes(command.method)) {
                 const id = command.params.id;
                 if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id) || Object.keys(command.params).length !== 1)
@@ -291,6 +315,6 @@ export class Worker {
     }
     /** Closing/updating a worker deliberately leaves its independently connected runners alive. */
     async close() { this.closing = true; if (this.inventoryTimer)
-        clearInterval(this.inventoryTimer); this.options.updater?.close(); await this.client.close(); await this.inventory?.catch(() => { }); await Promise.allSettled([...this.recovering.values()]); await this.store?.close(); }
+        clearInterval(this.inventoryTimer); this.options.updater?.close(); await Promise.all([this.client.close(), this.models.close()]); await this.inventory?.catch(() => { }); await Promise.allSettled([...this.recovering.values()]); await this.store?.close(); }
 }
 //# sourceMappingURL=worker.js.map

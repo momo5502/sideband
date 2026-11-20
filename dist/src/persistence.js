@@ -137,7 +137,7 @@ export class Registry {
 export class LeaseLost extends Error {
     constructor() { super("Agent controller no longer owns its session."); }
 }
-async function processStamp(pid) {
+export async function processStamp(pid) {
     try {
         if (process.platform === "linux") {
             const [source, boot] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8")]);
@@ -161,6 +161,21 @@ export const processAlive = (pid) => { if (!Number.isSafeInteger(pid) || pid <= 
 catch (error) {
     return error.code !== "ESRCH";
 } };
+export async function leaseIsLive(lease) {
+    if (!lease || !processAlive(lease.pid))
+        return false;
+    if (Date.now() - lease.at < 30000)
+        return true;
+    try {
+        process.kill(lease.pid, 0);
+    }
+    catch (error) {
+        if (error.code === "EPERM")
+            return false;
+    }
+    const current = await processStamp(lease.pid);
+    return current !== "exited" && (!current || !lease.started || current === lease.started);
+}
 export class AgentStore {
     registry;
     constructor(registry) {
@@ -172,24 +187,8 @@ export class AgentStore {
     get(id) { return this.registry.get("agent", id); }
     all() { return this.registry.all("agent").map(([, record]) => record); }
     async live(id) {
-        const lease = this.registry.get("lease", id);
-        if (!lease || !processAlive(lease.pid))
-            return false;
-        if (Date.now() - lease.at < 30000)
-            return true;
-        // Controllers run as the worker's OS user. A stale PID that is now protected
-        // by another account is not that controller (common after Windows reboots).
-        try {
-            process.kill(lease.pid, 0);
-        }
-        catch (error) {
-            if (error.code === "EPERM")
-                return false;
-        }
-        // A stale heartbeat is not permission to duplicate a sleeping/loaded controller.
-        // Compare OS process birth identity so a reused PID after reboot is recoverable.
-        const current = await processStamp(lease.pid);
-        return current !== "exited" && (!current || !lease.started || current === lease.started);
+        // A stale heartbeat alone is not permission to duplicate a sleeping controller.
+        return leaseIsLive(this.registry.get("lease", id));
     }
     heartbeat(id, owner) {
         return this.registry.change(() => { const lease = this.registry.get("lease", id); if (lease?.owner !== owner)

@@ -15,10 +15,14 @@ import type { Executable } from "./managed-omp.js";
 import { terminalLauncher } from "./terminal-launch.js";
 import type { RuntimeUpdater } from "./updater.js";
 import { trustClaudeWorkspaces } from "./claude-trust.js";
+import { ModelDiscovery } from "./model-discovery.js";
+import type { HarnessName } from "./orchestration-protocol.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable; codex?: Executable; claude?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
 export class Worker {
+  private readonly models: ModelDiscovery;
+  private modelSupport = false;
   readonly client: RoomClient;
   readonly machine: Machine;
   private readonly root: string;
@@ -35,6 +39,7 @@ export class Worker {
   private savedActions = 0;
   constructor(private readonly options: WorkerOptions) {
     this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
+    this.models = new ModelDiscovery(name => this.executable(name), this.root, options.entry);
     // Machines belong to a server's in-memory registry; changing that server's address must not change the machine.
     const digest = createHash("sha256").update(JSON.stringify([hostname(), homedir(), this.root])).digest("hex").slice(0, 32);
     const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
@@ -43,7 +48,8 @@ export class Worker {
     this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
     this.client.onConnected(async () => {
       let machine = this.machine;
-      try { await this.client.request("control.worker", { machine }); }
+      this.modelSupport = false;
+      try { const response = await this.client.request<{ capabilities?: { models?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; }
       catch (original) {
         let error = original;
         if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
@@ -62,12 +68,19 @@ export class Worker {
       }
       // Inventory is optional recovery metadata, never part of transport readiness.
       this.scheduleInventory(true);
+      // Optional capabilities are never sent to an older server or awaited by registration.
+      if (this.modelSupport) for (const harness of this.machine.harnesses as HarnessName[]) void this.refreshModels(harness).catch(() => {});
     });
     this.client.onEvent((event, command: ControlCommand) => { if (event === "control.command") void this.command(command); });
     options.updater?.onChange(() => {
       this.machine.update = options.updater!.state;
       if (this.client.state === "on") void this.client.request("control.worker_update", { update: this.machine.update }).catch(() => {});
     });
+  }
+  private executable(name: HarnessName): Executable { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" }; }
+  private async refreshModels(harness: HarnessName, fresh = false): Promise<void> {
+    const catalog = !fresh && this.models.catalogs[harness] || await this.models.refresh(harness);
+    if (!this.closing && this.modelSupport) await this.client.request("control.models", { harness, catalog });
   }
   async start(): Promise<void> {
     this.store = await AgentStore.open(this.root, this.options.profile);
@@ -157,6 +170,11 @@ export class Worker {
   }
   private async command(command: ControlCommand): Promise<void> {
     try {
+      if (command.method === "models") {
+        const harness = command.params.harness as HarnessName;
+        if (Object.keys(command.params).length !== 1 || !this.machine.harnesses.includes(harness) || !this.modelSupport) throw new Error("Model discovery is unavailable for this harness.");
+        await this.refreshModels(harness, true); await this.client.request("control.reply", { id: command.id, result: {} }); return;
+      }
       if (["resume", "archive", "stop"].includes(command.method)) {
         const id = command.params.id;
         if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id) || Object.keys(command.params).length !== 1) throw new Error("Invalid saved agent ID.");
@@ -208,5 +226,5 @@ export class Worker {
     return { id: config.id };
   }
   /** Closing/updating a worker deliberately leaves its independently connected runners alive. */
-  async close(): Promise<void> { this.closing = true; if (this.inventoryTimer) clearInterval(this.inventoryTimer); this.options.updater?.close(); await this.client.close(); await this.inventory?.catch(() => {}); await Promise.allSettled([...this.recovering.values()]); await this.store?.close(); }
+  async close(): Promise<void> { this.closing = true; if (this.inventoryTimer) clearInterval(this.inventoryTimer); this.options.updater?.close(); await Promise.all([this.client.close(), this.models.close()]); await this.inventory?.catch(() => {}); await Promise.allSettled([...this.recovering.values()]); await this.store?.close(); }
 }

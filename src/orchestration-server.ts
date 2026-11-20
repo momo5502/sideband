@@ -2,7 +2,7 @@ import { CONTROL_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { fields, text, RoomError, type AgentIdentity } from "./room-protocol.js";
-import { launchSpec, type Machine, type ManagedAgent, type OutputEvent } from "./orchestration-protocol.js";
+import { launchSpec, modelCatalog, type HarnessName, type Machine, type ManagedAgent, type OutputEvent } from "./orchestration-protocol.js";
 import { parseBuild, parseUpdate } from "./update-types.js";
 import type { RuntimeUpdater } from "./updater.js";
 import type { Registry } from "./persistence.js";
@@ -45,7 +45,10 @@ export class OrchestrationServer {
     for (const [id, removal] of store?.all<{ kind: string }>("removal") ?? []) (removal.kind === "archived" ? this.archived : this.forgotten).add(id);
     if (updater) { this.updates = new UpdateFleet(updater, () => [...this.machines.values()], (id, target) => this.dispatch(this.workers.get(id), "update", { target })); this.updates.onChange(() => this.changed()); }
   }
-  private save(kind: string, id: string, value: unknown): Promise<unknown> { return this.store?.change(() => this.store!.put(kind, id, value)) ?? Promise.resolve(); }
+  private save(kind: string, id: string, value: unknown): Promise<unknown> {
+    if (kind === "machine") { const { models: _catalogs, ...metadata } = value as Machine; value = metadata; }
+    return this.store?.change(() => this.store!.put(kind, id, value)) ?? Promise.resolve();
+  }
   isWorker(socket?: WebSocket): boolean { return !!socket && this.peers.get(socket)?.kind === "worker"; }
   private changed(): void { for (const socket of this.browsers.keys()) this.send(socket, { event: "control.changed", data: {} }); }
   private online(peer?: Peer): boolean { return peer?.socket.readyState === WebSocket.OPEN; }
@@ -114,7 +117,14 @@ export class OrchestrationServer {
         await this.store?.change(() => { if (agent.persistent) this.store!.put("agent", agent.id, this.agents.get(agent.id)); this.store!.put("owner", agent.id, identity.id); });
         if (!this.machines.has(agent.machineId)) this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
       }
-      this.changed(); return { registered: true };
+      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true } } : {}) };
+    }
+    if (method === "control.models") {
+      const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report models.");
+      const args = fields(params, ["harness", "catalog"]), machine = this.machines.get(peer.id)!;
+      if (!machine.harnesses.includes(args.harness as string)) throw new Error("Harness is not available on this machine.");
+      const catalog = modelCatalog(args.catalog);
+      machine.models = { ...machine.models, [args.harness as HarnessName]: catalog }; this.changed(); return {};
     }
     if (method === "control.inventory") {
       const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report saved sessions.");
@@ -171,9 +181,21 @@ export class OrchestrationServer {
       return {};
     }
     if (!browser) throw new Error("Orchestration controls are available through the authenticated web panel.");
+    if (method === "control.models.refresh") {
+      const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
+      if (!machine?.online || !machine.harnesses.includes(args.harness as string)) throw new Error("Choose an online machine with this harness.");
+      return this.dispatch(this.workers.get(machine.id), "models", { harness: args.harness });
+    }
     if (method === "control.list") {
       fields(params, []); if (!this.browsers.has(socket)) this.browsers.set(socket, undefined);
-      return { machines: [...this.machines.values()], agents: [...this.agents.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+      // Catalogs can contain hundreds of models. Fetch the selected catalog separately.
+      const machines = [...this.machines.values()].map(machine => ({ ...machine, ...(machine.models ? { models: Object.fromEntries(Object.entries(machine.models).map(([harness, catalog]) => [harness, { ...catalog, models: [] }])) } : {}) }));
+      return { machines, agents: [...this.agents.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+    }
+    if (method === "control.models.list") {
+      const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
+      if (!machine || !machine.harnesses.includes(args.harness as string)) throw new Error("Unknown machine or harness.");
+      return machine.models?.[args.harness as HarnessName] ?? { models: [], at: 0 };
     }
     if (method === "control.updates.check" || method === "control.updates.start") {
       fields(params, []); if (!this.updates) throw new Error("Automatic updates require a supervised Sideband server. Install the latest CLI manually once.");

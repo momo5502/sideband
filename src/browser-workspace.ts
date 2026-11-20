@@ -355,6 +355,10 @@ export class BrowserWorkspace {
   trustClaude(machineId: string): Promise<{ root: string }> {
     return this.requireClient().request("control.claude_trust", { machineId, confirm: true });
   }
+  models(machineId: string, harness: string) { return this.requireClient().request<import("./orchestration-protocol.js").ModelCatalog>("control.models.list", { machineId, harness }); }
+  async refreshModels(machineId: string, harness: string): Promise<void> {
+    await this.requireClient().request("control.models.refresh", { machineId, harness }); await this.refreshControl();
+  }
   async launch(spec: LaunchSpec & { machineId: string }) {
     const result = await this.requireClient().request<{ id: string }>("control.launch", spec);
     const { machineId, prompt: _prompt, ...description } = spec;

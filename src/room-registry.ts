@@ -14,6 +14,7 @@ export class RoomRegistry {
   private closing = false;
   constructor(private readonly create: (key: string, profile: ConnectionProfile, name?: string) => Promise<RoomSession>) {}
   status(key: string): object { return this.sessions.get(key)?.session.status() ?? { state: this.pending.has(key) ? "connecting" : "off" }; }
+  connection(key: string) { return this.sessions.get(key); }
   get(key: string): RoomSession {
     const entry = this.sessions.get(key); if (!entry) throw new Error("Messaging is off for this session. Join a room first."); return entry.session;
   }

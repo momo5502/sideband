@@ -1,5 +1,5 @@
 import { RoomClient } from "./room-client.js";
-import type { ConnectionProfile, SignedMessage } from "./room-protocol.js";
+import { type AgentKeys, type ConnectionProfile, type SignedMessage } from "./room-protocol.js";
 import type { DeliveryAdapter } from "./adapters/codex.js";
 import type { Delivery } from "./protocol.js";
 
@@ -12,7 +12,7 @@ export class RoomSession {
   private unsubscribe?: () => void;
   private unsubscribePresence?: () => void;
   private lastDeliveryError?: string;
-  constructor(profile: ConnectionProfile, readonly adapter: DeliveryAdapter, name?: string) { this.client = new RoomClient(profile, name); }
+  constructor(profile: ConnectionProfile, readonly adapter: DeliveryAdapter, name?: string, keys?: AgentKeys) { this.client = new RoomClient(profile, name, { keys }); }
   async enable(): Promise<void> {
     try {
       await this.adapter.prepare();

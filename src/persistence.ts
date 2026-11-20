@@ -91,8 +91,8 @@ export class Registry {
 
 export type SavedAgent = { agent: ManagedAgent; session?: string; workspaceReady: boolean; privateKey: string; desired: "running" | "stopped" | "archived"; updatedAt: number };
 export class LeaseLost extends Error { constructor() { super("Agent controller no longer owns its session."); } }
-type Lease = { owner: string; pid: number; started: string; at: number };
-async function processStamp(pid: number): Promise<string | undefined> {
+export type Lease = { owner: string; pid: number; started: string; at: number };
+export async function processStamp(pid: number): Promise<string | undefined> {
   try {
     if (process.platform === "linux") {
       const [source, boot] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8")]);
@@ -106,6 +106,12 @@ async function processStamp(pid: number): Promise<string | undefined> {
 }
 let ownStamp: Promise<string | undefined> | undefined;
 export const processAlive = (pid: number): boolean => { if (!Number.isSafeInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; } };
+export async function leaseIsLive(lease?: Lease): Promise<boolean> {
+  if (!lease || !processAlive(lease.pid)) return false;
+  if (Date.now() - lease.at < 30000) return true;
+  try { process.kill(lease.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return false; }
+  const current = await processStamp(lease.pid); return current !== "exited" && (!current || !lease.started || current === lease.started);
+}
 export class AgentStore {
   private constructor(readonly registry: Registry) {}
   static async open(root: string, _profile: ConnectionProfile) {
@@ -114,15 +120,8 @@ export class AgentStore {
   get(id: string) { return this.registry.get<SavedAgent>("agent", id); }
   all() { return this.registry.all<SavedAgent>("agent").map(([, record]) => record); }
   async live(id: string): Promise<boolean> {
-    const lease = this.registry.get<Lease>("lease", id);
-    if (!lease || !processAlive(lease.pid)) return false;
-    if (Date.now() - lease.at < 30000) return true;
-    // Controllers run as the worker's OS user. A stale PID that is now protected
-    // by another account is not that controller (common after Windows reboots).
-    try { process.kill(lease.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return false; }
-    // A stale heartbeat is not permission to duplicate a sleeping/loaded controller.
-    // Compare OS process birth identity so a reused PID after reboot is recoverable.
-    const current = await processStamp(lease.pid); return current !== "exited" && (!current || !lease.started || current === lease.started);
+    // A stale heartbeat alone is not permission to duplicate a sleeping controller.
+    return leaseIsLive(this.registry.get<Lease>("lease", id));
   }
   heartbeat(id: string, owner: string): Promise<void> {
     return this.registry.change(() => { const lease = this.registry.get<Lease>("lease", id); if (lease?.owner !== owner) throw new LeaseLost(); this.registry.put("lease", id, { ...lease, at: Date.now() }); });

@@ -545,6 +545,11 @@ export class BrowserWorkspace {
     trustClaude(machineId) {
         return this.requireClient().request("control.claude_trust", { machineId, confirm: true });
     }
+    models(machineId, harness) { return this.requireClient().request("control.models.list", { machineId, harness }); }
+    async refreshModels(machineId, harness) {
+        await this.requireClient().request("control.models.refresh", { machineId, harness });
+        await this.refreshControl();
+    }
     async launch(spec) {
         const result = await this.requireClient().request("control.launch", spec);
         const { machineId, prompt: _prompt, ...description } = spec;

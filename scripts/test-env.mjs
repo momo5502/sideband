@@ -4,6 +4,8 @@ import { join } from "node:path";
 // Never let test workers write SQLite metadata into the developer's real profile.
 const testState = mkdtempSync(join(tmpdir(), "sideband-test-state-"));
 process.env.SIDEBAND_STATE_DIR = testState;
+// Worker discovery must not launch a developer's authenticated harnesses.
+for (const name of ["OMP_BINARY", "CODEX_BIN", "CLAUDE_BINARY"]) process.env[name] = "sideband-test-missing-harness";
 process.once("exit", () => {
   if (!testState.startsWith(join(tmpdir(), "sideband-test-state-"))) return;
   try { rmSync(testState, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* An owned child may still be closing after a failed test. */ }

@@ -2,7 +2,7 @@ import { CONTROL_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { fields, text, RoomError } from "./room-protocol.js";
-import { launchSpec } from "./orchestration-protocol.js";
+import { launchSpec, modelCatalog } from "./orchestration-protocol.js";
 import { parseBuild, parseUpdate } from "./update-types.js";
 import { UpdateFleet } from "./update-fleet.js";
 const uuid = (value) => { const id = text(value, "ID", 64); if (!/^[a-f0-9-]{36}$/.test(id))
@@ -58,7 +58,13 @@ export class OrchestrationServer {
             this.updates.onChange(() => this.changed());
         }
     }
-    save(kind, id, value) { return this.store?.change(() => this.store.put(kind, id, value)) ?? Promise.resolve(); }
+    save(kind, id, value) {
+        if (kind === "machine") {
+            const { models: _catalogs, ...metadata } = value;
+            value = metadata;
+        }
+        return this.store?.change(() => this.store.put(kind, id, value)) ?? Promise.resolve();
+    }
     isWorker(socket) { return !!socket && this.peers.get(socket)?.kind === "worker"; }
     changed() { for (const socket of this.browsers.keys())
         this.send(socket, { event: "control.changed", data: {} }); }
@@ -156,7 +162,19 @@ export class OrchestrationServer {
                     this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
             }
             this.changed();
-            return { registered: true };
+            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true } } : {}) };
+        }
+        if (method === "control.models") {
+            const peer = this.peers.get(socket);
+            if (browser || peer?.kind !== "worker")
+                throw new Error("Only a registered worker can report models.");
+            const args = fields(params, ["harness", "catalog"]), machine = this.machines.get(peer.id);
+            if (!machine.harnesses.includes(args.harness))
+                throw new Error("Harness is not available on this machine.");
+            const catalog = modelCatalog(args.catalog);
+            machine.models = { ...machine.models, [args.harness]: catalog };
+            this.changed();
+            return {};
         }
         if (method === "control.inventory") {
             const peer = this.peers.get(socket);
@@ -261,11 +279,25 @@ export class OrchestrationServer {
         }
         if (!browser)
             throw new Error("Orchestration controls are available through the authenticated web panel.");
+        if (method === "control.models.refresh") {
+            const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
+            if (!machine?.online || !machine.harnesses.includes(args.harness))
+                throw new Error("Choose an online machine with this harness.");
+            return this.dispatch(this.workers.get(machine.id), "models", { harness: args.harness });
+        }
         if (method === "control.list") {
             fields(params, []);
             if (!this.browsers.has(socket))
                 this.browsers.set(socket, undefined);
-            return { machines: [...this.machines.values()], agents: [...this.agents.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+            // Catalogs can contain hundreds of models. Fetch the selected catalog separately.
+            const machines = [...this.machines.values()].map(machine => ({ ...machine, ...(machine.models ? { models: Object.fromEntries(Object.entries(machine.models).map(([harness, catalog]) => [harness, { ...catalog, models: [] }])) } : {}) }));
+            return { machines, agents: [...this.agents.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+        }
+        if (method === "control.models.list") {
+            const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
+            if (!machine || !machine.harnesses.includes(args.harness))
+                throw new Error("Unknown machine or harness.");
+            return machine.models?.[args.harness] ?? { models: [], at: 0 };
         }
         if (method === "control.updates.check" || method === "control.updates.start") {
             fields(params, []);

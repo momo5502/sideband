@@ -16,6 +16,7 @@ export class RoomRegistry {
         this.create = create;
     }
     status(key) { return this.sessions.get(key)?.session.status() ?? { state: this.pending.has(key) ? "connecting" : "off" }; }
+    connection(key) { return this.sessions.get(key); }
     get(key) {
         const entry = this.sessions.get(key);
         if (!entry)

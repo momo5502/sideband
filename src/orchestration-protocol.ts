@@ -1,7 +1,9 @@
 import { agentName, fields, text } from "./room-protocol.js";
 import type { BuildInfo, LocalUpdate, FleetUpdates } from "./update-types.js";
 
-export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; persistent?: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate };
+export type HarnessModel = { id: string; label: string; efforts?: string[]; defaultEffort?: string; isDefault?: boolean };
+export type ModelCatalog = { models: HarnessModel[]; at: number; error?: string };
+export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; persistent?: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate; models?: Partial<Record<HarnessName, ModelCatalog>> };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
 export type HarnessName = "omp" | "codex" | "claude";
 export type LaunchSpec = { name: string; harness: HarnessName; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
@@ -10,6 +12,23 @@ export type OutputEvent = { seq: number; at: number; kind: string; text: string 
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
 export type ControlCommand = { id: string; method: string; params: Record<string, unknown> };
 export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number; updates?: FleetUpdates };
+
+export function modelCatalog(input: unknown): ModelCatalog {
+  const value = fields(input, ["models", "at", "error"]);
+  if (!Number.isFinite(value.at) || !Array.isArray(value.models) || value.models.length > 1000) throw new Error("Invalid model catalog.");
+  if (Buffer.byteLength(JSON.stringify(value)) > 200 * 1024) throw new Error("Model catalog exceeded its size limit.");
+  const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", "ultra"];
+  const models = value.models.map(row => {
+    const v = fields(row, ["id", "label", "efforts", "defaultEffort", "isDefault"]);
+    const id = text(v.id, "model ID", 256), label = text(v.label, "model label", 128);
+    if (/[\x00-\x1f]/.test(id + label)) throw new Error("Invalid model text.");
+    if (v.efforts !== undefined && (!Array.isArray(v.efforts) || v.efforts.length > levels.length || v.efforts.some(e => !levels.includes(e)))) throw new Error("Invalid model reasoning levels.");
+    if (v.defaultEffort !== undefined && !levels.includes(v.defaultEffort as string)) throw new Error("Invalid default reasoning level.");
+    if (v.isDefault !== undefined && typeof v.isDefault !== "boolean") throw new Error("Invalid default model flag.");
+    return { id, label, ...(v.efforts !== undefined ? { efforts: v.efforts as string[] } : {}), ...(v.defaultEffort ? { defaultEffort: v.defaultEffort as string } : {}), ...(v.isDefault !== undefined ? { isDefault: v.isDefault as boolean } : {}) };
+  });
+  return { models, at: value.at as number, ...(value.error ? { error: text(value.error, "model discovery error", 512) } : {}) };
+}
 
 export function launchSpec(input: unknown): LaunchSpec {
   const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
@@ -35,7 +54,7 @@ export function launchSpec(input: unknown): LaunchSpec {
   }
   if (result.ref?.startsWith("-")) throw new Error("Invalid repository ref.");
   if (result.ref && !repository) throw new Error("A repository is required when specifying a branch or ref.");
-  if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"].includes(result.effort)) throw new Error("Invalid reasoning level.");
+  if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", ...(result.harness === "codex" ? ["ultra"] : [])].includes(result.effort)) throw new Error("Invalid reasoning level.");
   return result;
 }
 

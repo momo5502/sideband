@@ -8,6 +8,41 @@ import { boundedOutput, mentionsUsername } from "../src/browser-workspace.js";
 import type { ManagedAgent, ControlCommand, OutputEvent } from "../src/orchestration-protocol.js";
 import { browserPage, until } from "./browser-fixture.js";
 
+test("model picker follows machine and harness, supports custom IDs, refresh and model-specific efforts", { timeout: testTimeout(30000) }, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), profile = { server: `127.0.0.1:${server.port}`, password: server.password };
+  const worker = new RoomClient(profile), machineId = randomUUID(), commands: ControlCommand[] = [];
+  let page: Awaited<ReturnType<typeof browserPage>> | undefined, serial = 1;
+  const publish = (harness: string, models: object[]) => worker.request("control.models", { harness, catalog: { at: serial++, models } });
+  worker.onEvent((event, command: ControlCommand) => {
+    if (event !== "control.command") return; commands.push(command);
+    void (async () => {
+      if (command.method === "models") await publish(String(command.params.harness), [{ id: "new-model", label: "Refreshed", efforts: ["high"] }]);
+      await worker.request("control.reply", { id: command.id, ...(command.method === "launch" ? { error: "Test captured launch" } : { result: {} }) });
+    })();
+  });
+  try {
+    await worker.connect(); const registration = await worker.request<{ capabilities: { models: boolean } }>("control.worker", { machine: { id: machineId, name: "models", platform: "test", harnesses: ["omp", "codex", "claude"] } });
+    assert.equal(registration.capabilities.models, true);
+    await publish("omp", [{ id: "provider/reasoning", label: "Reasoning", efforts: ["low", "high"], defaultEffort: "high" }, { id: "provider/plain", label: "Plain", efforts: [] }]);
+    await publish("codex", [{ id: "codex-test", label: "Codex test", efforts: ["high", "ultra"] }]);
+    page = await browserPage(server); const p = page; await p.login(); p.click("#new-agent"); await until(() => p.doc.querySelectorAll("#launch-models option").length === 2);
+    p.fill("#launch-model", "provider/reasoning"); await until(() => p.get<HTMLSelectElement>("#launch-effort").options.length === 3);
+    assert.deepEqual([...p.get<HTMLSelectElement>("#launch-effort").options].map(o => o.value), ["", "low", "high"]);
+    p.fill("#launch-effort", "high"); p.fill("#launch-model", "provider/plain"); await until(() => p.get<HTMLSelectElement>("#launch-effort").disabled);
+    assert.equal(p.get<HTMLSelectElement>("#launch-effort").value, "");
+    p.click('#agent-harness [value="codex"]'); await until(() => p.doc.querySelector("#launch-models option")?.getAttribute("value") === "codex-test");
+    assert.equal(p.get<HTMLInputElement>("#launch-model").value, "", "switching harness clears a stale model selection");
+    p.fill("#launch-model", "codex-test"); await until(() => [...p.get<HTMLSelectElement>("#launch-effort").options].some(o => o.value === "ultra"));
+    p.click("#refresh-models"); await until(() => p.doc.querySelector("#launch-models option")?.getAttribute("value") === "new-model");
+    assert.equal(commands.at(-1)?.method, "models"); assert.equal(commands.at(-1)?.params.harness, "codex");
+    p.fill("#launch-model", "custom-provider/model"); p.fill("#launch-effort", "high"); p.fill("#agent-name", "custom"); p.submit("#agent-launch-form");
+    await until(() => commands.some(command => command.method === "launch")); const launch = commands.find(command => command.method === "launch")!;
+    assert.equal((launch.params.spec as any).model, "custom-provider/model"); assert.equal((launch.params.spec as any).effort, "high");
+    await until(() => !!p.doc.querySelector("#launch-error")); p.click(p.button("Cancel"));
+    assert.deepEqual(p.errors, []);
+  } finally { await page?.close(); await worker.close(); await server.close(); }
+});
+
 for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} saved sessions: archived list, offline resume and reversible archive`, { timeout: testTimeout(30000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const worker = new RoomClient(profile), runner = new RoomClient(profile, "saved"), machineId = randomUUID();

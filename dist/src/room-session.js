@@ -9,9 +9,9 @@ export class RoomSession {
     unsubscribe;
     unsubscribePresence;
     lastDeliveryError;
-    constructor(profile, adapter, name) {
+    constructor(profile, adapter, name, keys) {
         this.adapter = adapter;
-        this.client = new RoomClient(profile, name);
+        this.client = new RoomClient(profile, name, { keys });
     }
     async enable() {
         try {

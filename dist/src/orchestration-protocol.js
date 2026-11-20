@@ -1,4 +1,26 @@
 import { agentName, fields, text } from "./room-protocol.js";
+export function modelCatalog(input) {
+    const value = fields(input, ["models", "at", "error"]);
+    if (!Number.isFinite(value.at) || !Array.isArray(value.models) || value.models.length > 1000)
+        throw new Error("Invalid model catalog.");
+    if (Buffer.byteLength(JSON.stringify(value)) > 200 * 1024)
+        throw new Error("Model catalog exceeded its size limit.");
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", "ultra"];
+    const models = value.models.map(row => {
+        const v = fields(row, ["id", "label", "efforts", "defaultEffort", "isDefault"]);
+        const id = text(v.id, "model ID", 256), label = text(v.label, "model label", 128);
+        if (/[\x00-\x1f]/.test(id + label))
+            throw new Error("Invalid model text.");
+        if (v.efforts !== undefined && (!Array.isArray(v.efforts) || v.efforts.length > levels.length || v.efforts.some(e => !levels.includes(e))))
+            throw new Error("Invalid model reasoning levels.");
+        if (v.defaultEffort !== undefined && !levels.includes(v.defaultEffort))
+            throw new Error("Invalid default reasoning level.");
+        if (v.isDefault !== undefined && typeof v.isDefault !== "boolean")
+            throw new Error("Invalid default model flag.");
+        return { id, label, ...(v.efforts !== undefined ? { efforts: v.efforts } : {}), ...(v.defaultEffort ? { defaultEffort: v.defaultEffort } : {}), ...(v.isDefault !== undefined ? { isDefault: v.isDefault } : {}) };
+    });
+    return { models, at: value.at, ...(value.error ? { error: text(value.error, "model discovery error", 512) } : {}) };
+}
 export function launchSpec(input) {
     const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
     const name = agentName(value.name);
@@ -38,7 +60,7 @@ export function launchSpec(input) {
         throw new Error("Invalid repository ref.");
     if (result.ref && !repository)
         throw new Error("A repository is required when specifying a branch or ref.");
-    if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"].includes(result.effort))
+    if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", ...(result.harness === "codex" ? ["ultra"] : [])].includes(result.effort))
         throw new Error("Invalid reasoning level.");
     return result;
 }
