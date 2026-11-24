@@ -22,7 +22,7 @@ export function modelCatalog(input) {
     return { models, at: value.at, ...(value.error ? { error: text(value.error, "model discovery error", 512) } : {}) };
 }
 export function launchSpec(input) {
-    const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
+    const value = fields(input, ["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal"]);
     const name = agentName(value.name);
     if (!name)
         throw new Error("Choose an agent name.");
@@ -43,6 +43,14 @@ export function launchSpec(input) {
     if (repository && (!remote || /[\s\x00-\x1f]/.test(repository)))
         throw new Error("Use an HTTPS or SSH Git repository URL, without embedded credentials.");
     const result = { name, harness: value.harness, ...(repository ? { repository } : {}) };
+    if (value.folder !== undefined && value.folder !== "") {
+        const folder = text(value.folder, "folder path", 4096);
+        if (/[\x00-\x1f]/.test(folder) || !(/^[A-Za-z]:[\\/]/.test(folder) || folder.startsWith("/") || /^\\\\[^\\]+\\[^\\]+/.test(folder)))
+            throw new Error("Choose an absolute folder path on the worker machine.");
+        if (repository)
+            throw new Error("Choose either a repository or an existing folder.");
+        result.folder = folder;
+    }
     if (value.terminal !== undefined) {
         if (typeof value.terminal !== "boolean")
             throw new Error("Invalid terminal mode.");

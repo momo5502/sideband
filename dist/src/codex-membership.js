@@ -22,6 +22,8 @@ export class CodexMembership {
     monitor;
     closing = false;
     errors = new Map();
+    monitorError = "";
+    beating;
     constructor(db, profiles, options) {
         this.db = db;
         this.profiles = profiles;
@@ -44,10 +46,24 @@ export class CodexMembership {
         return new CodexMembership(await Registry.open(join(profiles.directory, "codex-memberships.sqlite"), "codex"), profiles, options);
     }
     start() {
-        const tick = () => { void this.reconcile().catch(() => { }); };
+        const tick = () => { void this.heartbeatOwned().catch(() => { }); void this.reconcile().catch(() => { }); };
         tick();
         this.timer = setInterval(tick, 10000);
         this.timer.unref();
+    }
+    heartbeatOwned() {
+        if (this.closing || !this.owned.size)
+            return Promise.resolve();
+        if (this.beating)
+            return this.beating;
+        this.beating = this.db.change(() => {
+            for (const key of this.owned) {
+                const lease = this.db.get("lease", key);
+                if (lease?.owner === this.owner)
+                    this.db.put("lease", key, { ...lease, at: Date.now() });
+            }
+        }).finally(() => { this.beating = undefined; });
+        return this.beating;
     }
     serial(key, task) {
         const pending = (this.queues.get(key) ?? Promise.resolve()).catch(() => { }).then(task);
@@ -146,7 +162,20 @@ export class CodexMembership {
         this.sweep = (async () => {
             if (!this.db.all("membership").some(([, row]) => row.room) && !this.owned.size)
                 return;
-            const loaded = new Set(await this.loadedThreads());
+            let loaded;
+            try {
+                loaded = new Set(await this.loadedThreads());
+                this.monitorError = "";
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : "Cannot inspect loaded Codex threads.";
+                if (!this.closing && message !== this.monitorError) {
+                    this.monitorError = message;
+                    this.options.report?.(`Sideband room recovery: ${message}`);
+                }
+                await this.heartbeatOwned().catch(() => { });
+                return;
+            }
             const keys = new Set([...this.owned, ...this.db.all("membership").filter(([, row]) => row.room).map(([id]) => id)]);
             await Promise.allSettled([...keys].map(key => this.serial(key, async () => {
                 if (this.closing)
@@ -206,6 +235,7 @@ export class CodexMembership {
             clearInterval(this.timer);
         await this.closeMonitor();
         await this.sweep?.catch(() => { });
+        await this.beating?.catch(() => { });
         await Promise.allSettled(this.queues.values());
         await this.tools.close();
         for (const key of [...this.owned])

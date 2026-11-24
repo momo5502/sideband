@@ -6,7 +6,7 @@ import { BrowserWorkspace, identityLabel, type WorkspaceState } from "./browser-
 import { Button, ErrorMessage, Field, Modal, Spinner } from "./browser-components.js";
 import { allRooms, Brand, repositoryName, Status } from "./browser-views.js";
 import type { Room } from "./room-protocol.js";
-import type { ManagedAgent, LaunchSpec, HarnessName, Machine, ModelCatalog } from "./orchestration-protocol.js";
+import type { ManagedAgent, LaunchSpec, HarnessName, Machine, ModelCatalog, FolderListing } from "./orchestration-protocol.js";
 import { Updates } from "./browser-updates.js";
 
 function RoomPicker({ rooms, value, onChange, id, allowNone = true }: { rooms: Room[]; value: string; onChange(value: string): void; id: string; allowNone?: boolean }) {
@@ -39,7 +39,28 @@ function ClaudeTrust({ machine, store, onBusyChange }: { machine: Machine; store
     <ErrorMessage text={error} />
   </div>;
 }
+function FolderPicker({ machine, store, value, onChange }: { machine?: Machine; store: BrowserWorkspace; value: string; onChange(value: string): void }) {
+  const [listing, setListing] = useState<FolderListing>(), [busy, setBusy] = useState(false), [error, setError] = useState(""); const generation = useRef(0);
+  useEffect(() => () => { generation.current++; }, []);
+  const browse = (path?: string, cursor?: string) => {
+    if (!machine?.folders) return; const current = ++generation.current; setBusy(true); setError("");
+    void store.folders(machine.id, path, cursor).then(result => { if (current === generation.current) setListing(result); }).catch(error => { if (current === generation.current) setError(error instanceof Error ? error.message : "Could not browse folders."); }).finally(() => { if (current === generation.current) setBusy(false); });
+  };
+  return <Field label="Folder on the machine" htmlFor="agent-folder" hint="Uses this folder in place. The agent can edit its files; other agents using it share those changes. Archiving keeps the folder.">
+    <input id="agent-folder" className="input" value={value} onChange={event => onChange(event.target.value)} required maxLength={4096} placeholder={machine?.platform === "win32" ? "C:\\projects\\my-project" : "/home/user/my-project"} />
+    <Button id="browse-folders" className="mt-2" variant="outline" disabled={!machine?.online || !machine.folders || busy} onClick={() => browse(value || undefined)}>{busy ? <Spinner /> : <Monitor size={14} />}Browse {machine?.name ?? "machine"}</Button>
+    {!machine?.folders && <p className="field-hint">Update this worker to use existing folders.</p>}
+    {listing && <section className="setup-box mt-3" aria-label="Folders on selected machine"><p id="folder-current" className="break-all font-mono text-xs">{listing.path}</p><div className="flex flex-wrap gap-2 my-2">
+      <Button id="folder-up" disabled={busy || !listing.parent} onClick={() => browse(listing.parent!)}>Up</Button>{listing.roots.map(root => <Button key={root} disabled={busy} onClick={() => browse(root)}>{root}</Button>)}
+      <Button id="folder-use" variant="primary" disabled={busy} onClick={() => { onChange(listing.path); setListing(undefined); generation.current++; }}>Use this folder</Button><Button variant="ghost" onClick={() => { setListing(undefined); generation.current++; setBusy(false); }}>Close browser</Button></div>
+      <div className="max-h-52 overflow-y-auto">{listing.entries.map(entry => <button key={entry.path} type="button" className="room-choice" disabled={busy} data-folder={entry.path} onClick={() => browse(entry.path)}>{entry.name}</button>)}{!listing.entries.length && <p className="field-hint">No accessible subfolders.</p>}</div>
+      {listing.next && <Button id="folder-next" disabled={busy} onClick={() => browse(listing.path, listing.next)}>Next folders</Button>}
+      {listing.partial && <p className="field-hint">Some linked folders could not be checked. You can enter their path directly.</p>}
+    </section>}<ErrorMessage text={error} />
+  </Field>;
+}
 export function NewAgent({ state, store, close, initial }: { state: WorkspaceState; store: BrowserWorkspace; close(): void; initial?: ManagedAgent }) {
+  const [source, setSource] = useState(initial?.folder ? "folder" : "new"), [folder, setFolder] = useState(initial?.folder ?? "");
   const [repository, setRepository] = useState(initial?.repository ?? ""), [name, setName] = useState(() => {
     if (!initial) return ""; const names = new Set(state.control.agents.map(agent => agent.name.toLowerCase())); const base = initial.name.slice(0, 55); let result = base, index = 2; while (names.has(result.toLowerCase())) result = `${base}-${index++}`; return result;
   }), [room, setRoom] = useState(initial?.room ?? state.joined.find(room => room.id === state.lastRoom)?.name ?? "");
@@ -47,6 +68,7 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
   const harnessLabel = { omp: "OMP", codex: "Codex", claude: "Claude" }[harness];
   const [machine, setMachine] = useState(() => {
     const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes(harness));
+    if (initial?.folder) return initial.machineId;
     return eligible.find(machine => machine.id === initial?.machineId)?.id ?? eligible.find(machine => machine.name === initial?.machineName)?.id ?? eligible[0]?.id ?? "";
   });
   const [busy, setBusy] = useState(false), [trustBusy, setTrustBusy] = useState(false), [error, setError] = useState(""); const editedName = useRef(false);
@@ -63,28 +85,35 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
   }, [selected?.id, harness, selected?.models?.[harness]?.at, store]);
   useEffect(() => { if (effort && modelInfo?.efforts && !modelInfo.efforts.includes(effort)) setEffort(""); }, [modelInfo, effort]);
   const modelSelection = useRef(`${machine}:${harness}`);
+  const folderMachine = useRef(machine);
+  useEffect(() => { if (folderMachine.current !== machine) { folderMachine.current = machine; setFolder(""); } }, [machine]);
   useEffect(() => { const key = `${machine}:${harness}`; if (modelSelection.current !== key) { modelSelection.current = key; setModel(""); setEffort(""); } }, [machine, harness]);
   const native = harness !== "claude" || selected?.platform === "win32" || selected?.terminal === "tmux";
   const [recent] = useState<string[]>(() => { try { const values = JSON.parse(localStorage.getItem("sideband.repositories.v1") ?? "[]"); return Array.isArray(values) ? values.filter(value => typeof value === "string").slice(0, 8) : []; } catch { return []; } });
-  useEffect(() => { if (!selected && eligible.length === 1) setMachine(eligible[0]!.id); }, [selected, eligible.length]);
+  useEffect(() => { if (!selected && eligible.length === 1 && !initial?.folder) setMachine(eligible[0]!.id); }, [selected, eligible.length, initial?.folder]);
   useEffect(() => {
     if (initial || editedHarness.current || eligible.length) return;
     const candidate = (["omp", "codex", "claude"] as const).find(name => state.control.machines.some(machine => machine.online && machine.harnesses.includes(name)));
     if (candidate && candidate !== harness) { setHarness(candidate); setTerminal(candidate !== "claude"); }
   }, [harness, state.control.machines, eligible.length, initial]);
-  return <Modal id="new-agent-dialog" open onOpenChange={open => { if (!open && !busy && !trustBusy) close(); }} title="New agent" description="Choose a machine and an optional repository. Your agent gets its own workspace and stays available for new work.">
+  const suggestName = (value: string) => {
+    if (editedName.current) return; const base = value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55), used = new Set(state.control.agents.map(agent => agent.name.toLowerCase()));
+    let result = base, index = 2; while (used.has(result.toLowerCase())) result = `${base}-${index++}`; setName(result);
+  };
+  return <Modal id="new-agent-dialog" open onOpenChange={open => { if (!open && !busy && !trustBusy) close(); }} title="New agent" description="Choose a machine, harness and workspace. Your agent stays available for new work.">
     <form id="agent-launch-form" onSubmit={event => {
-      event.preventDefault(); if (busy || trustBusy || !selected) return; setBusy(true); setError(""); const form = new FormData(event.currentTarget);
-      const spec: LaunchSpec & { machineId: string } = { machineId: machine, ...(repository.trim() ? { repository: repository.trim() } : {}), name: name.trim(), harness };
+      event.preventDefault(); if (busy || trustBusy || !selected || source === "folder" && (!selected.folders || !folder)) return; setBusy(true); setError(""); const form = new FormData(event.currentTarget);
+      const spec: LaunchSpec & { machineId: string } = { machineId: machine, ...(source === "folder" ? { folder } : repository.trim() ? { repository: repository.trim() } : {}), name: name.trim(), harness };
       if (native && terminal && selected.terminal && selected.terminal !== "none") spec.terminal = true;
       for (const key of ["ref", "model", "effort", "prompt"] as const) { const value = String(form.get(key) ?? "").trim(); if (value) spec[key] = value; } if (room.trim()) spec.room = room.trim();
       void store.launch(spec).then(() => { try { if (spec.repository) localStorage.setItem("sideband.repositories.v1", JSON.stringify([spec.repository, ...recent.filter(value => value !== spec.repository)].slice(0, 8))); } catch { /* Optional convenience. */ } close(); })
         .catch(error => setError(error instanceof Error ? error.message : "Launch failed.")).finally(() => setBusy(false));
     }}>
-      <Field label="Repository (optional)" htmlFor="agent-repository" hint="Leave empty for a new workspace, or enter an HTTPS or SSH Git URL."><input id="agent-repository" autoFocus className="input" maxLength={2048} placeholder="Empty workspace or Git URL" list="recent-repositories" value={repository} onChange={event => {
+      <Field label="Workspace" htmlFor="agent-workspace"><select id="agent-workspace" className="select" value={source} onChange={event => setSource(event.target.value)}><option value="new">New workspace (empty or clone a repository)</option><option value="folder">Existing folder on the machine</option></select></Field>
+      {source === "folder" ? <FolderPicker key={selected?.id ?? "none"} machine={selected} store={store} value={folder} onChange={value => { setFolder(value); suggestName(value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) ?? ""); }} /> : <Field label="Repository (optional)" htmlFor="agent-repository" hint="Leave empty for a new workspace, or enter an HTTPS or SSH Git URL."><input id="agent-repository" autoFocus className="input" maxLength={2048} placeholder="Empty workspace or Git URL" list="recent-repositories" value={repository} onChange={event => {
         const repository = event.target.value; setRepository(repository);
-        if (!editedName.current) { const base = (repository.trim() ? repositoryName(repository) : "").replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55); const used = new Set(state.control.agents.map(agent => agent.name.toLowerCase())); let name = base, index = 2; while (used.has(name.toLowerCase())) name = `${base}-${index++}`; setName(name); }
-      }} /><datalist id="recent-repositories">{recent.map(value => <option key={value} value={value} />)}</datalist></Field>
+        suggestName(repository.trim() ? repositoryName(repository) : "");
+      }} /><datalist id="recent-repositories">{recent.map(value => <option key={value} value={value} />)}</datalist></Field>}
       <div className="form-grid"><Field label="Agent name" htmlFor="agent-name"><input id="agent-name" className="input" required maxLength={64} pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" placeholder="project" value={name} onChange={event => { editedName.current = true; setName(event.target.value); }} /></Field>
         <Field label="Run on" htmlFor="agent-machine"><select id="agent-machine" className="select" required value={machine} onChange={event => setMachine(event.target.value)}><option value="" disabled>Choose a machine</option>
           {state.control.machines.map(candidate => <option key={candidate.id} value={candidate.id} disabled={!candidate.online || !candidate.harnesses.includes(harness)}>{candidate.name}{!candidate.online ? " — offline" : !candidate.harnesses.includes(harness) ? " — OMP not installed" : ` · ${candidate.platform}`}</option>)}</select></Field></div>
@@ -94,12 +123,13 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
         <Button id="refresh-models" className="mt-2" variant="ghost" disabled={!selected || modelsBusy} onClick={() => { if (!selected) return; const id = selected.id, query = `${id}:${harness}`; setModelsBusy(true); setModelsError(""); void store.refreshModels(id, harness).then(() => store.models(id, harness)).then(value => { if (modelSelection.current === query) setCatalog(value); }).catch(error => { if (modelSelection.current === query) setModelsError(error instanceof Error ? error.message : "Could not refresh models."); }).finally(() => { if (modelSelection.current === query) setModelsBusy(false); }); }}>{modelsBusy && <Spinner />}{modelsBusy ? "Fetching models..." : "Refresh models"}</Button></Field>
         <Field label="Reasoning effort" htmlFor="launch-effort" hint={modelInfo?.defaultEffort ? `Default: ${modelInfo.defaultEffort}` : modelInfo?.efforts?.length === 0 ? "This model does not offer reasoning levels." : undefined}><select id="launch-effort" className="select" name="effort" value={effort} disabled={reasoning.length === 0} onChange={event => setEffort(event.target.value)}><option value="">Harness default</option>{reasoning.map(value => <option key={value}>{value}</option>)}</select></Field></div>
       <Field label="Local terminal" htmlFor="agent-terminal" hint={!native ? "Native Claude control needs Windows or tmux. Background mode supports all web controls." : harness === "claude" ? "Experimental console input. Complete startup/trust prompts locally. Avoid local typing while sending from the web panel. Background mode is more reliable." : selected?.terminal === "window" ? `Opens the normal ${harnessLabel} terminal on ${selected.name}. Uncheck to run in the background.` : selected?.terminal === "tmux" ? `Starts ${harnessLabel} in tmux. The agent output shows the local attach command.` : "Background only. Update the worker or install a terminal launcher to open locally."}><label className="flex items-center gap-2"><input id="agent-terminal" type="checkbox" checked={native && terminal && !!selected?.terminal && selected.terminal !== "none"} disabled={!native || !selected?.terminal || selected.terminal === "none"} onChange={event => setTerminal(event.target.checked)} />Open {harnessLabel} on the machine{harness === "claude" ? " (experimental)" : ""}</label></Field>
-      {harness === "claude" && native && terminal && selected && <ClaudeTrust key={selected.id} machine={selected} store={store} onBusyChange={setTrustBusy} />}
+      {harness === "claude" && native && terminal && source !== "folder" && selected && <ClaudeTrust key={selected.id} machine={selected} store={store} onBusyChange={setTrustBusy} />}
+      {harness === "claude" && native && terminal && source === "folder" && <p className="field-hint mb-4">Claude may ask you to trust this existing folder in its terminal. Trusting Sideband workspaces does not cover folders elsewhere.</p>}
       <Field label="Room" htmlFor="launch-room" hint="Optional. The agent joins this room automatically."><RoomPicker id="launch-room" rooms={allRooms(state)} value={room} onChange={setRoom} /></Field>
       <Field label="What should it work on?" htmlFor="launch-prompt"><textarea id="launch-prompt" className="textarea" name="prompt" rows={3} maxLength={16000} defaultValue={initial?.prompt ?? ""} placeholder="Give it a task, or leave this empty and send instructions later." /></Field>
-      <details className="advanced-section"><summary><ChevronRight size={14} />Advanced</summary><Field label="Branch or ref" htmlFor="launch-ref"><input id="launch-ref" className="input" name="ref" maxLength={256} disabled={!repository.trim()} defaultValue={initial?.ref ?? ""} placeholder={repository.trim() ? "Repository default" : "Requires a repository"} /></Field>
+      <details className="advanced-section"><summary><ChevronRight size={14} />Advanced</summary><Field label="Branch or ref" htmlFor="launch-ref"><input id="launch-ref" className="input" name="ref" maxLength={256} disabled={source === "folder" || !repository.trim()} defaultValue={initial?.ref ?? ""} placeholder={source !== "folder" && repository.trim() ? "Repository default" : "Requires a repository"} /></Field>
         <p className="field-hint">Agents run unattended, using this machine’s existing harness credentials.</p></details>
-      <ErrorMessage text={error || state.controlError} id="launch-error" /><div className="form-actions"><Button onClick={close} disabled={busy || trustBusy} variant="ghost">Cancel</Button><Button id="agent-launch" variant="primary" type="submit" disabled={busy || trustBusy || !selected}>{busy ? <Spinner /> : <Plus size={15} />}{busy ? "Starting…" : "Launch agent"}</Button></div>
+      <ErrorMessage text={error || state.controlError} id="launch-error" /><div className="form-actions"><Button onClick={close} disabled={busy || trustBusy} variant="ghost">Cancel</Button><Button id="agent-launch" variant="primary" type="submit" disabled={busy || trustBusy || !selected || source === "folder" && (!folder || !selected.folders)}>{busy ? <Spinner /> : <Plus size={15} />}{busy ? "Starting…" : "Launch agent"}</Button></div>
     </form>
   </Modal>;
 }

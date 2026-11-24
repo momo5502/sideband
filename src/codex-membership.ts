@@ -24,6 +24,8 @@ export class CodexMembership {
   private monitor?: RpcConnection;
   private closing = false;
   private errors = new Map<string, string>();
+  private monitorError = "";
+  private beating?: Promise<void>;
   private constructor(private readonly db: Registry, private readonly profiles: RoomProfiles, private readonly options: Options) {
     this.tools = new RoomTools(async (key, profile, name) => {
       await this.claim(key);
@@ -38,8 +40,14 @@ export class CodexMembership {
     return new CodexMembership(await Registry.open(join(profiles.directory, "codex-memberships.sqlite"), "codex"), profiles, options);
   }
   start(): void {
-    const tick = () => { void this.reconcile().catch(() => {}); };
+    const tick = () => { void this.heartbeatOwned().catch(() => {}); void this.reconcile().catch(() => {}); };
     tick(); this.timer = setInterval(tick, 10000); this.timer.unref();
+  }
+  private heartbeatOwned(): Promise<void> {
+    if (this.closing || !this.owned.size) return Promise.resolve(); if (this.beating) return this.beating;
+    this.beating = this.db.change(() => {
+      for (const key of this.owned) { const lease = this.db.get<Lease>("lease", key); if (lease?.owner === this.owner) this.db.put("lease", key, { ...lease, at: Date.now() }); }
+    }).finally(() => { this.beating = undefined; }); return this.beating;
   }
   private serial<T>(key: string, task: () => Promise<T>): Promise<T> {
     const pending = (this.queues.get(key) ?? Promise.resolve()).catch(() => {}).then(task);
@@ -101,7 +109,14 @@ export class CodexMembership {
     if (this.closing) return Promise.resolve(); if (this.sweep) return this.sweep;
     this.sweep = (async () => {
       if (!this.db.all<Membership>("membership").some(([, row]) => row.room) && !this.owned.size) return;
-      const loaded = new Set(await this.loadedThreads());
+      let loaded: Set<string>;
+      try { loaded = new Set(await this.loadedThreads()); this.monitorError = ""; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "Cannot inspect loaded Codex threads.";
+        if (!this.closing && message !== this.monitorError) { this.monitorError = message; this.options.report?.(`Sideband room recovery: ${message}`); }
+        await this.heartbeatOwned().catch(() => {});
+        return;
+      }
       const keys = new Set([...this.owned, ...this.db.all<Membership>("membership").filter(([, row]) => row.room).map(([id]) => id)]);
       await Promise.allSettled([...keys].map(key => this.serial(key, async () => {
         if (this.closing) return;
@@ -130,7 +145,7 @@ export class CodexMembership {
   async close(): Promise<void> {
     this.closing = true; if (this.timer) clearInterval(this.timer);
     await this.closeMonitor();
-    await this.sweep?.catch(() => {}); await Promise.allSettled(this.queues.values()); await this.tools.close();
+    await this.sweep?.catch(() => {}); await this.beating?.catch(() => {}); await Promise.allSettled(this.queues.values()); await this.tools.close();
     for (const key of [...this.owned]) await this.release(key);
     await this.closeMonitor(); await this.db.close();
   }

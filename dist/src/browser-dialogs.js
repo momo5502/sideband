@@ -36,7 +36,25 @@ function ClaudeTrust({ machine, store, onBusyChange }) {
                     void store.trustClaude(machine.id).then(result => setRoot(result.root)).catch(error => setError(error instanceof Error ? error.message : "Could not record trust.")).finally(() => { setBusy(false); onBusyChange?.(false); });
                 }, children: [busy ? _jsx(Spinner, {}) : root ? _jsx(Check, { size: 14 }) : null, root ? "Workspaces trusted" : busy ? "Recording trust..." : "Trust Claude workspaces"] }), root && _jsxs("p", { className: "field-hint mt-2", role: "status", children: ["Trusted: ", root, ". Start or resume the agent to apply it. An already-open trust prompt still needs local confirmation or a restart."] }), _jsx(ErrorMessage, { text: error })] });
 }
+function FolderPicker({ machine, store, value, onChange }) {
+    const [listing, setListing] = useState(), [busy, setBusy] = useState(false), [error, setError] = useState("");
+    const generation = useRef(0);
+    useEffect(() => () => { generation.current++; }, []);
+    const browse = (path, cursor) => {
+        if (!machine?.folders)
+            return;
+        const current = ++generation.current;
+        setBusy(true);
+        setError("");
+        void store.folders(machine.id, path, cursor).then(result => { if (current === generation.current)
+            setListing(result); }).catch(error => { if (current === generation.current)
+            setError(error instanceof Error ? error.message : "Could not browse folders."); }).finally(() => { if (current === generation.current)
+            setBusy(false); });
+    };
+    return _jsxs(Field, { label: "Folder on the machine", htmlFor: "agent-folder", hint: "Uses this folder in place. The agent can edit its files; other agents using it share those changes. Archiving keeps the folder.", children: [_jsx("input", { id: "agent-folder", className: "input", value: value, onChange: event => onChange(event.target.value), required: true, maxLength: 4096, placeholder: machine?.platform === "win32" ? "C:\\projects\\my-project" : "/home/user/my-project" }), _jsxs(Button, { id: "browse-folders", className: "mt-2", variant: "outline", disabled: !machine?.online || !machine.folders || busy, onClick: () => browse(value || undefined), children: [busy ? _jsx(Spinner, {}) : _jsx(Monitor, { size: 14 }), "Browse ", machine?.name ?? "machine"] }), !machine?.folders && _jsx("p", { className: "field-hint", children: "Update this worker to use existing folders." }), listing && _jsxs("section", { className: "setup-box mt-3", "aria-label": "Folders on selected machine", children: [_jsx("p", { id: "folder-current", className: "break-all font-mono text-xs", children: listing.path }), _jsxs("div", { className: "flex flex-wrap gap-2 my-2", children: [_jsx(Button, { id: "folder-up", disabled: busy || !listing.parent, onClick: () => browse(listing.parent), children: "Up" }), listing.roots.map(root => _jsx(Button, { disabled: busy, onClick: () => browse(root), children: root }, root)), _jsx(Button, { id: "folder-use", variant: "primary", disabled: busy, onClick: () => { onChange(listing.path); setListing(undefined); generation.current++; }, children: "Use this folder" }), _jsx(Button, { variant: "ghost", onClick: () => { setListing(undefined); generation.current++; setBusy(false); }, children: "Close browser" })] }), _jsxs("div", { className: "max-h-52 overflow-y-auto", children: [listing.entries.map(entry => _jsx("button", { type: "button", className: "room-choice", disabled: busy, "data-folder": entry.path, onClick: () => browse(entry.path), children: entry.name }, entry.path)), !listing.entries.length && _jsx("p", { className: "field-hint", children: "No accessible subfolders." })] }), listing.next && _jsx(Button, { id: "folder-next", disabled: busy, onClick: () => browse(listing.path, listing.next), children: "Next folders" }), listing.partial && _jsx("p", { className: "field-hint", children: "Some linked folders could not be checked. You can enter their path directly." })] }), _jsx(ErrorMessage, { text: error })] });
+}
 export function NewAgent({ state, store, close, initial }) {
+    const [source, setSource] = useState(initial?.folder ? "folder" : "new"), [folder, setFolder] = useState(initial?.folder ?? "");
     const [repository, setRepository] = useState(initial?.repository ?? ""), [name, setName] = useState(() => {
         if (!initial)
             return "";
@@ -51,6 +69,8 @@ export function NewAgent({ state, store, close, initial }) {
     const harnessLabel = { omp: "OMP", codex: "Codex", claude: "Claude" }[harness];
     const [machine, setMachine] = useState(() => {
         const eligible = state.control.machines.filter(machine => machine.online && machine.harnesses.includes(harness));
+        if (initial?.folder)
+            return initial.machineId;
         return eligible.find(machine => machine.id === initial?.machineId)?.id ?? eligible.find(machine => machine.name === initial?.machineName)?.id ?? eligible[0]?.id ?? "";
     });
     const [busy, setBusy] = useState(false), [trustBusy, setTrustBusy] = useState(false), [error, setError] = useState("");
@@ -75,6 +95,11 @@ export function NewAgent({ state, store, close, initial }) {
     useEffect(() => { if (effort && modelInfo?.efforts && !modelInfo.efforts.includes(effort))
         setEffort(""); }, [modelInfo, effort]);
     const modelSelection = useRef(`${machine}:${harness}`);
+    const folderMachine = useRef(machine);
+    useEffect(() => { if (folderMachine.current !== machine) {
+        folderMachine.current = machine;
+        setFolder("");
+    } }, [machine]);
     useEffect(() => { const key = `${machine}:${harness}`; if (modelSelection.current !== key) {
         modelSelection.current = key;
         setModel("");
@@ -88,8 +113,8 @@ export function NewAgent({ state, store, close, initial }) {
     catch {
         return [];
     } });
-    useEffect(() => { if (!selected && eligible.length === 1)
-        setMachine(eligible[0].id); }, [selected, eligible.length]);
+    useEffect(() => { if (!selected && eligible.length === 1 && !initial?.folder)
+        setMachine(eligible[0].id); }, [selected, eligible.length, initial?.folder]);
     useEffect(() => {
         if (initial || editedHarness.current || eligible.length)
             return;
@@ -99,15 +124,24 @@ export function NewAgent({ state, store, close, initial }) {
             setTerminal(candidate !== "claude");
         }
     }, [harness, state.control.machines, eligible.length, initial]);
+    const suggestName = (value) => {
+        if (editedName.current)
+            return;
+        const base = value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55), used = new Set(state.control.agents.map(agent => agent.name.toLowerCase()));
+        let result = base, index = 2;
+        while (used.has(result.toLowerCase()))
+            result = `${base}-${index++}`;
+        setName(result);
+    };
     return _jsx(Modal, { id: "new-agent-dialog", open: true, onOpenChange: open => { if (!open && !busy && !trustBusy)
-            close(); }, title: "New agent", description: "Choose a machine and an optional repository. Your agent gets its own workspace and stays available for new work.", children: _jsxs("form", { id: "agent-launch-form", onSubmit: event => {
+            close(); }, title: "New agent", description: "Choose a machine, harness and workspace. Your agent stays available for new work.", children: _jsxs("form", { id: "agent-launch-form", onSubmit: event => {
                 event.preventDefault();
-                if (busy || trustBusy || !selected)
+                if (busy || trustBusy || !selected || source === "folder" && (!selected.folders || !folder))
                     return;
                 setBusy(true);
                 setError("");
                 const form = new FormData(event.currentTarget);
-                const spec = { machineId: machine, ...(repository.trim() ? { repository: repository.trim() } : {}), name: name.trim(), harness };
+                const spec = { machineId: machine, ...(source === "folder" ? { folder } : repository.trim() ? { repository: repository.trim() } : {}), name: name.trim(), harness };
                 if (native && terminal && selected.terminal && selected.terminal !== "none")
                     spec.terminal = true;
                 for (const key of ["ref", "model", "effort", "prompt"]) {
@@ -123,22 +157,15 @@ export function NewAgent({ state, store, close, initial }) {
                 }
                 catch { /* Optional convenience. */ } close(); })
                     .catch(error => setError(error instanceof Error ? error.message : "Launch failed.")).finally(() => setBusy(false));
-            }, children: [_jsxs(Field, { label: "Repository (optional)", htmlFor: "agent-repository", hint: "Leave empty for a new workspace, or enter an HTTPS or SSH Git URL.", children: [_jsx("input", { id: "agent-repository", autoFocus: true, className: "input", maxLength: 2048, placeholder: "Empty workspace or Git URL", list: "recent-repositories", value: repository, onChange: event => {
+            }, children: [_jsx(Field, { label: "Workspace", htmlFor: "agent-workspace", children: _jsxs("select", { id: "agent-workspace", className: "select", value: source, onChange: event => setSource(event.target.value), children: [_jsx("option", { value: "new", children: "New workspace (empty or clone a repository)" }), _jsx("option", { value: "folder", children: "Existing folder on the machine" })] }) }), source === "folder" ? _jsx(FolderPicker, { machine: selected, store: store, value: folder, onChange: value => { setFolder(value); suggestName(value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) ?? ""); } }, selected?.id ?? "none") : _jsxs(Field, { label: "Repository (optional)", htmlFor: "agent-repository", hint: "Leave empty for a new workspace, or enter an HTTPS or SSH Git URL.", children: [_jsx("input", { id: "agent-repository", autoFocus: true, className: "input", maxLength: 2048, placeholder: "Empty workspace or Git URL", list: "recent-repositories", value: repository, onChange: event => {
                                 const repository = event.target.value;
                                 setRepository(repository);
-                                if (!editedName.current) {
-                                    const base = (repository.trim() ? repositoryName(repository) : "").replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55);
-                                    const used = new Set(state.control.agents.map(agent => agent.name.toLowerCase()));
-                                    let name = base, index = 2;
-                                    while (used.has(name.toLowerCase()))
-                                        name = `${base}-${index++}`;
-                                    setName(name);
-                                }
+                                suggestName(repository.trim() ? repositoryName(repository) : "");
                             } }), _jsx("datalist", { id: "recent-repositories", children: recent.map(value => _jsx("option", { value: value }, value)) })] }), _jsxs("div", { className: "form-grid", children: [_jsx(Field, { label: "Agent name", htmlFor: "agent-name", children: _jsx("input", { id: "agent-name", className: "input", required: true, maxLength: 64, pattern: "[a-zA-Z0-9][a-zA-Z0-9_-]*", placeholder: "project", value: name, onChange: event => { editedName.current = true; setName(event.target.value); } }) }), _jsx(Field, { label: "Run on", htmlFor: "agent-machine", children: _jsxs("select", { id: "agent-machine", className: "select", required: true, value: machine, onChange: event => setMachine(event.target.value), children: [_jsx("option", { value: "", disabled: true, children: "Choose a machine" }), state.control.machines.map(candidate => _jsxs("option", { value: candidate.id, disabled: !candidate.online || !candidate.harnesses.includes(harness), children: [candidate.name, !candidate.online ? " — offline" : !candidate.harnesses.includes(harness) ? " — OMP not installed" : ` · ${candidate.platform}`] }, candidate.id))] }) })] }), !eligible.length && _jsxs("div", { className: "mb-5", children: [state.control.machines.length > 0 && _jsxs("p", { className: "field-hint mb-3", children: ["No connected machine can run ", harnessLabel, " yet. Bring a machine online, or install ", harnessLabel, " and restart its worker."] }), _jsx(WorkerSetup, { state: state })] }), _jsx("span", { className: "field-label", id: "harness-label", children: "Harness" }), _jsx(RadioGroup.Root, { id: "agent-harness", className: "harness-picker", value: harness, onValueChange: value => { editedHarness.current = true; setHarness(value); setTerminal(value !== "claude"); }, "aria-labelledby": "harness-label", children: ["omp", "claude", "codex"].map(name => _jsx(RadioGroup.Item, { type: "button", className: "harness-option", value: name, children: name === "omp" ? "oh-my-pi" : name === "claude" ? "Claude" : "Codex" }, name)) }), _jsxs("div", { className: "form-grid", children: [_jsxs(Field, { label: "Model", htmlFor: "launch-model", hint: catalog.error || modelsError || "Search available models or enter a custom model ID. Leave empty for the harness default.", children: [_jsx("input", { id: "launch-model", className: "input", name: "model", maxLength: 256, list: "launch-models", value: model, onChange: event => { setModel(event.target.value); setEffort(""); }, placeholder: "Harness default" }), _jsx("datalist", { id: "launch-models", children: catalog.models.map(model => _jsxs("option", { value: model.id, children: [model.label, model.isDefault ? " (default)" : ""] }, model.id)) }), _jsxs(Button, { id: "refresh-models", className: "mt-2", variant: "ghost", disabled: !selected || modelsBusy, onClick: () => { if (!selected)
                                         return; const id = selected.id, query = `${id}:${harness}`; setModelsBusy(true); setModelsError(""); void store.refreshModels(id, harness).then(() => store.models(id, harness)).then(value => { if (modelSelection.current === query)
                                         setCatalog(value); }).catch(error => { if (modelSelection.current === query)
                                         setModelsError(error instanceof Error ? error.message : "Could not refresh models."); }).finally(() => { if (modelSelection.current === query)
-                                        setModelsBusy(false); }); }, children: [modelsBusy && _jsx(Spinner, {}), modelsBusy ? "Fetching models..." : "Refresh models"] })] }), _jsx(Field, { label: "Reasoning effort", htmlFor: "launch-effort", hint: modelInfo?.defaultEffort ? `Default: ${modelInfo.defaultEffort}` : modelInfo?.efforts?.length === 0 ? "This model does not offer reasoning levels." : undefined, children: _jsxs("select", { id: "launch-effort", className: "select", name: "effort", value: effort, disabled: reasoning.length === 0, onChange: event => setEffort(event.target.value), children: [_jsx("option", { value: "", children: "Harness default" }), reasoning.map(value => _jsx("option", { children: value }, value))] }) })] }), _jsx(Field, { label: "Local terminal", htmlFor: "agent-terminal", hint: !native ? "Native Claude control needs Windows or tmux. Background mode supports all web controls." : harness === "claude" ? "Experimental console input. Complete startup/trust prompts locally. Avoid local typing while sending from the web panel. Background mode is more reliable." : selected?.terminal === "window" ? `Opens the normal ${harnessLabel} terminal on ${selected.name}. Uncheck to run in the background.` : selected?.terminal === "tmux" ? `Starts ${harnessLabel} in tmux. The agent output shows the local attach command.` : "Background only. Update the worker or install a terminal launcher to open locally.", children: _jsxs("label", { className: "flex items-center gap-2", children: [_jsx("input", { id: "agent-terminal", type: "checkbox", checked: native && terminal && !!selected?.terminal && selected.terminal !== "none", disabled: !native || !selected?.terminal || selected.terminal === "none", onChange: event => setTerminal(event.target.checked) }), "Open ", harnessLabel, " on the machine", harness === "claude" ? " (experimental)" : ""] }) }), harness === "claude" && native && terminal && selected && _jsx(ClaudeTrust, { machine: selected, store: store, onBusyChange: setTrustBusy }, selected.id), _jsx(Field, { label: "Room", htmlFor: "launch-room", hint: "Optional. The agent joins this room automatically.", children: _jsx(RoomPicker, { id: "launch-room", rooms: allRooms(state), value: room, onChange: setRoom }) }), _jsx(Field, { label: "What should it work on?", htmlFor: "launch-prompt", children: _jsx("textarea", { id: "launch-prompt", className: "textarea", name: "prompt", rows: 3, maxLength: 16000, defaultValue: initial?.prompt ?? "", placeholder: "Give it a task, or leave this empty and send instructions later." }) }), _jsxs("details", { className: "advanced-section", children: [_jsxs("summary", { children: [_jsx(ChevronRight, { size: 14 }), "Advanced"] }), _jsx(Field, { label: "Branch or ref", htmlFor: "launch-ref", children: _jsx("input", { id: "launch-ref", className: "input", name: "ref", maxLength: 256, disabled: !repository.trim(), defaultValue: initial?.ref ?? "", placeholder: repository.trim() ? "Repository default" : "Requires a repository" }) }), _jsx("p", { className: "field-hint", children: "Agents run unattended, using this machine\u2019s existing harness credentials." })] }), _jsx(ErrorMessage, { text: error || state.controlError, id: "launch-error" }), _jsxs("div", { className: "form-actions", children: [_jsx(Button, { onClick: close, disabled: busy || trustBusy, variant: "ghost", children: "Cancel" }), _jsxs(Button, { id: "agent-launch", variant: "primary", type: "submit", disabled: busy || trustBusy || !selected, children: [busy ? _jsx(Spinner, {}) : _jsx(Plus, { size: 15 }), busy ? "Starting…" : "Launch agent"] })] })] }) });
+                                        setModelsBusy(false); }); }, children: [modelsBusy && _jsx(Spinner, {}), modelsBusy ? "Fetching models..." : "Refresh models"] })] }), _jsx(Field, { label: "Reasoning effort", htmlFor: "launch-effort", hint: modelInfo?.defaultEffort ? `Default: ${modelInfo.defaultEffort}` : modelInfo?.efforts?.length === 0 ? "This model does not offer reasoning levels." : undefined, children: _jsxs("select", { id: "launch-effort", className: "select", name: "effort", value: effort, disabled: reasoning.length === 0, onChange: event => setEffort(event.target.value), children: [_jsx("option", { value: "", children: "Harness default" }), reasoning.map(value => _jsx("option", { children: value }, value))] }) })] }), _jsx(Field, { label: "Local terminal", htmlFor: "agent-terminal", hint: !native ? "Native Claude control needs Windows or tmux. Background mode supports all web controls." : harness === "claude" ? "Experimental console input. Complete startup/trust prompts locally. Avoid local typing while sending from the web panel. Background mode is more reliable." : selected?.terminal === "window" ? `Opens the normal ${harnessLabel} terminal on ${selected.name}. Uncheck to run in the background.` : selected?.terminal === "tmux" ? `Starts ${harnessLabel} in tmux. The agent output shows the local attach command.` : "Background only. Update the worker or install a terminal launcher to open locally.", children: _jsxs("label", { className: "flex items-center gap-2", children: [_jsx("input", { id: "agent-terminal", type: "checkbox", checked: native && terminal && !!selected?.terminal && selected.terminal !== "none", disabled: !native || !selected?.terminal || selected.terminal === "none", onChange: event => setTerminal(event.target.checked) }), "Open ", harnessLabel, " on the machine", harness === "claude" ? " (experimental)" : ""] }) }), harness === "claude" && native && terminal && source !== "folder" && selected && _jsx(ClaudeTrust, { machine: selected, store: store, onBusyChange: setTrustBusy }, selected.id), harness === "claude" && native && terminal && source === "folder" && _jsx("p", { className: "field-hint mb-4", children: "Claude may ask you to trust this existing folder in its terminal. Trusting Sideband workspaces does not cover folders elsewhere." }), _jsx(Field, { label: "Room", htmlFor: "launch-room", hint: "Optional. The agent joins this room automatically.", children: _jsx(RoomPicker, { id: "launch-room", rooms: allRooms(state), value: room, onChange: setRoom }) }), _jsx(Field, { label: "What should it work on?", htmlFor: "launch-prompt", children: _jsx("textarea", { id: "launch-prompt", className: "textarea", name: "prompt", rows: 3, maxLength: 16000, defaultValue: initial?.prompt ?? "", placeholder: "Give it a task, or leave this empty and send instructions later." }) }), _jsxs("details", { className: "advanced-section", children: [_jsxs("summary", { children: [_jsx(ChevronRight, { size: 14 }), "Advanced"] }), _jsx(Field, { label: "Branch or ref", htmlFor: "launch-ref", children: _jsx("input", { id: "launch-ref", className: "input", name: "ref", maxLength: 256, disabled: source === "folder" || !repository.trim(), defaultValue: initial?.ref ?? "", placeholder: source !== "folder" && repository.trim() ? "Repository default" : "Requires a repository" }) }), _jsx("p", { className: "field-hint", children: "Agents run unattended, using this machine\u2019s existing harness credentials." })] }), _jsx(ErrorMessage, { text: error || state.controlError, id: "launch-error" }), _jsxs("div", { className: "form-actions", children: [_jsx(Button, { onClick: close, disabled: busy || trustBusy, variant: "ghost", children: "Cancel" }), _jsxs(Button, { id: "agent-launch", variant: "primary", type: "submit", disabled: busy || trustBusy || !selected || source === "folder" && (!folder || !selected.folders), children: [busy ? _jsx(Spinner, {}) : _jsx(Plus, { size: 15 }), busy ? "Starting…" : "Launch agent"] })] })] }) });
 }
 export function JoinRoom({ state, store, close }) {
     const [name, setName] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");

@@ -13,10 +13,12 @@ import { RoomError } from "./room-protocol.js";
 import { terminalLauncher } from "./terminal-launch.js";
 import { trustClaudeWorkspaces } from "./claude-trust.js";
 import { ModelDiscovery } from "./model-discovery.js";
+import { browseFolders, existingFolder } from "./worker-folders.js";
 export class Worker {
     options;
     models;
     modelSupport = false;
+    folderSupport = false;
     client;
     machine;
     root;
@@ -48,9 +50,11 @@ export class Worker {
         this.client.onConnected(async () => {
             let machine = this.machine;
             this.modelSupport = false;
+            this.folderSupport = false;
             try {
                 const response = await this.client.request("control.worker", { machine });
                 this.modelSupport = response.capabilities?.models === true;
+                this.folderSupport = response.capabilities?.folders === true;
             }
             catch (original) {
                 let error = original;
@@ -87,6 +91,8 @@ export class Worker {
             if (this.modelSupport)
                 for (const harness of this.machine.harnesses)
                     void this.refreshModels(harness).catch(() => { });
+            if (this.folderSupport)
+                void this.client.request("control.features", { folders: true }).catch(() => { });
         });
         this.client.onEvent((event, command) => { if (event === "control.command")
             void this.command(command); });
@@ -131,13 +137,14 @@ export class Worker {
     async savedAgent(record) {
         if (!/^[a-f0-9-]{36}$/.test(record.agent.id))
             throw new Error("Invalid saved agent ID.");
-        const workspace = join(this.root, record.agent.id, record.agent.repository ? "repo" : "workspace");
-        const present = await stat(workspace).then(info => info.isDirectory(), () => false);
+        const workspace = record.agent.folder ?? join(this.root, record.agent.id, record.agent.repository ? "repo" : "workspace");
+        let folderError = "";
+        const present = record.agent.folder ? await existingFolder(workspace, true).then(() => true, error => { folderError = error.message; return false; }) : await stat(workspace).then(info => info.isDirectory(), () => false);
         const live = await this.store.live(record.agent.id);
         return { ...record.agent, machineId: this.machine.id, machineName: this.machine.name, online: false, persistent: true, archived: record.desired === "archived",
             state: !present && record.workspaceReady ? "failed" : record.desired !== "running" || !live ? "stopped" : record.agent.state,
             canResume: record.workspaceReady && present,
-            ...(!present && record.workspaceReady ? { error: "The saved workspace is missing from this machine. Its record was preserved." } : {}) };
+            ...(!present && record.workspaceReady ? { error: folderError || "The saved workspace is missing from this machine. Its record was preserved." } : {}) };
     }
     reportInventoryFailure(error) {
         if (this.closing)
@@ -212,7 +219,7 @@ export class Worker {
             }
             if (await this.store.live(id))
                 throw new Error("This agent's controller is still alive. Wait for it to reconnect before resuming.");
-            const spec = Object.fromEntries(["name", "harness", "repository", "ref", "model", "effort", "room", "terminal"].flatMap(key => {
+            const spec = Object.fromEntries(["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "terminal"].flatMap(key => {
                 const value = record.agent[key];
                 return value === undefined ? [] : [[key, value]];
             }));
@@ -231,6 +238,16 @@ export class Worker {
     }
     async command(command) {
         try {
+            if (command.method === "folders") {
+                if (!this.folderSupport || Object.keys(command.params).some(key => !["path", "cursor"].includes(key)))
+                    throw new Error("Folder browsing is unavailable on this worker.");
+                const { path, cursor } = command.params;
+                if (path !== undefined && (typeof path !== "string" || path.length > 4096) || cursor !== undefined && (typeof cursor !== "string" || cursor.length > 255))
+                    throw new Error("Invalid folder browsing request.");
+                const result = await browseFolders(path, cursor);
+                await this.client.request("control.reply", { id: command.id, result });
+                return;
+            }
             if (command.method === "models") {
                 const harness = command.params.harness;
                 if (Object.keys(command.params).length !== 1 || !this.machine.harnesses.includes(harness) || !this.modelSupport)
@@ -277,6 +294,11 @@ export class Worker {
             if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id))
                 throw new Error("Invalid agent ID.");
             const spec = launchSpec(command.params.spec);
+            if (spec.folder) {
+                if (!this.folderSupport)
+                    throw new Error("Update the server and worker to launch in an existing folder.");
+                spec.folder = await existingFolder(spec.folder);
+            }
             let launched = this.launches.get(id);
             if (!launched) {
                 const config = { profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec,

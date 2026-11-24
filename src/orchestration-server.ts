@@ -63,7 +63,7 @@ export class OrchestrationServer {
     });
   }
   private agent(input: unknown): ManagedAgent {
-    const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume", "persistent", "archived", "identityId"]);
+    const value = fields(input, ["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume", "persistent", "archived", "identityId"]);
     const { id, machineId, machineName, state, createdAt, error, online, canResume, persistent, archived, identityId, ...spec } = value;
     for (const flag of [persistent, archived]) if (flag !== undefined && typeof flag !== "boolean") throw new Error("Invalid persistence flag.");
     if (canResume !== undefined && typeof canResume !== "boolean") throw new Error("Invalid resume capability.");
@@ -117,7 +117,12 @@ export class OrchestrationServer {
         await this.store?.change(() => { if (agent.persistent) this.store!.put("agent", agent.id, this.agents.get(agent.id)); this.store!.put("owner", agent.id, identity.id); });
         if (!this.machines.has(agent.machineId)) this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
       }
-      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true } } : {}) };
+      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true } } : {}) };
+    }
+    if (method === "control.features") {
+      const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report its features.");
+      const args = fields(params, ["folders"]); if (args.folders !== true) throw new Error("Invalid folder capability.");
+      const machine = this.machines.get(peer.id)!; machine.folders = true; await this.save("machine", peer.id, machine); this.changed(); return {};
     }
     if (method === "control.models") {
       const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report models.");
@@ -181,6 +186,13 @@ export class OrchestrationServer {
       return {};
     }
     if (!browser) throw new Error("Orchestration controls are available through the authenticated web panel.");
+    if (method === "control.folders") {
+      const args = fields(params, ["machineId", "path", "cursor"]), machine = this.machines.get(uuid(args.machineId));
+      if (!machine?.online || !machine.folders) throw new Error("Update this worker to browse or use existing folders.");
+      if (args.path !== undefined) text(args.path, "folder path", 4096);
+      if (args.cursor !== undefined) text(args.cursor, "folder cursor", 255);
+      return this.dispatch(this.workers.get(machine.id), "folders", { ...(args.path !== undefined ? { path: args.path } : {}), ...(args.cursor !== undefined ? { cursor: args.cursor } : {}) });
+    }
     if (method === "control.models.refresh") {
       const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
       if (!machine?.online || !machine.harnesses.includes(args.harness as string)) throw new Error("Choose an online machine with this harness.");
@@ -209,9 +221,10 @@ export class OrchestrationServer {
       return this.dispatch(this.workers.get(machine.id), "claude-trust", {});
     }
     if (method === "control.launch") {
-      const { machineId, ...specInput } = fields(params, ["machineId", "name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
+      const { machineId, ...specInput } = fields(params, ["machineId", "name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal"]);
       const machine = this.machines.get(uuid(machineId)); if (!machine?.online) throw new Error("Select an online machine.");
       const spec = launchSpec(specInput); if (!machine.harnesses.includes(spec.harness)) throw new Error("This harness is not available on that machine.");
+      if (spec.folder && !machine.folders) throw new Error("Update this worker to launch in an existing folder.");
       if (spec.terminal && (!machine.terminal || machine.terminal === "none")) throw new Error("This worker cannot open a terminal. Update it, add a terminal launcher, or choose Background mode.");
       if (spec.terminal && spec.harness === "claude" && machine.platform !== "win32" && machine.terminal !== "tmux") throw new Error("Native Claude input requires Windows or tmux. Choose Background mode.");
       const id = randomUUID();

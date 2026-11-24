@@ -18,8 +18,8 @@ const until = async (check: () => boolean | Promise<boolean>) => { const end = D
 test("MCP replacement restores only exact loaded opted-in threads and their verified identities", { timeout: testTimeout(30000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-membership-")), server = await RoomServer.start({ host: "127.0.0.1", port: 0 });
   const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, profiles = new RoomProfiles(directory), sender = new RoomClient(profile, "human");
-  let loaded = ["one", "two"], epoch = 0; const deliveries: { key: string; text: string }[] = [];
-  const options = { loaded: async () => loaded, adapter: async (key: string) => { const connectedEpoch = epoch; return { prepare: async () => { if (connectedEpoch !== epoch || !loaded.includes(key)) throw new Error("Not loaded"); }, close: async () => {}, deliver: async (d: { text: string }) => { deliveries.push({ key, text: d.text }); } }; } };
+  let loaded = ["one", "two"], epoch = 0, monitorFailure = ""; const deliveries: { key: string; text: string }[] = [], warnings: string[] = [];
+  const options = { loaded: async () => { if (monitorFailure) throw new Error(monitorFailure); return loaded; }, report: (message: string) => warnings.push(message), adapter: async (key: string) => { const connectedEpoch = epoch; return { prepare: async () => { if (connectedEpoch !== epoch || !loaded.includes(key)) throw new Error("Not loaded"); }, close: async () => {}, deliver: async (d: { text: string }) => { deliveries.push({ key, text: d.text }); } }; } };
   let first: CodexMembership | undefined, next: CodexMembership | undefined, duplicate: CodexMembership | undefined;
   try {
     await profiles.save("local", profile); await sender.connect(); await sender.joinRoom("work");
@@ -36,6 +36,8 @@ test("MCP replacement restores only exact loaded opted-in threads and their veri
     await sender.send("after replacement"); await until(() => deliveries.some(d => d.key === "one" && d.text === "after replacement"));
     assert.ok(!deliveries.some(d => d.key === "two" && d.text === "after replacement"));
     epoch++; await next.reconcile(); assert.equal(value(await next.call("one", "sideband_status", {})).identity.id, id, "a dead daemon adapter is replaced even when MCP survives");
+    monitorFailure = "Codex proxy unavailable"; await next.reconcile(); await next.reconcile(); assert.equal(warnings.length, 1); assert.match(warnings[0]!, /Sideband room recovery: Codex proxy unavailable/);
+    monitorFailure = ""; await next.reconcile(); monitorFailure = "Codex proxy unavailable"; await next.reconcile(); assert.equal(warnings.length, 2, "a successful sweep resets monitor error deduplication"); monitorFailure = "";
     duplicate = await CodexMembership.open(profiles, options); await duplicate.reconcile();
     assert.equal((await duplicate.call("one", "sideband_send", { text: "duplicate" })).isError, true, "only one MCP process owns the thread");
     assert.equal((await next.call("one", "sideband_deactivate", { invalid: true })).isError, true);

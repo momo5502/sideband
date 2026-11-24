@@ -14,6 +14,7 @@ import { ManagedCodex } from "./managed-codex.js";
 import { ManagedClaudeNative } from "./managed-claude-native.js";
 import { ManagedClaude } from "./managed-claude.js";
 import { terminateTree } from "./process-tree.js";
+import { existingFolder } from "./worker-folders.js";
 
 export type RunnerConfig = { profile: ConnectionProfile; id: string; machineId: string; machineName: string; root: string; spec: unknown; omp: Executable; codex?: Executable; claude?: Executable; entry?: string; recover?: boolean };
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "Operation failed.").slice(0, 2048);
@@ -35,7 +36,7 @@ export class AgentRunner {
   private closed = false;
   private desiredRoom: string;
   private readonly directory: string;
-  private readonly workspace: string;
+  private workspace: string;
   private workspaceReady = false;
   private preparing?: ReturnType<typeof spawn>;
   private published = "";
@@ -64,7 +65,7 @@ export class AgentRunner {
     if (!/^[a-f0-9-]{36}$/.test(config.id)) throw new Error("Invalid runner ID.");
     this.directory = resolve(config.root, config.id);
     if (relative(resolve(config.root), this.directory) !== config.id) throw new Error("Invalid workspace path.");
-    this.workspace = join(this.directory, spec.repository ? "repo" : "workspace");
+    this.workspace = restored?.agent.folder ?? spec.folder ?? join(this.directory, spec.repository ? "repo" : "workspace");
     this.desiredRoom = spec.room ?? "";
     const { prompt: _prompt, ...description } = spec;
     this.agent = { ...description, id: config.id, machineId: config.machineId, machineName: config.machineName, room: this.desiredRoom, state: "preparing", online: true, createdAt: Date.now(), canResume: false };
@@ -80,6 +81,7 @@ export class AgentRunner {
         try { await this.client.request("control.runner", { agent: this.agent }); }
         catch (error) {
           if (!(error instanceof RoomError) || error.code !== "INVALID_ARGUMENT") throw error;
+          if (this.agent.folder) throw new Error("This server must be updated before using agents in existing folders.");
           this.legacyServer = true; await this.client.request("control.runner", { agent: this.wireAgent() });
         }
       }
@@ -209,7 +211,10 @@ export class AgentRunner {
   }
   private async launch(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    if (this.agent.repository) {
+    if (this.agent.folder) {
+      this.workspace = await existingFolder(this.agent.folder, true); this.agent.folder = this.workspace;
+      this.record("state", `Using existing folder: ${this.workspace}`);
+    } else if (this.agent.repository) {
       this.record("git", `Cloning ${this.agent.repository}`);
       await this.git(["clone", "--", this.agent.repository, "repo"]);
     } else {
@@ -241,6 +246,7 @@ export class AgentRunner {
   }
   private async startHarness(): Promise<void> {
     if (this.closed || this.stopRequested) throw new Error("Runner is stopped.");
+    if (this.agent.folder) this.workspace = await existingFolder(this.agent.folder, true);
     this.state("starting");
     const host: OmpHost = {
       event: (kind, text) => this.record(kind, text), state: state => { if (this.driver === driver && !this.closed && !this.stopRequested) this.agent.state = state; },

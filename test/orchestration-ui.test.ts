@@ -8,6 +8,36 @@ import { boundedOutput, mentionsUsername } from "../src/browser-workspace.js";
 import type { ManagedAgent, ControlCommand, OutputEvent } from "../src/orchestration-protocol.js";
 import { browserPage, until } from "./browser-fixture.js";
 
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} existing-folder picker browses the selected machine and gates old workers`, { timeout: testTimeout(30000) }, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), profile = { server: `127.0.0.1:${server.port}`, password: server.password };
+  const worker = new RoomClient(profile), legacy = new RoomClient(profile), runner = new RoomClient(profile, "project"), machineId = randomUUID(), legacyId = randomUUID(), commands: ControlCommand[] = [];
+  let page: Awaited<ReturnType<typeof browserPage>> | undefined;
+  worker.onEvent((event, command: ControlCommand) => {
+    if (event !== "control.command") return; commands.push(command);
+    void worker.request("control.reply", { id: command.id, ...(command.method === "launch" ? { error: "Captured folder launch" } : { result: { path: command.params.path ?? "/remote", parent: command.params.path ? "/remote" : "/", roots: ["/"], entries: command.params.path ? [] : [{ name: "project", path: "/remote/project" }] } }) });
+  });
+  try {
+    await worker.connect(); await worker.request("control.worker", { machine: { id: machineId, name: "current", platform: "test", harnesses: ["omp"] } }); await worker.request("control.features", { folders: true });
+    await legacy.connect(); await legacy.request("control.worker", { machine: { id: legacyId, name: "old worker", platform: "test", harnesses: ["omp"] } });
+    await runner.connect(); await runner.request("control.runner", { agent: { id: randomUUID(), name: "project", harness: "omp", machineId, machineName: "current", room: "", state: "idle", createdAt: Date.now() } });
+    await assert.rejects(worker.request("control.folders", { machineId }), /authenticated web panel/);
+    page = await browserPage(server, { mobile }); const p = page; await p.login(); await p.navigation(); p.click("#new-agent"); await until(() => !!p.doc.querySelector("#new-agent-dialog"));
+    await until(() => [...p.get<HTMLSelectElement>("#agent-machine").options].some(option => option.value === machineId)); p.fill("#agent-machine", machineId);
+    p.fill("#agent-repository", "https://example.org/old.git"); p.fill("#agent-workspace", "folder"); await until(() => !!p.doc.querySelector("#agent-folder"));
+    await until(() => !p.get<HTMLButtonElement>("#browse-folders").disabled); p.click("#browse-folders"); await until(() => p.doc.querySelector("#folder-current")?.textContent === "/remote");
+    p.click('[data-folder="/remote/project"]'); await until(() => p.doc.querySelector("#folder-current")?.textContent === "/remote/project");
+    p.click("#folder-use"); await until(() => p.get<HTMLInputElement>("#agent-folder").value === "/remote/project");
+    assert.equal(p.get<HTMLInputElement>("#agent-name").value, "project-2", "folder-based suggested names avoid existing agents");
+    assert.equal(p.get<HTMLSelectElement>("#launch-ref").disabled, true);
+    p.fill("#agent-name", "existing"); p.submit("#agent-launch-form"); await until(() => commands.some(command => command.method === "launch"));
+    const spec = commands.find(command => command.method === "launch")!.params.spec as Record<string, unknown>;
+    assert.equal(spec.folder, "/remote/project"); assert.equal(spec.repository, undefined); assert.equal(spec.ref, undefined);
+    await until(() => !!p.doc.querySelector("#launch-error")); p.fill("#agent-machine", legacyId); await until(() => p.get<HTMLInputElement>("#agent-folder").value === "");
+    assert.equal(p.get<HTMLButtonElement>("#browse-folders").disabled, true); assert.equal(p.get<HTMLButtonElement>("#agent-launch").disabled, true); assert.match(p.get("#new-agent-dialog").textContent!, /Update this worker/);
+    p.click(p.button("Cancel")); assert.deepEqual(p.errors, []);
+  } finally { await page?.close(); await worker.close(); await legacy.close(); await runner.close(); await server.close(); }
+});
+
 test("model picker follows machine and harness, supports custom IDs, refresh and model-specific efforts", { timeout: testTimeout(30000) }, async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const worker = new RoomClient(profile), machineId = randomUUID(), commands: ControlCommand[] = [];

@@ -546,6 +546,7 @@ export class BrowserWorkspace {
         return this.requireClient().request("control.claude_trust", { machineId, confirm: true });
     }
     models(machineId, harness) { return this.requireClient().request("control.models.list", { machineId, harness }); }
+    folders(machineId, path, cursor) { return this.requireClient().request("control.folders", { machineId, ...(path ? { path } : {}), ...(cursor ? { cursor } : {}) }); }
     async refreshModels(machineId, harness) {
         await this.requireClient().request("control.models.refresh", { machineId, harness });
         await this.refreshControl();

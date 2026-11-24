@@ -3,10 +3,11 @@ import type { BuildInfo, LocalUpdate, FleetUpdates } from "./update-types.js";
 
 export type HarnessModel = { id: string; label: string; efforts?: string[]; defaultEffort?: string; isDefault?: boolean };
 export type ModelCatalog = { models: HarnessModel[]; at: number; error?: string };
-export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; persistent?: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate; models?: Partial<Record<HarnessName, ModelCatalog>> };
+export type FolderListing = { path: string; parent: string | null; roots: string[]; entries: { name: string; path: string }[]; next?: string; partial?: boolean };
+export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; folders?: boolean; persistent?: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate; models?: Partial<Record<HarnessName, ModelCatalog>> };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
 export type HarnessName = "omp" | "codex" | "claude";
-export type LaunchSpec = { name: string; harness: HarnessName; repository?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
+export type LaunchSpec = { name: string; harness: HarnessName; repository?: string; folder?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
 export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string; persistent?: boolean; archived?: boolean };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
@@ -31,7 +32,7 @@ export function modelCatalog(input: unknown): ModelCatalog {
 }
 
 export function launchSpec(input: unknown): LaunchSpec {
-  const value = fields(input, ["name", "harness", "repository", "ref", "model", "effort", "room", "prompt", "terminal"]);
+  const value = fields(input, ["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal"]);
   const name = agentName(value.name); if (!name) throw new Error("Choose an agent name.");
   if (!["omp", "codex", "claude"].includes(value.harness as string)) throw new Error("Choose OMP, Codex or Claude.");
   const repository = value.repository === undefined || value.repository === "" ? undefined : text(value.repository, "repository URL", 2048).trim() || undefined;
@@ -45,6 +46,12 @@ export function launchSpec(input: unknown): LaunchSpec {
   } catch { /* Invalid URL. */ }
   if (repository && (!remote || /[\s\x00-\x1f]/.test(repository))) throw new Error("Use an HTTPS or SSH Git repository URL, without embedded credentials.");
   const result: LaunchSpec = { name, harness: value.harness as HarnessName, ...(repository ? { repository } : {}) };
+  if (value.folder !== undefined && value.folder !== "") {
+    const folder = text(value.folder, "folder path", 4096);
+    if (/[\x00-\x1f]/.test(folder) || !(/^[A-Za-z]:[\\/]/.test(folder) || folder.startsWith("/") || /^\\\\[^\\]+\\[^\\]+/.test(folder))) throw new Error("Choose an absolute folder path on the worker machine.");
+    if (repository) throw new Error("Choose either a repository or an existing folder.");
+    result.folder = folder;
+  }
   if (value.terminal !== undefined) { if (typeof value.terminal !== "boolean") throw new Error("Invalid terminal mode."); result.terminal = value.terminal; }
   for (const key of ["ref", "model", "effort", "room", "prompt"] as const) {
     if (value[key] === undefined || value[key] === "") continue;

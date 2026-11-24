@@ -17,12 +17,14 @@ import type { RuntimeUpdater } from "./updater.js";
 import { trustClaudeWorkspaces } from "./claude-trust.js";
 import { ModelDiscovery } from "./model-discovery.js";
 import type { HarnessName } from "./orchestration-protocol.js";
+import { browseFolders, existingFolder } from "./worker-folders.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable; codex?: Executable; claude?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
 export class Worker {
   private readonly models: ModelDiscovery;
   private modelSupport = false;
+  private folderSupport = false;
   readonly client: RoomClient;
   readonly machine: Machine;
   private readonly root: string;
@@ -49,7 +51,8 @@ export class Worker {
     this.client.onConnected(async () => {
       let machine = this.machine;
       this.modelSupport = false;
-      try { const response = await this.client.request<{ capabilities?: { models?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; }
+      this.folderSupport = false;
+      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; }
       catch (original) {
         let error = original;
         if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
@@ -70,6 +73,7 @@ export class Worker {
       this.scheduleInventory(true);
       // Optional capabilities are never sent to an older server or awaited by registration.
       if (this.modelSupport) for (const harness of this.machine.harnesses as HarnessName[]) void this.refreshModels(harness).catch(() => {});
+      if (this.folderSupport) void this.client.request("control.features", { folders: true }).catch(() => {});
     });
     this.client.onEvent((event, command: ControlCommand) => { if (event === "control.command") void this.command(command); });
     options.updater?.onChange(() => {
@@ -101,13 +105,14 @@ export class Worker {
   }
   private async savedAgent(record: SavedAgent): Promise<ManagedAgent> {
     if (!/^[a-f0-9-]{36}$/.test(record.agent.id)) throw new Error("Invalid saved agent ID.");
-    const workspace = join(this.root, record.agent.id, record.agent.repository ? "repo" : "workspace");
-    const present = await stat(workspace).then(info => info.isDirectory(), () => false);
+    const workspace = record.agent.folder ?? join(this.root, record.agent.id, record.agent.repository ? "repo" : "workspace");
+    let folderError = "";
+    const present = record.agent.folder ? await existingFolder(workspace, true).then(() => true, error => { folderError = error.message; return false; }) : await stat(workspace).then(info => info.isDirectory(), () => false);
     const live = await this.store!.live(record.agent.id);
     return { ...record.agent, machineId: this.machine.id, machineName: this.machine.name, online: false, persistent: true, archived: record.desired === "archived",
       state: !present && record.workspaceReady ? "failed" : record.desired !== "running" || !live ? "stopped" : record.agent.state,
       canResume: record.workspaceReady && present,
-      ...(!present && record.workspaceReady ? { error: "The saved workspace is missing from this machine. Its record was preserved." } : {}) };
+      ...(!present && record.workspaceReady ? { error: folderError || "The saved workspace is missing from this machine. Its record was preserved." } : {}) };
   }
   private reportInventoryFailure(error: unknown): void {
     if (this.closing) return;
@@ -157,7 +162,7 @@ export class Worker {
         record = this.store!.get(id)!;
       }
       if (await this.store!.live(id)) throw new Error("This agent's controller is still alive. Wait for it to reconnect before resuming.");
-      const spec = Object.fromEntries(["name", "harness", "repository", "ref", "model", "effort", "room", "terminal"].flatMap(key => {
+      const spec = Object.fromEntries(["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "terminal"].flatMap(key => {
         const value = (record.agent as unknown as Record<string, unknown>)[key]; return value === undefined ? [] : [[key, value]];
       }));
       await this.store!.desired(id, "running");
@@ -170,6 +175,13 @@ export class Worker {
   }
   private async command(command: ControlCommand): Promise<void> {
     try {
+      if (command.method === "folders") {
+        if (!this.folderSupport || Object.keys(command.params).some(key => !["path", "cursor"].includes(key))) throw new Error("Folder browsing is unavailable on this worker.");
+        const { path, cursor } = command.params;
+        if (path !== undefined && (typeof path !== "string" || path.length > 4096) || cursor !== undefined && (typeof cursor !== "string" || cursor.length > 255)) throw new Error("Invalid folder browsing request.");
+        const result = await browseFolders(path as string | undefined, cursor as string | undefined);
+        await this.client.request("control.reply", { id: command.id, result }); return;
+      }
       if (command.method === "models") {
         const harness = command.params.harness as HarnessName;
         if (Object.keys(command.params).length !== 1 || !this.machine.harnesses.includes(harness) || !this.modelSupport) throw new Error("Model discovery is unavailable for this harness.");
@@ -198,6 +210,7 @@ export class Worker {
       const id = command.params.id;
       if (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid agent ID.");
       const spec = launchSpec(command.params.spec);
+      if (spec.folder) { if (!this.folderSupport) throw new Error("Update the server and worker to launch in an existing folder."); spec.folder = await existingFolder(spec.folder); }
       let launched = this.launches.get(id);
       if (!launched) {
         const config: RunnerConfig = { profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec,
