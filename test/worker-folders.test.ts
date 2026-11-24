@@ -52,7 +52,8 @@ let q=Promise.resolve();createInterface({input:process.stdin}).on('line',line=>{
     for (const name of ["first", "second"]) {
       const { id } = await web.request<{ id: string }>("control.launch", { machineId, name, harness: "omp", folder, prompt: "FIRST" }); ids.push(id);
       await until(async () => (await list()).agents.some(agent => agent.id === id && agent.state === "idle" && agent.canResume));
-      const output = await web.request<OutputSnapshot>("control.watch", { agentId: id }); assert.ok(output.events.some(event => event.text.includes(`${canonical} FIRST`))); assert.ok(!output.events.some(event => event.kind === "git"));
+      await until(async () => (await web.request<OutputSnapshot>("control.watch", { agentId: id })).events.some(event => event.text.includes(`${canonical} FIRST`)));
+      const output = await web.request<OutputSnapshot>("control.watch", { agentId: id }); assert.ok(!output.events.some(event => event.kind === "git"));
       assert.equal((await list()).agents.find(agent => agent.id === id)!.folder, await realpath(folder));
     }
     assert.deepEqual(await readdir(folder), ["keep.txt"]); assert.equal((await stat(folder)).mode, mode);
@@ -60,7 +61,7 @@ let q=Promise.resolve();createInterface({input:process.stdin}).on('line',line=>{
     for (const id of ids) await action(id, "archive"); await until(async () => !(await Promise.all(ids.map(id => store!.live(id)))).some(Boolean));
     await worker!.close(); await start();
     await action(ids[0]!, "resume"); await until(async () => (await list()).agents.find(agent => agent.id === ids[0])?.state === "idle");
-    const output = await web.request<OutputSnapshot>("control.watch", { agentId: ids[0] }); assert.ok(output.events.some(event => event.text.includes("RESTORED FIRST")));
+    await until(async () => (await web.request<OutputSnapshot>("control.watch", { agentId: ids[0] })).events.some(event => event.text.includes("RESTORED FIRST")));
     await action(ids[0]!, "archive"); await until(async () => !await store!.live(ids[0]!));
     const moved = `${folder}-retained`; await rename(folder, moved); await symlink(other, folder, process.platform === "win32" ? "junction" : "dir");
     await (worker as unknown as { syncInventory(): Promise<void> }).syncInventory();
