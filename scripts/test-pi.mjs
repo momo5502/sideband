@@ -11,6 +11,8 @@ import { requestPlugin } from "../dist/src/plugin-control.js";
 import spawn from "cross-spawn";
 import { terminateTree } from "../dist/src/process-tree.js";
 const directory = await mkdtemp(join(tmpdir(), "sideband-real-pi-"));
+const errorText = "rg: regex parse error\nCommand exited with code 2";
+const errorEnvelope = { content: [{ type: "text", text: errorText }], structuredContent: { output: errorText, truncated: false, exit_code: 2, wall_time_seconds: 0.1 }, isError: true };
 let calls = 0, holds = 0, cancellations = 0;
 const server = createServer(async (req, res) => {
   let raw = ""; for await (const chunk of req) raw += chunk;
@@ -20,9 +22,10 @@ const server = createServer(async (req, res) => {
   const id = `msg_${calls}`, last = body.messages?.at(-1);
   send("message_start", { message: { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } });
   if (JSON.stringify(last).includes("HOLD_STREAM")) { holds++; res.once("close", () => cancellations++); return; }
-  const tool = body.tools?.find(t => t.name === "sideband_room_send");
+  const failurePrompt = JSON.stringify(body.messages).includes("FAIL_JSON_WRAPPER");
+  const tool = body.tools?.find(t => t.name === (failurePrompt ? "fixture_error" : "sideband_room_send"));
   const result = last?.role === "user" && Array.isArray(last.content) && last.content.some(p => p.type === "tool_result");
-  const block = tool && !result ? { type: "tool_use", id: `tool_${calls}`, name: tool.name, input: { text: "PI fixture room send" } } : { type: "text", text: "PI_DONE" };
+  const block = tool && !result ? { type: "tool_use", id: `tool_${calls}`, name: tool.name, input: failurePrompt ? {} : { text: "PI fixture room send" } } : { type: "text", text: "PI_DONE" };
   send("content_block_start", { index: 0, content_block: block.type === "tool_use" ? { ...block, input: {} } : { type: "text", text: "" } });
   send("content_block_delta", { index: 0, delta: block.type === "tool_use" ? { type: "input_json_delta", partial_json: JSON.stringify(block.input) } : { type: "text_delta", text: block.text } });
   send("content_block_stop", { index: 0 });
@@ -47,7 +50,9 @@ async function until(check) { const end = Date.now() + 120000; while (!check()) 
 try {
   // A manually started, plugin-loaded session must appear before any room or model call.
   const registry = join(directory, "presence");
-  const manual = spawn(executable.command, ["--mode", "rpc", "--no-extensions", "--no-session", "--no-approve", "--model", "sideband_fixture/fixture", "-e", resolve("dist/sideband-pi.cjs")], {
+  const failingTool = join(directory, "failing-tool.mjs");
+  await writeFile(failingTool, `import {Type} from "typebox"; export default function(api) { api.registerTool({name:"fixture_error", label:"Fixture error", description:"Local failure fixture", parameters:Type.Object({}), execute(){throw new Error(${JSON.stringify(JSON.stringify(errorEnvelope))});}}); }`);
+  const manual = spawn(executable.command, ["--mode", "rpc", "--no-extensions", "--no-session", "--no-approve", "--model", "sideband_fixture/fixture", "-e", resolve("dist/sideband-pi.cjs"), "-e", failingTool], {
     cwd: directory, env: { ...process.env, SIDEBAND_STATE_DIR: join(directory, "sideband"), SIDEBAND_PRESENCE_DIR: registry }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
   });
   manual.stdout.resume(); manual.stderr.resume();
@@ -68,6 +73,14 @@ try {
       replied = output.events.some(event => event.kind === "assistant" && event.text.includes("PI_DONE"));
       if (!replied) { if (Date.now() > end) throw new Error("External PI reply did not reach the output bridge."); await new Promise(resolve => setTimeout(resolve, 100)); }
     }
+    await requestPlugin(endpoint, { key: session.key, action: "prompt", text: "FAIL_JSON_WRAPPER" });
+    let failed;
+    while (!failed) {
+      const output = await requestPlugin(endpoint, { key: session.key, action: "logs" });
+      failed = output.events.find(event => event.kind === "error");
+      if (!failed) { if (Date.now() > end) throw new Error("PI did not report its failed tool."); await new Promise(resolve => setTimeout(resolve, 100)); }
+    }
+    assert.equal(failed.text, errorText, "PI wraps a thrown serialized tool result in another text block; only the error text should reach the panel");
   } finally { terminateTree(manual, false); await exited; }
   assert.deepEqual(await readPluginPresence(registry), [], "a dead plugin is never listed as running");
   const catalog = await discovery.refresh("pi"); assert.ok(catalog.models.some(m => m.id === "sideband_fixture/fixture"), catalog.error);

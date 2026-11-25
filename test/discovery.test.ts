@@ -142,7 +142,8 @@ test("external PI and OMP sessions accept web instructions and return live outpu
       if (text.endsWith("Hold the turn")) return new Promise<void>((_resolve, reject) => { lateFailure = reject; });
       await emit("message_start"); await emit("message_update", { assistantMessageEvent: { type: "text_delta", delta: `${harness} replied` } });
       await emit("tool_execution_start", { toolName: "read", args: { path: "hello" } }); await emit("agent_end");
-      await emit("tool_execution_end", { result: { content: [{ type: "text", text: "Readable rg failure" }], structuredContent: { output: "Readable rg failure", exit_code: 2 }, isError: true } });
+      const failure = { content: [{ type: "text", text: "Readable rg failure" }], structuredContent: { output: "Readable rg failure", exit_code: 2 }, isError: true };
+      await emit("tool_execution_end", { isError: true, result: { content: [{ type: "text", text: JSON.stringify(failure) }] } });
     } };
     if (harness === "pi") piSideband(api); else sideband(api as OmpApi);
     let page: Awaited<ReturnType<typeof browserPage>> | undefined;

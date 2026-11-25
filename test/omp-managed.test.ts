@@ -14,7 +14,20 @@ test("OMP and PI tool results show text blocks, structured output and nested err
   emitOmpEvent(host, { type: "tool_execution_update", partialResult: { content: [{ type: "text", text: "first" }, { type: "image", data: "ignored" }, { type: "text", text: "second" }] } });
   emitOmpEvent(host, { type: "tool_execution_end", isError: true, result: { structuredContent: { output: "fallback failure" } } });
   emitOmpEvent(host, { type: "tool_stream_update", output: "already plain" });
+  emitOmpEvent(host, { type: "tool_execution_update", toolName: "no-output", toolCallId: "empty" });
   assert.deepEqual(events, [{ kind: "error", text: "rg: regex parse error" }, { kind: "tool-output", text: "first\nsecond" }, { kind: "error", text: "fallback failure" }, { kind: "tool-output", text: "already plain" }]);
+});
+
+test("PI serialized error envelopes are unwrapped without changing ordinary JSON output", () => {
+  const events: { kind: string; text: string }[] = [], host = { event: (kind: string, text: string) => events.push({ kind, text }), state() {} };
+  const envelope = { content: [{ type: "text", text: "rg: invalid regex\nCommand exited with code 2" }], structuredContent: { output: "duplicate", exit_code: 2 }, isError: true };
+  const serialized = JSON.stringify(envelope);
+  emitOmpEvent(host, { type: "tool_execution_end", isError: true, result: { content: [{ type: "text", text: serialized }] } });
+  emitOmpEvent(host, { type: "tool_execution_update", partialResult: { content: [{ type: "text", text: JSON.stringify({ content: [{ type: "text", text: serialized }], isError: true }) }] } });
+  const plain = JSON.stringify({ content: [{ type: "text", text: "this is file data" }] });
+  emitOmpEvent(host, { type: "tool_execution_end", result: { content: [{ type: "text", text: plain }] } });
+  emitOmpEvent(host, { type: "tool_execution_end", result: "{not JSON" });
+  assert.deepEqual(events, [{ kind: "error", text: envelope.content[0]!.text }, { kind: "error", text: envelope.content[0]!.text }, { kind: "tool-output", text: plain }, { kind: "tool-output", text: "{not JSON" }]);
 });
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

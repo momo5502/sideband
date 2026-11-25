@@ -115,6 +115,26 @@ export class ManagedOmp {
   }
 }
 
+function formatToolOutput(result: any): { text: string; error: boolean } {
+  const parts = (value: any): string[] => Array.isArray(value?.content) ? value.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text) : [];
+  const extract = (value: any): string => {
+    const content = parts(value);
+    return typeof value === "string" ? value : content.length ? content.join("\n") : typeof value?.structuredContent?.output === "string" ? value.structuredContent.output : JSON.stringify(value) ?? "";
+  };
+  let text = extract(result), error = result?.isError === true;
+  // PI wraps thrown Error.message in a text block. Some tools serialize an
+  // MCP error result into that message. Decode only marked tool-error envelopes,
+  // not ordinary JSON produced by commands, and bound both size and nesting.
+  for (let depth = 0; depth < 3 && text.trimStart().startsWith("{") && text.length <= 1024 * 1024 && Buffer.byteLength(text) <= 1024 * 1024; depth++) {
+    try {
+      const inner = JSON.parse(text);
+      if (inner?.isError !== true || (!parts(inner).length && typeof inner?.structuredContent?.output !== "string")) break;
+      text = extract(inner); error = true;
+    } catch { break; }
+  }
+  return { text, error };
+}
+
 /** Shared by RPC and the native OMP plugin. */
 export function emitOmpEvent(host: Pick<OmpHost, "event" | "state">, frame: any): void {
     if (frame.type === "agent_start") host.state("busy");
@@ -131,9 +151,8 @@ export function emitOmpEvent(host: Pick<OmpHost, "event" | "state">, frame: any)
     }
     if (frame.type === "tool_execution_start") host.event("tool", `${frame.toolName}\n${JSON.stringify(frame.args ?? frame.arguments ?? {})}`);
     else if (["tool_execution_end", "tool_execution_update", "tool_stream_update"].includes(frame.type)) {
-      const result = frame.result ?? frame.partialResult ?? frame.output ?? frame;
-      const parts = Array.isArray(result?.content) ? result.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text) : [];
-      const output = typeof result === "string" ? result : parts.length ? parts.join("\n") : typeof result?.structuredContent?.output === "string" ? result.structuredContent.output : JSON.stringify(result);
-      host.event(frame.isError || result?.isError ? "error" : "tool-output", output);
+      const result = frame.result ?? frame.partialResult ?? frame.output;
+      const output = formatToolOutput(result);
+      if (output.text) host.event(frame.isError || output.error ? "error" : "tool-output", output.text);
     } else if (["notice", "extension_error", "auto_compaction_start", "auto_compaction_end", "auto_retry_start", "auto_retry_end", "prompt_result"].includes(frame.type)) host.event(frame.type, JSON.stringify(frame));
 }
