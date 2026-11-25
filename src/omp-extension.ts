@@ -9,6 +9,8 @@ import { loginAndSave } from "./terminal-login.js";
 import { managedOmp, type ManagedExtensionOptions } from "./omp-managed.js";
 import { PluginPresence } from "./plugin-presence.js";
 import { isMainThread } from "node:worker_threads";
+import { OutputBuffer } from "./orchestration-protocol.js";
+import { emitOmpEvent } from "./managed-omp.js";
 
 /** The host API subset used here. Schema builders come from OMP, with no runtime host imports. */
 export interface OmpContext {
@@ -85,13 +87,47 @@ function unwrap(result: ToolResult): any {
 export default function sideband(api: OmpApi, profiles = new RoomProfiles(), managed?: ManagedExtensionOptions): void {
   if (managedOmp(api, managed)) return;
   const presenceOwner = Symbol.for("sideband.plugin.presence.owner"), owners = globalThis as typeof globalThis & { [presenceOwner]?: object }, claim = {};
-  const presence = isMainThread && !owners[presenceOwner] ? new PluginPresence(managed?.pi ? "pi" : "omp") : undefined;
+  let output = new OutputBuffer(), reportedSession: string | undefined;
+  const presence = isMainThread && !owners[presenceOwner] ? new PluginPresence(managed?.pi ? "pi" : "omp", undefined, api.sendUserMessage ? async (_session, request) => {
+    if (!active || stopped) throw new Error("This session is changing or closed. Try again once it is ready.");
+    if (request.action === "logs") return output.snapshot(request.after);
+    const instructions = `[Sideband web instructions]\n${request.text}`;
+    output.append("user", instructions);
+    const errors = output;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      // OMP may resolve only when the entire turn finishes; PI may return void.
+      // Acknowledge handoff without blocking later steering for a whole run.
+      const operation = Promise.resolve(api.sendUserMessage!(instructions, { deliverAs: "steer", attribution: "user" })).catch(error => {
+        errors.append("error", error instanceof Error ? error.message : "Instructions failed after handoff."); throw error;
+      });
+      await Promise.race([operation, new Promise<void>(resolve => { timer = setTimeout(resolve, 1000); })]);
+    } finally { if (timer) clearTimeout(timer); }
+    return { accepted: true };
+  } : undefined) : undefined;
   if (presence) owners[presenceOwner] = claim;
-  const report = (ctx: OmpContext, name?: string) => presence?.replace([{ session: ctx.sessionManager.getSessionFile?.() ?? ctx.sessionManager.getSessionId(), workspace: ctx.cwd, name }]);
+  const report = (ctx: OmpContext, name?: string) => {
+    const session = ctx.sessionManager.getSessionFile?.() ?? ctx.sessionManager.getSessionId();
+    if (session !== reportedSession) { output = new OutputBuffer(); reportedSession = session; }
+    presence?.replace([{ session, workspace: ctx.cwd, name }]);
+  };
   type Binding = { id: string; context: OmpContext; tools: RoomTools };
   let active: Binding | undefined;
   let epoch = 0;
   let stopped = false;
+  let streamed = false;
+  if (presence) for (const event of ["message_start", "message_update", "message_end", "tool_execution_start", "tool_execution_update", "tool_execution_end", "agent_start", "agent_end", "extension_error"]) api.on(event, value => {
+    const frame = { ...value, type: event } as any;
+    if (event === "message_start") streamed = false;
+    if (event === "message_update" && frame.assistantMessageEvent?.type === "text_delta") streamed = true;
+    if (event === "extension_error") { output.append("error", String(frame.error ?? frame.message ?? "Harness extension failed.")); return; }
+    emitOmpEvent({ event: (kind, text) => output.append(kind, text), state: () => {} }, frame);
+    if (event === "message_end" && !streamed && frame.message?.role === "assistant") {
+      const content = frame.message.content;
+      const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("") : "";
+      if (text) output.append("assistant", text);
+    }
+  });
   let transition = Promise.resolve();
   const dialogs = new Set<AbortController>();
   const sessionId = (ctx: OmpContext) => {

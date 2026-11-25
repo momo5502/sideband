@@ -11,6 +11,7 @@ const { RoomServer } = await import("../dist/src/room-server.js");
 const { RoomClient } = await import("../dist/src/room-client.js");
 const { RoomProfiles } = await import("../dist/src/room-profiles.js");
 const { readPluginPresence } = await import("../dist/src/plugin-presence.js");
+const { requestPlugin } = await import("../dist/src/plugin-control.js");
 
 const executable = process.env.OMP_BINARY ?? "omp";
 const root = resolve(import.meta.dirname, "..");
@@ -84,7 +85,7 @@ export default function(api) {
     { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   let stderr = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4000); });
   await new Promise((resolve, reject) => {
-    let buffer = "", checked = false, pushed = false;
+    let buffer = "", checked = false, pushed = false, webRequest, endpoint, externalKey, finishing = false;
     timer = setTimeout(() => reject(failure ?? new Error(`OMP smoke check timed out. ${stderr}`)), REQUEST_TIMEOUT_MS);
     child.once("error", reject);
     child.once("exit", code => { if (!checked || code !== 0) reject(new Error(`OMP exited (${code}). ${stderr}`)); else resolve(); });
@@ -104,21 +105,28 @@ export default function(api) {
           }
           if (frame.type === "sideband_smoke") {
             assert.equal(frame.session, true); assert.equal(frame.tools, 10);
-            void (async () => {
+            webRequest = (async () => {
               const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-              while (!(await readPluginPresence(env.SIDEBAND_PRESENCE_DIR)).some(row => row.harness === "omp" && row.pid === child.pid)) {
+              let sessions; const endpoints = new Map();
+              while (!(sessions = await readPluginPresence(env.SIDEBAND_PRESENCE_DIR, undefined, undefined, endpoints)).some(row => row.harness === "omp" && row.pid === child.pid && row.interactive)) {
                 if (Date.now() > deadline) throw new Error("OMP did not publish plugin presence before joining a room.");
                 await new Promise(resolve => setTimeout(resolve, 100));
               }
-              child.stdin.write(JSON.stringify({ id: "join", type: "prompt", message: "Join omp-smoke with my chosen username worker." }) + "\n");
-            })().catch(reject);
+              externalKey = sessions.find(row => row.harness === "omp").key; endpoint = endpoints.get(externalKey);
+              assert.deepEqual(await requestPlugin(endpoint, { key: externalKey, action: "prompt", text: "Join omp-smoke with my chosen username worker." }), { accepted: true });
+            })(); webRequest.catch(reject);
           }
           if (frame.type === "agent_end" && joined && !pushed) {
             pushed = true; peer.send(marker).catch(reject);
-          } else if (frame.type === "agent_end" && pushed && sawPush) {
+          } else if (frame.type === "agent_end" && pushed && sawPush && !finishing) {
             if (failure) throw failure;
             assert.equal(receivedReply, true, "real native send tool reaches the peer");
-            checked = true; child.stdin.end();
+            finishing = true;
+            void webRequest.then(async () => {
+              const output = await requestPlugin(endpoint, { key: externalKey, action: "logs" });
+              assert.ok(output.events.some(event => event.kind === "assistant" && event.text.includes("Done.")), "external OMP replies reach the output bridge");
+              checked = true; child.stdin.end();
+            }).catch(reject);
           }
           if (frame.id === "check" && frame.success === false) throw new Error(JSON.stringify(frame));
         } catch (error) { reject(error); }

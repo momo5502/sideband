@@ -24,7 +24,7 @@ export class OrchestrationServer {
   private forgotten = new Set<string>();
   private archived = new Set<string>();
   private resuming = new Set<string>();
-  private discovered = new Map<string, { at: number; agents: ManagedAgent[] }>();
+  private discovered = new Map<string, { at: number; agents: ManagedAgent[]; keys: Map<string, string> }>();
   private discoveryTimer: NodeJS.Timeout;
   private legacyRemoval = new WeakSet<WebSocket>();
   private async stopLegacyRunner(peer: Peer): Promise<void> {
@@ -121,18 +121,20 @@ export class OrchestrationServer {
         await this.store?.change(() => { if (agent.persistent) this.store!.put("agent", agent.id, this.agents.get(agent.id)); this.store!.put("owner", agent.id, identity.id); });
         if (!this.machines.has(agent.machineId)) this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
       }
-      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true, discovery: true } } : {}) };
+      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true, discovery: true, discoveryControl: true } } : {}) };
     }
     if (method === "control.discovered") {
       const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report discovered sessions.");
       const args = fields(params, ["sessions"]); if (!Array.isArray(args.sessions) || args.sessions.length > 128) throw new Error("Invalid discovered-session list.");
       const machine = this.machines.get(peer.id)!;
+      const keys = new Map<string, string>();
       const agents = args.sessions.map(input => {
         const session = discoveredSession(input), digest = createHash("sha256").update(`external\0${session.key}`).digest("hex").slice(0, 32);
-        return { id: `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`, name: session.name, harness: session.harness,
-          machineId: peer.id, machineName: machine.name, state: "running" as const, online: true, createdAt: session.createdAt, room: "", canResume: false, external: { pid: session.pid, ...(session.workspace ? { workspace: session.workspace } : {}) } };
+        const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`; keys.set(id, session.key);
+        return { id, name: session.name, harness: session.harness,
+          machineId: peer.id, machineName: machine.name, state: "running" as const, online: true, createdAt: session.createdAt, room: "", canResume: false, external: { pid: session.pid, ...(session.workspace ? { workspace: session.workspace } : {}), ...(session.interactive && ["pi", "omp"].includes(session.harness) ? { interactive: true } : {}) } };
       });
-      const previous = this.discovered.get(peer.id); this.discovered.set(peer.id, { at: Date.now(), agents });
+      const previous = this.discovered.get(peer.id); this.discovered.set(peer.id, { at: Date.now(), agents, keys });
       if (JSON.stringify(previous?.agents) !== JSON.stringify(agents)) this.changed(); return {};
     }
     if (method === "control.features") {
@@ -250,10 +252,18 @@ export class OrchestrationServer {
       return { id };
     }
     if (method === "control.watch") {
-      const args = fields(params, ["agentId"]);
+      const args = fields(params, ["agentId", "after"]);
       if (!args.agentId) { this.browsers.set(socket, undefined); return { events: [], first: 1, next: 1 }; }
       const id = uuid(args.agentId);
-      if ([...this.discovered.values()].some(value => value.agents.some(agent => agent.id === id)) && !this.agents.has(id)) { this.browsers.set(socket, undefined); return { events: [], first: 1, next: 1 }; }
+      if (!this.agents.has(id)) {
+        const external = this.external(id);
+        if (external) {
+          this.browsers.set(socket, undefined);
+          if (!external.agent.external?.interactive) return { events: [], first: 1, next: 1 };
+          if (args.after !== undefined && (!Number.isSafeInteger(args.after) || (args.after as number) < 0)) throw new Error("Invalid output position.");
+          return this.dispatch(this.workers.get(external.agent.machineId), "external", { key: external.key, action: "logs", after: args.after ?? 0 });
+        }
+      }
       if (!this.agents.has(id)) throw new Error("Unknown agent.");
       this.browsers.set(socket, id); if (this.agents.get(id)?.persistent && !this.online(this.runners.get(id))) return { events: [], first: 1, next: 1 }; return this.dispatch(this.runners.get(id), "logs", {});
     }
@@ -264,7 +274,14 @@ export class OrchestrationServer {
       if (action === "prompt") text(args.text, "instructions", 16000);
       if (action === "room" && (typeof args.room !== "string" || args.room.length > 100)) throw new Error("Invalid room name.");
       const agent = this.agents.get(id);
-      if (!agent && [...this.discovered.values()].some(value => value.agents.some(agent => agent.id === id))) throw new Error("This externally started session is view-only. Use its harness terminal for control.");
+      if (!agent) {
+        const external = this.external(id);
+        if (external) {
+          if (!external.agent.external?.interactive) throw new Error("This externally started session is view-only. Use its harness terminal for control.");
+          if (action !== "prompt") throw new Error("Use this externally started session's terminal for lifecycle controls.");
+          return this.dispatch(this.workers.get(external.agent.machineId), "external", { key: external.key, action: "prompt", text: args.text });
+        }
+      }
       if (action === "dispose" && agent?.persistent) action = "archive";
       if (action === "archive") {
         if (!agent?.persistent) throw new Error("Restart this agent with a persistence-enabled runner before archiving it.");
@@ -300,6 +317,12 @@ export class OrchestrationServer {
       return result;
     }
     throw new Error("Unknown orchestration operation.");
+  }
+  private external(id: string): { agent: ManagedAgent; key: string } | undefined {
+    for (const value of this.discovered.values()) {
+      const agent = value.agents.find(agent => agent.id === id), key = value.keys.get(id);
+      if (agent && key) return { agent, key };
+    }
   }
   disconnect(socket: WebSocket): void {
     this.browsers.delete(socket);

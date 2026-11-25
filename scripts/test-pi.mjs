@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { ManagedTerminal } from "../dist/src/managed-terminal.js";
 import { ModelDiscovery } from "../dist/src/model-discovery.js";
 import { readPluginPresence } from "../dist/src/plugin-presence.js";
+import { requestPlugin } from "../dist/src/plugin-control.js";
 import spawn from "cross-spawn";
 import { terminateTree } from "../dist/src/process-tree.js";
 const directory = await mkdtemp(join(tmpdir(), "sideband-real-pi-"));
@@ -53,11 +54,20 @@ try {
   const exited = new Promise(resolve => manual.once("exit", resolve));
   try {
     const end = Date.now() + 120000;
-    while (!(await readPluginPresence(registry)).some(row => row.harness === "pi")) {
+    let sessions; const endpoints = new Map();
+    while (!(sessions = await readPluginPresence(registry, undefined, undefined, endpoints)).some(row => row.harness === "pi" && row.interactive)) {
       if (manual.exitCode !== null || Date.now() > end) throw new Error("Manual PI plugin did not publish presence.");
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(calls, 0, "passive discovery never sends a model prompt");
+    const session = sessions.find(row => row.harness === "pi"), endpoint = endpoints.get(session.key);
+    assert.deepEqual(await requestPlugin(endpoint, { key: session.key, action: "prompt", text: "External PI instruction" }), { accepted: true });
+    let replied = false;
+    while (!replied) {
+      const output = await requestPlugin(endpoint, { key: session.key, action: "logs" });
+      replied = output.events.some(event => event.kind === "assistant" && event.text.includes("PI_DONE"));
+      if (!replied) { if (Date.now() > end) throw new Error("External PI reply did not reach the output bridge."); await new Promise(resolve => setTimeout(resolve, 100)); }
+    }
   } finally { terminateTree(manual, false); await exited; }
   assert.deepEqual(await readPluginPresence(registry), [], "a dead plugin is never listed as running");
   const catalog = await discovery.refresh("pi"); assert.ok(catalog.models.some(m => m.id === "sideband_fixture/fixture"), catalog.error);

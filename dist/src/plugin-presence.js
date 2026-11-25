@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 import { hostname, homedir } from "node:os";
 import { stateDirectory } from "./room-profiles.js";
+import { PluginControl, pluginEndpoint } from "./plugin-control.js";
 export const presenceDirectory = process.env.SIDEBAND_PRESENCE_DIR ?? join(stateDirectory, "presence");
 export const PRESENCE_TTL_MS = 90_000;
 const hostScope = createHash("sha256").update(JSON.stringify([hostname(), homedir()])).digest("hex");
@@ -23,6 +24,7 @@ const verified = new Map();
 export class PluginPresence {
     harness;
     directory;
+    command;
     file;
     born = Date.now();
     rows = [];
@@ -32,14 +34,19 @@ export class PluginPresence {
     closed = false;
     stamp;
     abort = new AbortController();
-    constructor(harness, directory = presenceDirectory) {
+    sessions = new Map();
+    control;
+    endpoint;
+    constructor(harness, directory = presenceDirectory, command) {
         this.harness = harness;
         this.directory = directory;
+        this.command = command;
         this.file = join(directory, `${process.pid}-${randomUUID()}.json`);
     }
     replace(sessions) {
         if (this.closed)
             return;
+        this.sessions = new Map(sessions.slice(0, 128).map(session => [presenceKey(this.harness, session.session), session.session]));
         this.rows = sessions.slice(0, 128).map(session => {
             const workspace = session.workspace ? basename(session.workspace.replace(/\\/g, "/")).slice(0, 128) : undefined;
             const name = session.name?.replace(/[\x00-\x1f]/g, " ").slice(0, 128) || ({ omp: "oh-my-pi", pi: "PI", claude: "Claude", codex: "Codex" })[this.harness];
@@ -66,6 +73,20 @@ export class PluginPresence {
                 this.dirty = false;
                 return;
             }
+            if (this.command && !this.control && !this.closed) {
+                this.control = new PluginControl(request => {
+                    const session = this.sessions.get(request.key);
+                    if (this.closed || !session)
+                        throw new Error("This session has changed or closed. Select it again before sending.");
+                    return this.command(session, request);
+                });
+                try {
+                    this.endpoint = await this.control.start();
+                }
+                catch {
+                    await this.control.close();
+                }
+            }
             while (this.dirty && !this.closed) {
                 this.dirty = false;
                 if (!this.rows.length) {
@@ -75,7 +96,7 @@ export class PluginPresence {
                 await mkdir(this.directory, { recursive: true, mode: 0o700 });
                 const temporary = `${this.file}.${randomUUID()}.tmp`, handle = await open(temporary, "wx", 0o600);
                 try {
-                    const frame = { version: 1, pid: process.pid, stamp: stamp ?? "", at: Date.now(), sessions: this.rows };
+                    const frame = { version: 1, pid: process.pid, stamp, at: Date.now(), sessions: this.rows, ...(this.endpoint ? { control: this.endpoint } : {}) };
                     await handle.writeFile(JSON.stringify(frame));
                     await handle.close();
                     if (!this.closed)
@@ -91,7 +112,7 @@ export class PluginPresence {
     }
     async idle() { await this.writing; }
     async close() { this.closed = true; this.abort.abort(); if (this.timer)
-        clearInterval(this.timer); await this.writing; await unlink(this.file).catch(() => { }); }
+        clearInterval(this.timer); await this.writing; await this.control?.close(); await unlink(this.file).catch(() => { }); }
 }
 async function reportedProcessStamps(pids, signal) {
     if (process.platform === "linux")
@@ -105,7 +126,7 @@ async function reportedProcessStamps(pids, signal) {
     return new Map(output.split(/\r?\n/).flatMap(line => { const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(line); return match ? [[Number(match[1]), match[2]]] : []; }));
 }
 /** Worker reads only this private registry, not arbitrary processes or session histories. */
-export async function readPluginPresence(directory = presenceDirectory, verify, signal) {
+export async function readPluginPresence(directory = presenceDirectory, verify, signal, endpoints) {
     for (const [pid, value] of verified)
         if (Date.now() - value.at > 120000 || !alive(pid))
             verified.delete(pid);
@@ -156,8 +177,15 @@ export async function readPluginPresence(directory = presenceDirectory, verify, 
                 const session = discoveredSession(row);
                 if (session.pid !== frame.pid)
                     continue;
-                if (!result.has(session.key))
+                if (!result.has(session.key)) {
+                    const endpoint = pluginEndpoint(frame.control);
+                    delete session.interactive;
+                    if (endpoint && ["pi", "omp"].includes(session.harness))
+                        session.interactive = true;
                     result.set(session.key, session);
+                    if (endpoint && session.interactive)
+                        endpoints?.set(session.key, endpoint);
+                }
                 if (result.size >= 128)
                     return [...result.values()];
             }
@@ -167,8 +195,8 @@ export async function readPluginPresence(directory = presenceDirectory, verify, 
 }
 export function discoveredSession(input) {
     const v = input;
-    if (!v || typeof v !== "object" || Object.keys(v).some(key => !["key", "harness", "name", "pid", "createdAt", "workspace"].includes(key)) || !/^[a-f0-9]{64}$/.test(v.key) || !["omp", "pi", "claude", "codex"].includes(v.harness) || typeof v.name !== "string" || !v.name || v.name.length > 128 || /[\x00-\x1f]/.test(v.name) || !Number.isSafeInteger(v.pid) || v.pid < 1 || !Number.isFinite(v.createdAt) || v.workspace !== undefined && (typeof v.workspace !== "string" || v.workspace.length > 128 || /[\/\\\x00-\x1f]/.test(v.workspace)))
+    if (!v || typeof v !== "object" || Object.keys(v).some(key => !["key", "harness", "name", "pid", "createdAt", "workspace", "interactive"].includes(key)) || !/^[a-f0-9]{64}$/.test(v.key) || !["omp", "pi", "claude", "codex"].includes(v.harness) || typeof v.name !== "string" || !v.name || v.name.length > 128 || /[\x00-\x1f]/.test(v.name) || !Number.isSafeInteger(v.pid) || v.pid < 1 || !Number.isFinite(v.createdAt) || v.interactive !== undefined && typeof v.interactive !== "boolean" || v.workspace !== undefined && (typeof v.workspace !== "string" || v.workspace.length > 128 || /[\/\\\x00-\x1f]/.test(v.workspace)))
         throw new Error("Invalid discovered session.");
-    return { key: v.key, harness: v.harness, name: v.name, pid: v.pid, createdAt: v.createdAt, ...(v.workspace ? { workspace: v.workspace } : {}) };
+    return { key: v.key, harness: v.harness, name: v.name, pid: v.pid, createdAt: v.createdAt, ...(v.workspace ? { workspace: v.workspace } : {}), ...(v.interactive ? { interactive: true } : {}) };
 }
 //# sourceMappingURL=plugin-presence.js.map

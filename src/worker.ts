@@ -19,6 +19,7 @@ import { ModelDiscovery } from "./model-discovery.js";
 import type { HarnessName } from "./orchestration-protocol.js";
 import { browseFolders, existingFolder } from "./worker-folders.js";
 import { presenceKey, readPluginPresence } from "./plugin-presence.js";
+import { requestPlugin, type PluginEndpoint } from "./plugin-control.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable; codex?: Executable; claude?: Executable; pi?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
@@ -28,6 +29,7 @@ export class Worker {
   private folderSupport = false;
   private piSupport = false;
   private discoverySupport = false;
+  private discoveryControl = false;
   private discovering?: Promise<void>;
   readonly client: RoomClient;
   readonly machine: Machine;
@@ -62,8 +64,9 @@ export class Worker {
       this.folderSupport = false;
       this.piSupport = false;
       this.discoverySupport = false;
+      this.discoveryControl = false;
       let machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name !== "pi"), ...(this.machine.update ? { update: this.wireUpdate() } : {}) };
-      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean; pi?: boolean; discovery?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; this.piSupport = response.capabilities?.pi === true; this.discoverySupport = response.capabilities?.discovery === true; }
+      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean; pi?: boolean; discovery?: boolean; discoveryControl?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; this.piSupport = response.capabilities?.pi === true; this.discoverySupport = response.capabilities?.discovery === true; this.discoveryControl = response.capabilities?.discoveryControl === true; }
       catch (original) {
         let error = original;
         if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
@@ -108,7 +111,7 @@ export class Worker {
         // reopened that harness session by hand after stopping it in Sideband.
         if (reported.has(key) && await this.store!.live(record.agent.id)) managed.add(key);
       }
-      if (!this.closing && this.discoverySupport && this.client.state === "on") await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)) });
+      if (!this.closing && this.discoverySupport && this.client.state === "on") await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)).map(session => { const { interactive, ...row } = session; return { ...row, ...(this.discoveryControl && interactive ? { interactive: true } : {}) }; }) });
     })().catch(() => { /* Discovery is optional and cannot break registration or recovery. */ }).finally(() => { this.discovering = undefined; });
   }
   private executable(name: HarnessName): Executable { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : name === "pi" ? process.env.PI_BINARY ?? "pi" : process.env.CLAUDE_BINARY ?? "claude" }; }
@@ -229,6 +232,16 @@ export class Worker {
   }
   private async command(command: ControlCommand): Promise<void> {
     try {
+      if (command.method === "external") {
+        const { key, action, text, after } = command.params;
+        if (!this.discoveryControl || typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || !["prompt", "logs"].includes(action as string) || Object.keys(command.params).some(key => !["key", "action", "text", "after"].includes(key))) throw new Error("External session controls are unavailable.");
+        if (action === "prompt" && (typeof text !== "string" || !text.trim() || text.length > 16000) || after !== undefined && (!Number.isSafeInteger(after) || (after as number) < 0)) throw new Error("Invalid external session request.");
+        const endpoints = new Map<string, PluginEndpoint>();
+        await readPluginPresence(undefined, undefined, this.probes.signal, endpoints);
+        const endpoint = endpoints.get(key); if (!endpoint) throw new Error("This session is no longer reachable. Reload its plugin or check its terminal.");
+        const result = await requestPlugin(endpoint, { key, action: action as "prompt" | "logs", ...(action === "prompt" ? { text: text as string } : { after: after as number | undefined }) }, this.probes.signal);
+        await this.client.request("control.reply", { id: command.id, result }); return;
+      }
       if (command.method === "folders") {
         if (!this.folderSupport || Object.keys(command.params).some(key => !["path", "cursor"].includes(key))) throw new Error("Folder browsing is unavailable on this worker.");
         const { path, cursor } = command.params;

@@ -15,6 +15,7 @@ import { trustClaudeWorkspaces } from "./claude-trust.js";
 import { ModelDiscovery } from "./model-discovery.js";
 import { browseFolders, existingFolder } from "./worker-folders.js";
 import { presenceKey, readPluginPresence } from "./plugin-presence.js";
+import { requestPlugin } from "./plugin-control.js";
 export class Worker {
     options;
     models;
@@ -22,6 +23,7 @@ export class Worker {
     folderSupport = false;
     piSupport = false;
     discoverySupport = false;
+    discoveryControl = false;
     discovering;
     client;
     machine;
@@ -61,6 +63,7 @@ export class Worker {
             this.folderSupport = false;
             this.piSupport = false;
             this.discoverySupport = false;
+            this.discoveryControl = false;
             let machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name !== "pi"), ...(this.machine.update ? { update: this.wireUpdate() } : {}) };
             try {
                 const response = await this.client.request("control.worker", { machine });
@@ -68,6 +71,7 @@ export class Worker {
                 this.folderSupport = response.capabilities?.folders === true;
                 this.piSupport = response.capabilities?.pi === true;
                 this.discoverySupport = response.capabilities?.discovery === true;
+                this.discoveryControl = response.capabilities?.discoveryControl === true;
             }
             catch (original) {
                 let error = original;
@@ -137,7 +141,7 @@ export class Worker {
                         managed.add(key);
                 }
             if (!this.closing && this.discoverySupport && this.client.state === "on")
-                await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)) });
+                await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)).map(session => { const { interactive, ...row } = session; return { ...row, ...(this.discoveryControl && interactive ? { interactive: true } : {}) }; }) });
         })().catch(() => { }).finally(() => { this.discovering = undefined; });
     }
     executable(name) { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : name === "pi" ? process.env.PI_BINARY ?? "pi" : process.env.CLAUDE_BINARY ?? "claude" }; }
@@ -310,6 +314,21 @@ export class Worker {
     }
     async command(command) {
         try {
+            if (command.method === "external") {
+                const { key, action, text, after } = command.params;
+                if (!this.discoveryControl || typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || !["prompt", "logs"].includes(action) || Object.keys(command.params).some(key => !["key", "action", "text", "after"].includes(key)))
+                    throw new Error("External session controls are unavailable.");
+                if (action === "prompt" && (typeof text !== "string" || !text.trim() || text.length > 16000) || after !== undefined && (!Number.isSafeInteger(after) || after < 0))
+                    throw new Error("Invalid external session request.");
+                const endpoints = new Map();
+                await readPluginPresence(undefined, undefined, this.probes.signal, endpoints);
+                const endpoint = endpoints.get(key);
+                if (!endpoint)
+                    throw new Error("This session is no longer reachable. Reload its plugin or check its terminal.");
+                const result = await requestPlugin(endpoint, { key, action: action, ...(action === "prompt" ? { text: text } : { after: after }) }, this.probes.signal);
+                await this.client.request("control.reply", { id: command.id, result });
+                return;
+            }
             if (command.method === "folders") {
                 if (!this.folderSupport || Object.keys(command.params).some(key => !["path", "cursor"].includes(key)))
                     throw new Error("Folder browsing is unavailable on this worker.");

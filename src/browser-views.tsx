@@ -89,7 +89,7 @@ export function AgentOutput({ state, agent }: { state: WorkspaceState; agent: Ma
   const ref = useRef<HTMLDivElement>(null), events = state.outputAgent === agent.id ? state.output : [];
   const scroll = useLogScroll(ref, agent.id, String(events.at(-1)?.seq ?? ""), "New output");
   const groups = useMemo(() => outputGroups(events), [events]);
-  return <><div className="log-toolbar"><span className="log-toolbar-label">{state.loading ? "Loading recent output…" : "Conversation & activity"}</span><div className="flex gap-1">
+  return <><div className="log-toolbar"><span className="log-toolbar-label">{state.loading ? "Loading recent output…" : agent.external ? "Live activity · Earlier history stays in the terminal" : "Conversation & activity"}</span><div className="flex gap-1">
     <Button variant="ghost" className="toolbar-toggle" aria-pressed={thinking} onClick={() => setThinking(!thinking)}><Brain size={13} />Thinking</Button>
     <Button variant="ghost" className="toolbar-toggle" aria-pressed={tools} onClick={() => setTools(!tools)}><Wrench size={13} />Tools</Button></div></div>
     <div className="log-wrapper"><div id="agent-output" ref={ref} onScroll={scroll.onScroll} className="output-log" role="log" aria-label="Agent conversation">

@@ -509,7 +509,7 @@ export class BrowserWorkspace {
     }
     async selectAgent(id) {
         ++this.joinGeneration;
-        const agent = this.state.control.agents.find(agent => agent.id === id), offline = agent?.online === false || !!agent?.external;
+        const agent = this.state.control.agents.find(agent => agent.id === id), offline = agent?.online === false || !!agent?.external && !agent.external.interactive;
         this.update({ view: { kind: "agent", id }, error: "", ...(offline ? { output: [], outputAgent: id, loading: false } : {}) });
         if (offline || this.state.connection !== "on") {
             this.watched = "";
@@ -521,28 +521,46 @@ export class BrowserWorkspace {
         await this.watchAgent(id);
     }
     async watchAgent(id) {
-        if (this.state.control.agents.find(agent => agent.id === id)?.external)
+        const external = this.state.control.agents.find(agent => agent.id === id)?.external;
+        if (external && !external.interactive)
             return;
         if (this.watched === id)
             return;
         const client = this.requireClient(), generation = ++this.watchGeneration;
         this.watched = id;
         this.update({ output: [], outputAgent: id, loading: true });
-        try {
-            const result = await client.request("control.watch", { agentId: id });
-            if (this.client === client && generation === this.watchGeneration && this.state.view.kind === "agent" && this.state.view.id === id)
-                this.update({ output: boundedOutput(this.state.output, result.events) });
-        }
-        catch (error) {
-            if (generation === this.watchGeneration) {
-                this.watched = "";
-                this.update({ error: errorText(error) });
+        let after = 0, lastError = "";
+        const current = () => this.client === client && generation === this.watchGeneration && this.state.view.kind === "agent" && this.state.view.id === id && this.state.connection === "on" && (!external || this.state.control.agents.some(agent => agent.id === id && agent.online && agent.external?.interactive));
+        const refresh = async () => {
+            if (!current())
+                return;
+            try {
+                const result = await client.request("control.watch", { agentId: id, ...(external ? { after } : {}) });
+                if (current()) {
+                    const reset = external && after > 0 && result.next <= after;
+                    this.update({ output: reset ? [] : boundedOutput(this.state.output, result.events), ...(lastError && this.state.error === lastError ? { error: "" } : {}) });
+                    after = reset ? 0 : result.next - 1;
+                    lastError = "";
+                }
             }
-        }
-        finally {
-            if (generation === this.watchGeneration)
-                this.update({ loading: false });
-        }
+            catch (error) {
+                if (current()) {
+                    if (!external)
+                        this.watched = "";
+                    lastError = errorText(error);
+                    this.update({ error: lastError });
+                }
+            }
+            finally {
+                if (current()) {
+                    this.update({ loading: false });
+                    // Read-only, bounded incremental snapshots. Never poll or retry instructions.
+                    if (external)
+                        this.window.setTimeout(() => { void refresh(); }, lastError ? 3000 : 1000);
+                }
+            }
+        };
+        await refresh();
     }
     trustClaude(machineId) {
         return this.requireClient().request("control.claude_trust", { machineId, confirm: true });

@@ -67,11 +67,18 @@ test("discovered agents are authenticated, transient, deduplicated across worker
 });
 
 test("a local worker finds plugin sessions without room membership and discovery is off the connection path", { timeout: testTimeout(30000) }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), "sideband-discovery-worker-")), plugin = new PluginPresence("omp", presenceDirectory);
+  const directory = await mkdtemp(join(tmpdir(), "sideband-discovery-worker-")), plugin = new PluginPresence("omp", presenceDirectory, async () => ({ accepted: true }));
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, root: directory, entry: resolve("dist/src/cli.js") });
   const request = worker.client.request.bind(worker.client); let reports = 0, fail = false, found = false;
-  worker.client.request = async (method, params) => { if (method === "control.discovered") { reports++; found ||= (params as any).sessions.some((row: any) => row.key === presenceKey("omp", "manual-omp")); if (fail) throw new Error("Optional discovery failed"); } return request(method, params) as never; };
+  worker.client.request = async (method, params) => {
+    if (method === "control.worker") { const result = await request<any>(method, params); delete result.capabilities.discoveryControl; return result; }
+    if (method === "control.discovered") {
+      reports++; assert.ok((params as any).sessions.every((row: any) => !("interactive" in row)), "an older server is never sent control capabilities");
+      found ||= (params as any).sessions.some((row: any) => row.key === presenceKey("omp", "manual-omp")); if (fail) throw new Error("Optional discovery failed");
+    }
+    return request(method, params) as never;
+  };
   try {
     plugin.replace([{ session: "manual-omp", workspace: directory }]); await plugin.idle(); await worker.start(); assert.equal(worker.client.state, "on");
     await until(() => reports > 0); assert.equal(found, true, "worker reports the locally discovered session");
@@ -118,6 +125,50 @@ test("Codex reports exact loaded sessions before any room join and removes unloa
     loaded = ["two"]; await membership.reconcile(); assert.deepEqual(observed.map(row => row.id), ["two"]);
     unavailable = true; await membership.reconcile(); assert.deepEqual(observed, []);
   } finally { await membership.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("external PI and OMP sessions accept web instructions and return live output through the owning worker", { timeout: testTimeout(45000) }, async () => {
+  for (const harness of ["pi", "omp"] as const) {
+    const directory = await mkdtemp(join(tmpdir(), "sideband-external-web-"));
+    const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
+    const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, root: directory, entry: resolve("dist/src/cli.js") });
+    const handlers = new Map<string, Function[]>(), instructions: string[] = [];
+    let reject = false, lateFailure: ((error: Error) => void) | undefined;
+    const ctx: OmpContext = { mode: "tui", hasUI: true, cwd: directory, sessionManager: { getSessionId: () => `external-${harness}` }, ui: { input: async () => undefined, select: async () => undefined, notify() {} } };
+    const emit = async (name: string, event: object = {}) => { for (const handler of handlers.get(name) ?? []) await handler(event, ctx); };
+    const api = { zod, registerTool() {}, registerCommand() {}, on: (name: string, handler: Function) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), sendMessage() {}, async sendUserMessage(text: string, options: any) {
+      if (reject) throw new Error("Harness refused these instructions");
+      assert.equal(options.deliverAs, "steer"); instructions.push(text);
+      if (text.endsWith("Hold the turn")) return new Promise<void>((_resolve, reject) => { lateFailure = reject; });
+      await emit("message_start"); await emit("message_update", { assistantMessageEvent: { type: "text_delta", delta: `${harness} replied` } });
+      await emit("tool_execution_start", { toolName: "read", args: { path: "hello" } }); await emit("agent_end");
+    } };
+    if (harness === "pi") piSideband(api); else sideband(api as OmpApi);
+    let page: Awaited<ReturnType<typeof browserPage>> | undefined;
+    try {
+      await emit("session_start"); await until(async () => (await readPluginPresence()).some(row => row.key === presenceKey(harness, `external-${harness}`) && row.interactive));
+      await worker.start(); page = await browserPage(server); await page.login();
+      await until(() => !!page!.doc.querySelector("#agent-list [data-agent-id]")); page.click("#agent-list [data-agent-id]");
+      await until(() => !!page!.doc.querySelector<HTMLTextAreaElement>("#agent-prompt") && !page!.get<HTMLTextAreaElement>("#agent-prompt").disabled);
+      assert.equal(page.doc.querySelector('[aria-label="Agent actions"]'), null);
+      page.fill("#agent-prompt", "Hello from the web"); page.submit("#agent-instructions");
+      await until(() => instructions.length === 1 && page!.get("#agent-output").textContent?.includes(`${harness} replied`) === true);
+      assert.equal(instructions[0], "[Sideband web instructions]\nHello from the web");
+      assert.equal(page.get<HTMLTextAreaElement>("#agent-prompt").value, "");
+      assert.ok(page.get("#agent-output").textContent?.includes("read"));
+      page.fill("#agent-prompt", "Hold the turn"); page.submit("#agent-instructions");
+      await until(() => !!lateFailure && page!.get<HTMLTextAreaElement>("#agent-prompt").value === "");
+      page.fill("#agent-prompt", "Steer while running"); page.submit("#agent-instructions");
+      await until(() => instructions.length === 3 && page!.get<HTMLTextAreaElement>("#agent-prompt").value === "");
+      lateFailure!(new Error("Late model failure"));
+      await emit("extension_error", { error: "Async extension failure" });
+      await until(() => page!.get("#agent-output").textContent?.includes("Late model failure") === true && page!.get("#agent-output").textContent?.includes("Async extension failure") === true);
+      reject = true; page.fill("#agent-prompt", "Keep this draft"); page.submit("#agent-instructions");
+      await until(() => page!.doc.querySelector('[role="alert"]')?.textContent?.includes("Harness refused") === true);
+      assert.equal(page.get<HTMLTextAreaElement>("#agent-prompt").value, "Keep this draft"); assert.equal(instructions.length, 3);
+      assert.deepEqual(await worker.client.listRooms(), [], "external instructions do not join rooms");
+    } finally { await page?.close(); await emit("session_shutdown"); await worker.close(); await server.close(); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
+  }
 });
 
 test("Claude MCP publishes presence at plugin startup with no saved login or tool calls", { timeout: testTimeout(30000) }, async () => {
