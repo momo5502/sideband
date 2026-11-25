@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { RoomServer } from "../src/room-server.js";
 import { Worker } from "../src/worker.js";
 import { testTimeout } from "./waits.js";
+import { RuntimeUpdater } from "../src/updater.js";
 
 for (const supported of [false, true]) test(`worker models are capability-gated and outside registration (${supported ? "new" : "old"} server)`, { timeout: testTimeout(30000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-worker-models-")), fixture = join(directory, "fixture.mjs"), gate = join(directory, "gate"), queries = join(directory, "queries");
@@ -18,15 +19,18 @@ let done=false;setInterval(()=>{if(!existsSync(gate))return;
 },10);`);
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0 });
   const executable = { command: process.execPath, args: [fixture, gate, queries] };
-  const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, root: directory, entry: resolve("dist/src/cli.js"), omp: executable, codex: executable, claude: executable });
-  const request = worker.client.request.bind(worker.client); const published: any[] = [];
-  worker.client.request = async (method, params) => { if (method === "control.models") published.push(params); const result = await request(method, params); return (method === "control.worker" && !supported ? { registered: true } : result) as never; };
+  const updater = new RuntimeUpdater("worker", resolve("dist/src/cli.js"), directory, async () => {});
+  updater.state.plugins = (["omp", "claude", "codex", "pi"] as const).map(harness => ({ harness, state: "skipped", message: "fixture" }));
+  const worker = new Worker({ profile: { server: `127.0.0.1:${server.port}`, password: server.password }, root: directory, entry: resolve("dist/src/cli.js"), omp: executable, codex: executable, claude: executable, pi: executable, updater });
+  const request = worker.client.request.bind(worker.client); const published: any[] = [], registrations: any[] = [], methods: string[] = [];
+  worker.client.request = async (method, params) => { methods.push(method); if (method === "control.worker") registrations.push(params!.machine); if (method === "control.models") published.push(params); const result = await request(method, params); return (method === "control.worker" && !supported ? { registered: true } : result) as never; };
   try {
     await worker.start(); assert.equal(worker.client.state, "on"); assert.equal(published.length, 0, "model queries cannot block registration");
+    assert.ok(!registrations[0].harnesses.includes("pi")); assert.equal(registrations[0].update.plugins.length, 3, "initial registration is compatible with old servers");
     if (supported) {
-      await writeFile(gate, "open"); const end = Date.now() + testTimeout(10000); while (published.length < 3) { if (Date.now() > end) throw new Error("Models were not published"); await new Promise(r => setTimeout(r, 10)); }
-      assert.deepEqual(published.map(p => p.harness).sort(), ["claude", "codex", "omp"]); assert.ok(published.every(p => p.catalog.models.length === 1));
-    } else { assert.equal(await readFile(queries, "utf8").catch(() => ""), "", "old server receives neither probes nor new requests"); }
+      await writeFile(gate, "open"); const end = Date.now() + testTimeout(10000); while (published.length < 4) { if (Date.now() > end) throw new Error("Models were not published"); await new Promise(r => setTimeout(r, 10)); }
+      assert.deepEqual(published.map(p => p.harness).sort(), ["claude", "codex", "omp", "pi"]); assert.ok(published.every(p => p.catalog.models.length === 1));
+    } else { assert.equal(await readFile(queries, "utf8").catch(() => ""), "", "old server receives neither probes nor new requests"); assert.ok(!methods.includes("control.features")); }
     assert.equal(worker.client.state, "on");
   } finally { await worker.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-models-"))); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 });

@@ -5,6 +5,39 @@ import { agentName, serverUrl } from "./room-protocol.js";
 import { formatDelivery } from "./protocol.js";
 import { loginAndSave } from "./terminal-login.js";
 import { managedOmp } from "./omp-managed.js";
+export function toolParameters(api, schema) {
+    if (api.schema)
+        return api.schema(schema);
+    const shape = {};
+    for (const [name, field] of Object.entries(schema.properties ?? {})) {
+        const types = Array.isArray(field.type) ? field.type : [field.type];
+        let value;
+        if (types.includes("integer")) {
+            let number = api.zod.number().int();
+            if (field.minimum !== undefined)
+                number = number.min(field.minimum);
+            if (field.maximum !== undefined)
+                number = number.max(field.maximum);
+            value = number;
+        }
+        else {
+            let string = api.zod.string();
+            if (field.minLength !== undefined)
+                string = string.min(field.minLength);
+            if (field.maxLength !== undefined)
+                string = string.max(field.maxLength);
+            if (field.pattern)
+                string = string.regex(new RegExp(field.pattern));
+            value = string;
+        }
+        if (types.includes("null"))
+            value = value.nullable();
+        if (field.description)
+            value = value.describe(field.description);
+        shape[name] = schema.required?.includes(name) ? value : value.optional();
+    }
+    return api.zod.object(shape).strict();
+}
 export class OmpAdapter {
     api;
     isCurrent;
@@ -31,8 +64,8 @@ function unwrap(result) {
     return JSON.parse(result.content[0].text);
 }
 /** Each factory binding owns its own client. Subagents never inherit a connection. */
-export default function sideband(api, profiles = new RoomProfiles()) {
-    if (managedOmp(api))
+export default function sideband(api, profiles = new RoomProfiles(), managed) {
+    if (managedOmp(api, managed))
         return;
     let active;
     let epoch = 0;
@@ -88,37 +121,8 @@ export default function sideband(api, profiles = new RoomProfiles()) {
                 "On oh-my-pi, /sideband login HOST:PORT opens a masked native password dialog outside the agent context. Never request passwords in chat. Sideband uses native aside delivery: messages arrive at the next step boundary and wake idle agents without polling."] };
     });
     for (const tool of sidebandTools) {
-        const shape = {};
-        for (const [name, raw] of Object.entries(tool.inputSchema.properties ?? {})) {
-            const field = raw;
-            const types = Array.isArray(field.type) ? field.type : [field.type];
-            let schema;
-            if (types.includes("integer")) {
-                let number = api.zod.number().int();
-                if (field.minimum !== undefined)
-                    number = number.min(field.minimum);
-                if (field.maximum !== undefined)
-                    number = number.max(field.maximum);
-                schema = number;
-            }
-            else {
-                let string = api.zod.string();
-                if (field.minLength !== undefined)
-                    string = string.min(field.minLength);
-                if (field.maxLength !== undefined)
-                    string = string.max(field.maxLength);
-                if (field.pattern)
-                    string = string.regex(new RegExp(field.pattern));
-                schema = string;
-            }
-            if (types.includes("null"))
-                schema = schema.nullable();
-            if (field.description)
-                schema = schema.describe(field.description);
-            shape[name] = tool.inputSchema.required?.includes(name) ? schema : schema.optional();
-        }
         api.registerTool({ name: tool.name, label: tool.name, description: tool.description ?? "Sideband room operation", loadMode: "essential",
-            parameters: api.zod.object(shape).strict(),
+            parameters: toolParameters(api, tool.inputSchema),
             async execute(_id, args, signal, _update, ctx) {
                 if (signal?.aborted)
                     throw new Error("Sideband request cancelled.");

@@ -70,6 +70,10 @@ const omp = await build({ absWorkingDir: root, entryPoints: ["src/omp-extension.
   bundle: true, platform: "node", format: "cjs", target: "node22", minify: true,
   footer: { js: "module.exports = module.exports.default;" },
   legalComments: "none", metafile: true, define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' } });
+const pi = await build({ absWorkingDir: root, entryPoints: ["src/pi-extension.ts"], outfile: "dist/sideband-pi.cjs",
+  bundle: true, external: ["typebox"], platform: "node", format: "cjs", target: "node22", minify: true,
+  footer: { js: "module.exports = module.exports.default;" }, legalComments: "none", metafile: true,
+  define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' } });
 // Preserve third-party license files for dependencies included in the standalone runtime.
-const notices = await packageNotices([bundled.metafile, omp.metafile, browser.metafile]);
+const notices = await packageNotices([bundled.metafile, omp.metafile, pi.metafile, browser.metafile]);
 await writeFile(join(output, "THIRD_PARTY_NOTICES.txt"), notices.join("\n\n---\n\n").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, ""));

@@ -43,7 +43,7 @@ test("plugin refresh uses official installed sources, exact Codex marketplace co
   };
   try {
     const results = await updateHarnessPlugins(run);
-    assert.ok(results.every(result => result.state === "updated" && result.from === "0.20.0" && result.to === "99.0.0" && result.restartRequired));
+    assert.ok(results.slice(0, 3).every(result => result.state === "updated" && result.from === "0.20.0" && result.to === "99.0.0" && result.restartRequired));
     assert.ok(calls.includes("omp plugin upgrade sideband"));
     assert.ok(calls.includes("claude plugin update sideband@sideband --json -y --scope user"));
     assert.ok(calls.includes("codex --no-daemon plugin marketplace upgrade sideband"));
@@ -91,10 +91,10 @@ test("missing, absent and local plugins are skipped; individual failures do not 
     if (command === "claude") return "[]";
     return JSON.stringify({ installed: [{ pluginId: "sideband@sideband", version: "1.0", marketplaceSource: { sourceType: "local", source: "C:/local" } }] });
   });
-  assert.deepEqual(results.map(result => result.state), ["skipped", "skipped", "skipped"]);
+  assert.deepEqual(results.map(result => result.state), ["skipped", "skipped", "skipped", "skipped"]);
   assert.equal(calls.length, 3);
   const errors = await updateHarnessPlugins(async command => { if (command === "omp") throw new Error("broken metadata"); return "[]"; });
-  assert.equal(errors[0]!.state, "failed"); assert.equal(errors.length, 3);
+  assert.equal(errors[0]!.state, "failed"); assert.equal(errors.length, 4);
   for (const source of ["https://evil.example/sideband", "git@github.com:other/sideband.git", "file:/local"]) assert.equal(officialSidebandSource(source), false);
 });
 

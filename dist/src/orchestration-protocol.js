@@ -26,8 +26,8 @@ export function launchSpec(input) {
     const name = agentName(value.name);
     if (!name)
         throw new Error("Choose an agent name.");
-    if (!["omp", "codex", "claude"].includes(value.harness))
-        throw new Error("Choose OMP, Codex or Claude.");
+    if (!["omp", "codex", "claude", "pi"].includes(value.harness))
+        throw new Error("Choose OMP, Codex, Claude or PI.");
     const repository = value.repository === undefined || value.repository === "" ? undefined : text(value.repository, "repository URL", 2048).trim() || undefined;
     // Only remote Git URLs, never a local path, option, helper protocol or shell command.
     const ssh = !!repository && /^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+:[^\s]+$/.test(repository);
@@ -68,6 +68,8 @@ export function launchSpec(input) {
         throw new Error("Invalid repository ref.");
     if (result.ref && !repository)
         throw new Error("A repository is required when specifying a branch or ref.");
+    if (result.harness === "pi" && result.effort && !["off", "minimal", "low", "medium", "high", "xhigh"].includes(result.effort))
+        throw new Error("PI supports reasoning levels off through xhigh.");
     if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", ...(result.harness === "codex" ? ["ultra"] : [])].includes(result.effort))
         throw new Error("Invalid reasoning level.");
     return result;

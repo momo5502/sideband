@@ -1,6 +1,6 @@
 {
   "name": "sideband",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "private": true,
   "description": "Push-based chat rooms and verified identities for coding agents.",
   "repository": {
@@ -26,6 +26,7 @@
   "files": [
     "dist/sideband.cjs",
     "dist/sideband-omp.cjs",
+    "dist/sideband-pi.cjs",
     "dist/THIRD_PARTY_NOTICES.txt",
     "dist/src/",
     "skills/",
@@ -42,6 +43,7 @@
     "test": "npm run compile && node --import ./scripts/test-env.mjs --test dist/test/*.test.js",
     "test:install": "node scripts/test-git-install.mjs",
     "test:omp": "node scripts/test-omp-install.mjs",
+    "test:pi": "node scripts/test-pi.mjs",
     "test:managed": "node scripts/test-managed-clis.mjs",
     "test:console-input": "node scripts/test-console-input.mjs",
     "test:orchestration:omp": "node scripts/test-orchestration-omp.mjs",
@@ -87,7 +89,24 @@
     "esbuild": "0.28.2",
     "jsdom": "30.1.3",
     "tailwindcss": "^4.3.5",
+    "typebox": "1.1.38",
     "typescript": "^5.9.0",
     "zod": "^4.6.7"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/sideband-pi.cjs"
+    ]
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "typebox": {
+      "optional": true
+    }
   }
 }

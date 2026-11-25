@@ -5,6 +5,10 @@ import { writeLocal, readLocal } from "./local-wire.js";
 import { emitOmpEvent, managedInstructions, managedTools } from "./managed-omp.js";
 import type { OmpApi, OmpContext } from "./omp-extension.js";
 import { sidebandInstructions, sidebandTools } from "./room-tools.js";
+import { toolParameters } from "./omp-extension.js";
+import { randomUUID } from "node:crypto";
+
+export type ManagedExtensionOptions = { pi?: boolean; onToken?(token: string): void; onRetire?(token: string, reason: string): void };
 
 const ownerKey = Symbol.for("sideband.managed.omp.owner");
 type GlobalOwner = typeof globalThis & { [ownerKey]?: boolean };
@@ -23,7 +27,7 @@ function guardLegacyTools(api: OmpApi, descendant = false): () => Promise<void> 
 }
 function descendant(api: OmpApi): true { const hide = guardLegacyTools(api, true); api.on("session_start", async () => hide()); return true; }
 /** Returns true when this factory belongs to a managed session (or one of its subagents). */
-export function managedOmp(api: OmpApi): boolean {
+export function managedOmp(api: OmpApi, options: ManagedExtensionOptions = {}): boolean {
   const encoded = process.env.SIDEBAND_MANAGED_BRIDGE;
   if (!encoded) return (globalThis as GlobalOwner)[ownerKey] || process.env.SIDEBAND_MANAGED_DESCENDANT === "1" ? descendant(api) : false;
   // Consume before OMP can start subagents. Workers also reject the one-time token after use.
@@ -31,6 +35,7 @@ export function managedOmp(api: OmpApi): boolean {
   process.env.SIDEBAND_MANAGED_DESCENDANT = "1";
   if (!isMainThread || (globalThis as GlobalOwner)[ownerKey]) return descendant(api);
   const bootstrap = JSON.parse(encoded);
+  const instance = randomUUID();
   if (!Number.isInteger(bootstrap.port) || bootstrap.port < 1 || bootstrap.port > 65535 || !/^[A-Za-z0-9_-]{43}$/.test(bootstrap.token)) throw new Error("Invalid managed Sideband bootstrap.");
   (globalThis as GlobalOwner)[ownerKey] = true;
   let current: OmpContext | undefined, socket: Socket | undefined, ready = false, closed = false, token = bootstrap.token;
@@ -56,10 +61,10 @@ export function managedOmp(api: OmpApi): boolean {
       if (!ready || !writeLocal(socket, { type, id, ...params })) { clearTimeout(timer); pending.delete(id); reject(new Error("Sideband controller is disconnected.")); }
     });
   };
-  const shutdown = () => {
+  const shutdown = (notify = true) => {
     if (closed) return; closed = true;
     if (retry) clearTimeout(retry); if (flush) clearInterval(flush);
-    writeLocal(socket, { type: "exit" }); socket?.end();
+    if (notify) writeLocal(socket, { type: "exit" }); socket?.end();
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error("OMP session closed.")); } pending.clear();
     delete (globalThis as GlobalOwner)[ownerKey];
   };
@@ -85,9 +90,9 @@ export function managedOmp(api: OmpApi): boolean {
     const file = session();
     if (!file) { current.ui.notify("Managed Sideband requires a saved OMP session.", "error"); return; }
     const connection = connect(bootstrap.port, "127.0.0.1"); socket = connection;
-    connection.once("connect", () => writeLocal(connection, { type: "hello", role: "plugin", token, sessionFile: file, hasUI: current?.hasUI, mode: current?.mode, busy: current?.isIdle ? !current.isIdle() : false }));
+    connection.once("connect", () => writeLocal(connection, { type: "hello", role: "plugin", token, instance, sessionFile: file, hasUI: current?.hasUI, mode: current?.mode, busy: current?.isIdle ? !current.isIdle() : false }));
     readLocal(connection, packet => {
-      if (packet.type === "ready" && typeof packet.token === "string") { token = packet.token; ready = true; reconnects = 0; reconnectUntil = 0; publishSession(); return; }
+      if (packet.type === "ready" && typeof packet.token === "string") { token = packet.token; options.onToken?.(token); ready = true; reconnects = 0; reconnectUntil = 0; publishSession(); return; }
       if (!ready) return;
       if (packet.type === "command" && typeof packet.id === "string") void command(packet);
       if (packet.type === "reply") {
@@ -111,7 +116,7 @@ export function managedOmp(api: OmpApi): boolean {
   }, 40); flush.unref();
   const bind = (ctx: OmpContext) => { current = ctx; if (!socket) open(); else publishSession(); };
   for (const event of ["session_start", "session_switch", "session_branch", "session_tree"]) api.on(event, async (_event, ctx) => { bind(ctx); await hideLegacyTools(); });
-  api.on("session_shutdown", () => shutdown());
+  api.on("session_shutdown", event => { const reason = (event as { reason?: string }).reason ?? "quit"; options.onRetire?.(token, reason); shutdown(!options.pi || reason === "quit"); });
   api.on("before_agent_start", async (event, ctx) => { bind(ctx); await hideLegacyTools(); return { systemPrompt: [...(event.systemPrompt ?? []).filter(line => line !== managedInstructions && line !== sidebandInstructions && !line.startsWith("On oh-my-pi, /sideband login")), managedInstructions] }; });
   for (const type of ["agent_start", "agent_end", "message_start", "message_update", "message_end", "tool_execution_start", "tool_execution_end", "tool_execution_update", "tool_stream_update", "extension_error"]) api.on(type, (event, ctx) => {
     current = ctx;
@@ -131,7 +136,7 @@ export function managedOmp(api: OmpApi): boolean {
     catch { record("error", "Could not serialize an OMP event."); }
   });
   for (const tool of managedTools) api.registerTool({ name: tool.name, label: tool.label, description: tool.description, loadMode: "essential",
-    parameters: tool.name === "sideband_room_send" ? api.zod.object({ text: api.zod.string().min(1) }).strict() : api.zod.object({}).strict(),
+    parameters: toolParameters(api, tool.parameters),
     async execute(_id, args, _signal, _update, ctx) {
       if (!current || ctx.sessionManager.getSessionId() !== current.sessionManager.getSessionId()) throw new Error("Subagents must relay room communication through the parent agent.");
       const result = await request("tool", { name: tool.name, args }); return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };

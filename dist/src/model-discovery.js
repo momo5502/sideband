@@ -18,7 +18,7 @@ export function modelEntries(harness, rows) {
         const v = row;
         if (v.hidden || harness === "claude" && v.value === "default")
             continue;
-        const id = harness === "omp" ? v.selector ?? (v.provider && v.id ? `${v.provider}/${v.id}` : v.id) : v.model ?? v.value ?? v.id;
+        const id = harness === "omp" || harness === "pi" ? v.selector ?? (v.provider && v.id ? `${v.provider}/${v.id}` : v.id) : v.model ?? v.value ?? v.id;
         if (typeof id !== "string" || !id || id.length > 256 || /[\x00-\x1f]/.test(id))
             continue;
         const label = String(v.displayName ?? v.display_name ?? v.name ?? v.label ?? id).replace(/[\x00-\x1f]/g, " ").slice(0, 128);
@@ -64,12 +64,12 @@ export class ModelDiscovery {
     }
     async query(harness) {
         const executable = this.executable(harness);
-        const entry = realpathSync(this.entry), probe = join(dirname(entry), ...(basename(entry) === "cli.js" ? [] : ["src"]), "omp-model-probe.js");
-        if (harness === "omp" && !existsSync(probe))
-            throw new ModelQueryError("OMP probe file is missing; reinstall Sideband.");
+        const entry = realpathSync(this.entry), probe = join(dirname(entry), ...(basename(entry) === "cli.js" ? [] : ["src"]), harness === "pi" ? "pi-model-probe.js" : "omp-model-probe.js");
+        if (["omp", "pi"].includes(harness) && !existsSync(probe))
+            throw new ModelQueryError("Model probe file is missing; reinstall Sideband.");
         const args = harness === "codex" ? ["app-server", "--listen", "stdio://", "-c", 'mcp_servers={}', "-c", 'plugins."sideband@sideband".enabled=false'] : harness === "claude"
             ? ["-p", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--settings", JSON.stringify({ enabledPlugins: { "sideband@sideband": false } })]
-            : ["--mode", "rpc", "--no-ui", "--no-title", "--no-session", "--no-extensions", "-e", probe];
+            : ["--mode", "rpc", ...(harness === "pi" ? [] : ["--no-ui", "--no-title"]), "--no-session", "--no-extensions", "-e", probe];
         return new Promise((resolve, reject) => {
             const child = spawn(executable.command, [...(executable.args ?? []), ...args], { cwd: this.cwd, windowsHide: true, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
             this.children.add(child);
@@ -93,7 +93,7 @@ export class ModelDiscovery {
             const cancel = () => finish(new ModelQueryError("Model discovery was cancelled."));
             this.cancellations.add(cancel);
             const timer = setTimeout(() => finish(new ModelQueryError(`The query timed out after ${REQUEST_TIMEOUT_MS / 1000} s.`)), REQUEST_TIMEOUT_MS);
-            if (harness === "omp") {
+            if (harness === "omp" || harness === "pi") {
                 let stderr = "";
                 const decoder = new StringDecoder("utf8");
                 child.stderr.on("data", (chunk) => {
@@ -125,7 +125,7 @@ export class ModelDiscovery {
             child.stdin.on("error", () => finish(new ModelQueryError("The harness input closed before returning models.")));
             child.once("exit", (code, signal) => finish(new ModelQueryError(`The harness exited (${signal ?? code}) before returning models.`)));
             const frame = (v) => {
-                if (harness === "omp")
+                if (harness === "omp" || harness === "pi")
                     return;
                 if (harness === "claude") {
                     if (v.type === "control_request")

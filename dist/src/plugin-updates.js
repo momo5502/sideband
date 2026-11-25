@@ -1,6 +1,8 @@
-import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
+import { REQUEST_TIMEOUT_MS, COMMAND_TIMEOUT_MS } from "./timeouts.js";
 import { dirname, join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { runUpdateCommand } from "./update-runtime.js";
 export function officialSidebandSource(value) {
     if (typeof value !== "string")
@@ -11,7 +13,7 @@ export function officialSidebandSource(value) {
 const missing = (error) => error.code === "ENOENT";
 const listingTimeout = REQUEST_TIMEOUT_MS;
 const failure = (error) => (error instanceof Error ? error.message : "Plugin update failed.").slice(0, 2048);
-async function ompSource(path) {
+export async function ompSource(path) {
     if (typeof path !== "string")
         return false;
     let directory = dirname(path);
@@ -88,6 +90,41 @@ export async function updateHarnessPlugins(run = runUpdateCommand, progress = ()
         }
         progress([...results]);
     }
+    results.push(await updatePiPlugin(run));
+    progress([...results]);
     return results;
+}
+/** PI's bare update also upgrades PI itself. Refresh only an existing, unpinned Sideband extension. */
+export async function updatePiPlugin(run = runUpdateCommand, directory = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent")) {
+    directory = resolve(directory.replace(/^~(?=[/\\]|$)/, homedir()));
+    const skipped = (message) => ({ harness: "pi", state: "skipped", message });
+    let from;
+    const version = async () => { const value = JSON.parse(await readFile(join(directory, "git", "github.com", "momo5502", "sideband", "package.json"), "utf8")).version; return typeof value === "string" && value.length <= 128 ? value : undefined; };
+    try {
+        let settings;
+        try {
+            settings = JSON.parse(await readFile(join(directory, "settings.json"), "utf8"));
+        }
+        catch {
+            return skipped("No PI package settings found.");
+        }
+        const sources = Array.isArray(settings.packages) ? settings.packages.map((entry) => typeof entry === "string" ? entry : entry?.source).filter((source) => typeof source === "string") : [];
+        const source = sources.map((source) => /^(?:git:)?(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:|github\.com\/)momo5502\/sideband(?:\.git)?(?:@([^@\s]+))?$/.exec(source)).find((match) => match);
+        if (!source)
+            return skipped("Sideband is not installed from its official Git source in PI.");
+        if (source[1] && source[1] !== "main")
+            return skipped("The PI package uses a pinned ref. Update it explicitly in PI to change that pin.");
+        if (process.env.PI_OFFLINE && !["0", "false"].includes(process.env.PI_OFFLINE.toLowerCase()))
+            return skipped("PI is offline; refresh its package when online.");
+        from = await version().catch(() => undefined);
+        await run("pi", ["update", "--extension", "git:github.com/momo5502/sideband", "--no-approve"], { timeout: COMMAND_TIMEOUT_MS, cwd: homedir() });
+        const to = await version();
+        if (!to)
+            throw new Error("Could not verify the refreshed PI package.");
+        return { harness: "pi", from, to, state: "updated", restartRequired: from !== to, message: from === to ? "Already current." : "Sideband extension refreshed. Reload PI or restart its session to apply it." };
+    }
+    catch (error) {
+        return { harness: "pi", from, state: missing(error) ? "skipped" : "failed", message: missing(error) ? "PI or its installed package is unavailable." : failure(error) };
+    }
 }
 //# sourceMappingURL=plugin-updates.js.map

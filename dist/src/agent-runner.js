@@ -367,12 +367,14 @@ export class AgentRunner {
         };
         const entry = this.config.entry ?? resolve(process.argv[1]);
         const sessions = join(this.directory, "sessions");
-        const driver = this.agent.harness === "codex"
-            ? new ManagedCodex(this.config.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, this.workspace, sessions, host, entry, this.agent.terminal)
-            : this.agent.harness === "claude"
-                ? this.agent.terminal ? new ManagedClaudeNative(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry) : new ManagedClaude(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry)
-                : this.agent.terminal ? new ManagedTerminal(this.config.omp, this.workspace, sessions, host, entry)
-                    : new ManagedOmp(this.config.omp, this.workspace, sessions, host);
+        const driver = this.agent.harness === "pi"
+            ? new ManagedTerminal(this.config.pi ?? { command: process.env.PI_BINARY ?? "pi" }, this.workspace, sessions, host, entry, undefined, undefined, { harness: "pi", headless: !this.agent.terminal })
+            : this.agent.harness === "codex"
+                ? new ManagedCodex(this.config.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, this.workspace, sessions, host, entry, this.agent.terminal)
+                : this.agent.harness === "claude"
+                    ? this.agent.terminal ? new ManagedClaudeNative(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry) : new ManagedClaude(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry)
+                    : this.agent.terminal ? new ManagedTerminal(this.config.omp, this.workspace, sessions, host, entry)
+                        : new ManagedOmp(this.config.omp, this.workspace, sessions, host);
         this.driver = driver;
         try {
             await driver.start({ model: this.agent.model, effort: this.agent.effort, resume: this.sessionFile });

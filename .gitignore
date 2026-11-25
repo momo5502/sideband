@@ -2,6 +2,7 @@ node_modules/
 dist/**
 !dist/sideband.cjs
 !dist/sideband-omp.cjs
+!dist/sideband-pi.cjs
 !dist/THIRD_PARTY_NOTICES.txt
 !dist/src/
 !dist/src/**/

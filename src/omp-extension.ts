@@ -6,7 +6,7 @@ import { agentName, serverUrl } from "./room-protocol.js";
 import { formatDelivery, type Delivery } from "./protocol.js";
 import type { DeliveryAdapter } from "./adapters/codex.js";
 import { loginAndSave } from "./terminal-login.js";
-import { managedOmp } from "./omp-managed.js";
+import { managedOmp, type ManagedExtensionOptions } from "./omp-managed.js";
 
 /** The host API subset used here. Schema builders come from OMP, with no runtime host imports. */
 export interface OmpContext {
@@ -32,6 +32,7 @@ export interface OmpTool {
 }
 export interface OmpApi {
   zod: typeof zod;
+  schema?(schema: object): zod.ZodType;
   registerTool(tool: OmpTool): void;
   registerCommand(name: string, command: { description: string; handler(args: string, ctx: OmpContext): Promise<void> }): void;
   on(event: string, handler: (event: { systemPrompt?: string[] }, ctx: OmpContext) => unknown): void;
@@ -40,6 +41,20 @@ export interface OmpApi {
   getActiveTools?(): string[];
   getAllTools?(): { name: string; sourceInfo?: { source?: string; path?: string } }[];
   setActiveTools?(names: string[]): Promise<void>;
+}
+
+export function toolParameters(api: OmpApi, schema: { properties?: Record<string, any>; required?: string[] }): zod.ZodType {
+  if (api.schema) return api.schema(schema);
+  const shape: Record<string, zod.ZodType> = {};
+  for (const [name, field] of Object.entries(schema.properties ?? {})) {
+    const types = Array.isArray(field.type) ? field.type : [field.type];
+    let value: zod.ZodType;
+    if (types.includes("integer")) { let number = api.zod.number().int(); if (field.minimum !== undefined) number = number.min(field.minimum); if (field.maximum !== undefined) number = number.max(field.maximum); value = number; }
+    else { let string = api.zod.string(); if (field.minLength !== undefined) string = string.min(field.minLength); if (field.maxLength !== undefined) string = string.max(field.maxLength); if (field.pattern) string = string.regex(new RegExp(field.pattern)); value = string; }
+    if (types.includes("null")) value = value.nullable(); if (field.description) value = value.describe(field.description);
+    shape[name] = schema.required?.includes(name) ? value : value.optional();
+  }
+  return api.zod.object(shape).strict();
 }
 
 export class OmpAdapter implements DeliveryAdapter {
@@ -64,8 +79,8 @@ function unwrap(result: ToolResult): any {
 }
 
 /** Each factory binding owns its own client. Subagents never inherit a connection. */
-export default function sideband(api: OmpApi, profiles = new RoomProfiles()): void {
-  if (managedOmp(api)) return;
+export default function sideband(api: OmpApi, profiles = new RoomProfiles(), managed?: ManagedExtensionOptions): void {
+  if (managedOmp(api, managed)) return;
   type Binding = { id: string; context: OmpContext; tools: RoomTools };
   let active: Binding | undefined;
   let epoch = 0;
@@ -116,29 +131,8 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles()): vo
   });
 
   for (const tool of sidebandTools) {
-    const shape: Record<string, zod.ZodType> = {};
-    for (const [name, raw] of Object.entries(tool.inputSchema.properties ?? {})) {
-      const field = raw as { type: string | string[]; minLength?: number; maxLength?: number; pattern?: string; minimum?: number; maximum?: number; description?: string };
-      const types = Array.isArray(field.type) ? field.type : [field.type];
-      let schema: zod.ZodType;
-      if (types.includes("integer")) {
-        let number = api.zod.number().int();
-        if (field.minimum !== undefined) number = number.min(field.minimum);
-        if (field.maximum !== undefined) number = number.max(field.maximum);
-        schema = number;
-      } else {
-        let string = api.zod.string();
-        if (field.minLength !== undefined) string = string.min(field.minLength);
-        if (field.maxLength !== undefined) string = string.max(field.maxLength);
-        if (field.pattern) string = string.regex(new RegExp(field.pattern));
-        schema = string;
-      }
-      if (types.includes("null")) schema = schema.nullable();
-      if (field.description) schema = schema.describe(field.description);
-      shape[name] = tool.inputSchema.required?.includes(name) ? schema : schema.optional();
-    }
     api.registerTool({ name: tool.name, label: tool.name, description: tool.description ?? "Sideband room operation", loadMode: "essential",
-      parameters: api.zod.object(shape).strict(),
+      parameters: toolParameters(api, tool.inputSchema),
       async execute(_id, args, signal, _update, ctx) {
         if (signal?.aborted) throw new Error("Sideband request cancelled.");
         const current = await binding(ctx);

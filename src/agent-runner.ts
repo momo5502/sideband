@@ -16,7 +16,7 @@ import { ManagedClaude } from "./managed-claude.js";
 import { terminateTree } from "./process-tree.js";
 import { existingFolder } from "./worker-folders.js";
 
-export type RunnerConfig = { profile: ConnectionProfile; id: string; machineId: string; machineName: string; root: string; spec: unknown; omp: Executable; codex?: Executable; claude?: Executable; entry?: string; recover?: boolean };
+export type RunnerConfig = { profile: ConnectionProfile; id: string; machineId: string; machineName: string; root: string; spec: unknown; omp: Executable; codex?: Executable; claude?: Executable; pi?: Executable; entry?: string; recover?: boolean };
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "Operation failed.").slice(0, 2048);
 
 /** Independent of the worker: owns the harness, room identity, and bounded output. */
@@ -260,7 +260,9 @@ export class AgentRunner {
     };
     const entry = this.config.entry ?? resolve(process.argv[1]!);
     const sessions = join(this.directory, "sessions");
-    const driver: ManagedHarness = this.agent.harness === "codex"
+    const driver: ManagedHarness = this.agent.harness === "pi"
+      ? new ManagedTerminal(this.config.pi ?? { command: process.env.PI_BINARY ?? "pi" }, this.workspace, sessions, host, entry, undefined, undefined, { harness: "pi", headless: !this.agent.terminal })
+      : this.agent.harness === "codex"
       ? new ManagedCodex(this.config.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, this.workspace, sessions, host, entry, this.agent.terminal)
       : this.agent.harness === "claude"
       ? this.agent.terminal ? new ManagedClaudeNative(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry) : new ManagedClaude(this.config.claude ?? { command: "claude" }, this.workspace, sessions, host, entry)

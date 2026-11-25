@@ -108,7 +108,7 @@ export class OrchestrationServer {
                 const id = uuid(machine.id);
                 if (existing && (existing.kind !== kind || existing.id !== id))
                     throw new Error("Connection already registered.");
-                if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => !["omp", "codex", "claude"].includes(String(h))))
+                if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => !["omp", "codex", "claude", "pi"].includes(String(h))))
                     throw new Error("Invalid harness list.");
                 if (machine.updater !== undefined && typeof machine.updater !== "boolean")
                     throw new Error("Invalid updater capability.");
@@ -162,17 +162,20 @@ export class OrchestrationServer {
                     this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
             }
             this.changed();
-            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true } } : {}) };
+            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true } } : {}) };
         }
         if (method === "control.features") {
             const peer = this.peers.get(socket);
             if (browser || peer?.kind !== "worker")
                 throw new Error("Only a registered worker can report its features.");
-            const args = fields(params, ["folders"]);
-            if (args.folders !== true)
-                throw new Error("Invalid folder capability.");
+            const args = fields(params, ["folders", "pi"]);
+            if (![args.folders, args.pi].some(value => value === true) || [args.folders, args.pi].some(value => value !== undefined && value !== true))
+                throw new Error("Invalid worker capability.");
             const machine = this.machines.get(peer.id);
-            machine.folders = true;
+            if (args.folders)
+                machine.folders = true;
+            if (args.pi && !machine.harnesses.includes("pi"))
+                machine.harnesses.push("pi");
             await this.save("machine", peer.id, machine);
             this.changed();
             return {};

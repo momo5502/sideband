@@ -6,7 +6,7 @@ export type ModelCatalog = { models: HarnessModel[]; at: number; error?: string 
 export type FolderListing = { path: string; parent: string | null; roots: string[]; entries: { name: string; path: string }[]; next?: string; partial?: boolean };
 export type Machine = { id: string; name: string; platform: string; harnesses: string[]; online: boolean; folders?: boolean; persistent?: boolean; terminal?: "window" | "tmux" | "none"; build?: BuildInfo; updater?: boolean; update?: LocalUpdate; models?: Partial<Record<HarnessName, ModelCatalog>> };
 export type AgentState = "preparing" | "starting" | "idle" | "busy" | "stopped" | "failed";
-export type HarnessName = "omp" | "codex" | "claude";
+export type HarnessName = "omp" | "codex" | "claude" | "pi";
 export type LaunchSpec = { name: string; harness: HarnessName; repository?: string; folder?: string; ref?: string; model?: string; effort?: string; room?: string; prompt?: string; terminal?: boolean };
 export type ManagedAgent = LaunchSpec & { id: string; machineId: string; machineName: string; state: AgentState; online: boolean; createdAt: number; room: string; error?: string; canResume?: boolean; identityId?: string; persistent?: boolean; archived?: boolean };
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
@@ -34,7 +34,7 @@ export function modelCatalog(input: unknown): ModelCatalog {
 export function launchSpec(input: unknown): LaunchSpec {
   const value = fields(input, ["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal"]);
   const name = agentName(value.name); if (!name) throw new Error("Choose an agent name.");
-  if (!["omp", "codex", "claude"].includes(value.harness as string)) throw new Error("Choose OMP, Codex or Claude.");
+  if (!["omp", "codex", "claude", "pi"].includes(value.harness as string)) throw new Error("Choose OMP, Codex, Claude or PI.");
   const repository = value.repository === undefined || value.repository === "" ? undefined : text(value.repository, "repository URL", 2048).trim() || undefined;
   // Only remote Git URLs, never a local path, option, helper protocol or shell command.
   const ssh = !!repository && /^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+:[^\s]+$/.test(repository);
@@ -61,6 +61,7 @@ export function launchSpec(input: unknown): LaunchSpec {
   }
   if (result.ref?.startsWith("-")) throw new Error("Invalid repository ref.");
   if (result.ref && !repository) throw new Error("A repository is required when specifying a branch or ref.");
+  if (result.harness === "pi" && result.effort && !["off", "minimal", "low", "medium", "high", "xhigh"].includes(result.effort)) throw new Error("PI supports reasoning levels off through xhigh.");
   if (result.effort && !["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", ...(result.harness === "codex" ? ["ultra"] : [])].includes(result.effort)) throw new Error("Invalid reasoning level.");
   return result;
 }

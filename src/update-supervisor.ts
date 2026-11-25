@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { activeRuntime, privateJson, runtimeDirectory, runtimeEntry } from "./update-runtime.js";
 import { stateDirectory } from "./room-profiles.js";
+import type { LocalWorkerBootstrap } from "./server-worker.js";
 
 export const UPDATE_RESTART = 75;
 /** New public invocations use the selected runtime; existing runner entry paths stay immutable. */
@@ -21,21 +22,29 @@ export async function forwardRuntime(entry: string, args: string[], directory = 
   });
 }
 /** The stable bootstrap stays in the original console; per-agent helpers are never supervised. */
-export async function supervise(entry: string, args: string[], directory = stateDirectory): Promise<number> {
+export async function supervise(entry: string, args: string[], directory = stateDirectory, bootstrap?: LocalWorkerBootstrap): Promise<number> {
   const base = realpathSync(entry); let switched = false, stopping = false, attemptedRollback = false;
+  let stopCurrent: (() => void) | undefined;
+  const parentStop = () => { stopping = true; stopCurrent?.(); };
+  const parentMessage = (message: any) => { if (message?.type === "sideband.shutdown") parentStop(); };
+  process.on("message", parentMessage); process.once("disconnect", parentStop);
+  try {
   while (true) {
     const role = args[0] === "server" ? "server" : "worker";
     const active = await activeRuntime(directory, role); const selected = active ? runtimeEntry(directory, active.commit) : base;
+    if (stopping) return 0;
     let ready = false, requested = false;
     const child = spawn(process.execPath, [selected, ...args], { stdio: ["inherit", "inherit", "inherit", "ipc"], windowsHide: true,
       env: { ...process.env, SIDEBAND_SUPERVISED: "1", SIDEBAND_STATE_DIR: resolve(directory) } });
     let stopTimer: NodeJS.Timeout | undefined;
     const stop = () => { stopping = true; if (child.connected) child.send({ type: "sideband.shutdown" }); else child.kill(); stopTimer ??= setTimeout(() => child.kill(), SHUTDOWN_TIMEOUT_MS); };
+    stopCurrent = stop;
     process.on("SIGINT", stop); process.on("SIGTERM", stop);
     const timer = switched ? setTimeout(() => { if (!ready) child.kill(); }, STARTUP_TIMEOUT_MS) : undefined;
     let nextArgs = args;
     child.on("message", (message: any) => {
-      if (message?.type === "sideband.ready") { ready = true; if (timer) clearTimeout(timer); if (active) void privateJson(join(runtimeDirectory(directory), "active.json"), active).catch(() => {}); }
+      if (message?.type === "sideband.worker.bootstrap.request" && bootstrap && child.connected) child.send({ type: "sideband.worker.bootstrap", value: bootstrap });
+      if (message?.type === "sideband.ready") { ready = true; if (timer) clearTimeout(timer); if (active) void privateJson(join(runtimeDirectory(directory), "active.json"), active).catch(() => {}); if (bootstrap && process.connected) process.send?.({ type: "sideband.worker.ready" }); }
       if (message?.type === "sideband.restart") { requested = true; if (Array.isArray(message.args) && message.args[0] === args[0] && message.args.every((value: unknown) => typeof value === "string")) nextArgs = message.args; }
     });
     const result = await new Promise<{ code: number; error?: string }>(resolvePromise => {
@@ -43,6 +52,7 @@ export async function supervise(entry: string, args: string[], directory = state
       child.once("exit", code => resolvePromise({ code: code ?? (stopping ? 0 : 1) }));
     });
     if (timer) clearTimeout(timer); if (stopTimer) clearTimeout(stopTimer); process.off("SIGINT", stop); process.off("SIGTERM", stop);
+    stopCurrent = undefined;
     if (stopping) return result.code;
     if (requested && result.code === UPDATE_RESTART) { args = nextArgs; switched = true; attemptedRollback = false; continue; }
     if (!ready && switched && !attemptedRollback && active) {
@@ -56,4 +66,5 @@ export async function supervise(entry: string, args: string[], directory = state
     if (result.error) console.error(result.error);
     return result.code;
   }
+  } finally { process.off("message", parentMessage); process.off("disconnect", parentStop); }
 }

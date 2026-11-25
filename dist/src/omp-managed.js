@@ -4,6 +4,8 @@ import { isMainThread } from "node:worker_threads";
 import { writeLocal, readLocal } from "./local-wire.js";
 import { emitOmpEvent, managedInstructions, managedTools } from "./managed-omp.js";
 import { sidebandInstructions, sidebandTools } from "./room-tools.js";
+import { toolParameters } from "./omp-extension.js";
+import { randomUUID } from "node:crypto";
 const ownerKey = Symbol.for("sideband.managed.omp.owner");
 const legacyNames = new Set(sidebandTools.map(tool => tool.name));
 function guardLegacyTools(api, descendant = false) {
@@ -23,7 +25,7 @@ function guardLegacyTools(api, descendant = false) {
 }
 function descendant(api) { const hide = guardLegacyTools(api, true); api.on("session_start", async () => hide()); return true; }
 /** Returns true when this factory belongs to a managed session (or one of its subagents). */
-export function managedOmp(api) {
+export function managedOmp(api, options = {}) {
     const encoded = process.env.SIDEBAND_MANAGED_BRIDGE;
     if (!encoded)
         return globalThis[ownerKey] || process.env.SIDEBAND_MANAGED_DESCENDANT === "1" ? descendant(api) : false;
@@ -33,6 +35,7 @@ export function managedOmp(api) {
     if (!isMainThread || globalThis[ownerKey])
         return descendant(api);
     const bootstrap = JSON.parse(encoded);
+    const instance = randomUUID();
     if (!Number.isInteger(bootstrap.port) || bootstrap.port < 1 || bootstrap.port > 65535 || !/^[A-Za-z0-9_-]{43}$/.test(bootstrap.token))
         throw new Error("Invalid managed Sideband bootstrap.");
     globalThis[ownerKey] = true;
@@ -66,7 +69,7 @@ export function managedOmp(api) {
             }
         });
     };
-    const shutdown = () => {
+    const shutdown = (notify = true) => {
         if (closed)
             return;
         closed = true;
@@ -74,7 +77,8 @@ export function managedOmp(api) {
             clearTimeout(retry);
         if (flush)
             clearInterval(flush);
-        writeLocal(socket, { type: "exit" });
+        if (notify)
+            writeLocal(socket, { type: "exit" });
         socket?.end();
         for (const item of pending.values()) {
             clearTimeout(item.timer);
@@ -127,10 +131,11 @@ export function managedOmp(api) {
         }
         const connection = connect(bootstrap.port, "127.0.0.1");
         socket = connection;
-        connection.once("connect", () => writeLocal(connection, { type: "hello", role: "plugin", token, sessionFile: file, hasUI: current?.hasUI, mode: current?.mode, busy: current?.isIdle ? !current.isIdle() : false }));
+        connection.once("connect", () => writeLocal(connection, { type: "hello", role: "plugin", token, instance, sessionFile: file, hasUI: current?.hasUI, mode: current?.mode, busy: current?.isIdle ? !current.isIdle() : false }));
         readLocal(connection, packet => {
             if (packet.type === "ready" && typeof packet.token === "string") {
                 token = packet.token;
+                options.onToken?.(token);
                 ready = true;
                 reconnects = 0;
                 reconnectUntil = 0;
@@ -186,7 +191,7 @@ export function managedOmp(api) {
         publishSession(); };
     for (const event of ["session_start", "session_switch", "session_branch", "session_tree"])
         api.on(event, async (_event, ctx) => { bind(ctx); await hideLegacyTools(); });
-    api.on("session_shutdown", () => shutdown());
+    api.on("session_shutdown", event => { const reason = event.reason ?? "quit"; options.onRetire?.(token, reason); shutdown(!options.pi || reason === "quit"); });
     api.on("before_agent_start", async (event, ctx) => { bind(ctx); await hideLegacyTools(); return { systemPrompt: [...(event.systemPrompt ?? []).filter(line => line !== managedInstructions && line !== sidebandInstructions && !line.startsWith("On oh-my-pi, /sideband login")), managedInstructions] }; });
     for (const type of ["agent_start", "agent_end", "message_start", "message_update", "message_end", "tool_execution_start", "tool_execution_end", "tool_execution_update", "tool_stream_update", "extension_error"])
         api.on(type, (event, ctx) => {
@@ -227,7 +232,7 @@ export function managedOmp(api) {
         });
     for (const tool of managedTools)
         api.registerTool({ name: tool.name, label: tool.label, description: tool.description, loadMode: "essential",
-            parameters: tool.name === "sideband_room_send" ? api.zod.object({ text: api.zod.string().min(1) }).strict() : api.zod.object({}).strict(),
+            parameters: toolParameters(api, tool.parameters),
             async execute(_id, args, _signal, _update, ctx) {
                 if (!current || ctx.sessionManager.getSessionId() !== current.sessionManager.getSessionId())
                     throw new Error("Subagents must relay room communication through the parent agent.");

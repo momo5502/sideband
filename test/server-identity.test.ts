@@ -9,6 +9,8 @@ import { once } from "node:events";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
 import { createServerIdentity, loadServerIdentity, saveServerIdentity } from "../src/server-identity.js";
+import { SHUTDOWN_TIMEOUT_MS } from "../src/timeouts.js";
+import { terminateTree } from "../src/process-tree.js";
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "sideband-server-state-"));
@@ -111,9 +113,17 @@ test("occupied HTTP status port fails startup without rotating credentials or le
 
 test("packaged server CLI reuses its default state file and rotates only with --rotate-password", { timeout: testTimeout(60_000) }, async () => {
   const f = await fixture(); const children = new Set<ChildProcess>();
+  const stopChild = async (child: ChildProcess) => {
+    if (child.exitCode !== null || child.signalCode !== null) { children.delete(child); return; }
+    const exited = once(child, "exit"); let forced = false;
+    const timer = setTimeout(() => { forced = true; terminateTree(child, false); }, SHUTDOWN_TIMEOUT_MS);
+    try { if (child.connected) child.send({ type: "sideband.shutdown" }); else child.kill(); await exited; }
+    finally { clearTimeout(timer); children.delete(child); }
+    assert.equal(forced, false, "Supervised server did not shut down before the backstop.");
+  };
   const start = async (rotate = false) => {
     const child = spawn(process.execPath, [resolve("dist/sideband.cjs"), "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0", ...(rotate ? ["--rotate-password"] : [])],
-      { env: { ...process.env, SIDEBAND_STATE_DIR: f.directory }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      { env: { ...process.env, SIDEBAND_STATE_DIR: f.directory }, stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true });
     children.add(child);
     let timer: NodeJS.Timeout;
     const password = await new Promise<string>((resolvePassword, reject) => {
@@ -127,7 +137,7 @@ test("packaged server CLI reuses its default state file and rotates only with --
       });
       child.stderr!.resume();
     }).finally(() => clearTimeout(timer));
-    return { password, async stop() { const exited = once(child, "exit"); child.kill(); await exited; children.delete(child); } };
+    return { password, stop: () => stopChild(child) };
   };
   try {
     const first = await start(); const password = first.password; await first.stop();
@@ -135,7 +145,7 @@ test("packaged server CLI reuses its default state file and rotates only with --
     const rotated = await start(true); const replacement = rotated.password; assert.ok(replacement !== password); await rotated.stop();
     const last = await start(); assert.ok(last.password === replacement); await last.stop();
   } finally {
-    await Promise.all([...children].map(async child => { if (child.exitCode !== null) return; const exited = once(child, "exit"); child.kill(); await exited; }));
+    await Promise.all([...children].map(stopChild));
     await f.close();
   }
 });

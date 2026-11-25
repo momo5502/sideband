@@ -82,7 +82,7 @@ export class OrchestrationServer {
         if (machine.terminal !== undefined && !["window", "tmux", "none"].includes(String(machine.terminal))) throw new Error("Invalid terminal capability.");
         const id = uuid(machine.id);
         if (existing && (existing.kind !== kind || existing.id !== id)) throw new Error("Connection already registered.");
-        if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => !["omp", "codex", "claude"].includes(String(h)))) throw new Error("Invalid harness list.");
+        if (!Array.isArray(machine.harnesses) || machine.harnesses.some(h => !["omp", "codex", "claude", "pi"].includes(String(h)))) throw new Error("Invalid harness list.");
         if (machine.updater !== undefined && typeof machine.updater !== "boolean") throw new Error("Invalid updater capability.");
         const metadata = { ...(machine.build !== undefined ? { build: parseBuild(machine.build) } : {}),
           ...(machine.update !== undefined ? { update: parseUpdate(machine.update) } : {}), ...(machine.updater !== undefined ? { updater: machine.updater } : {}) };
@@ -117,12 +117,12 @@ export class OrchestrationServer {
         await this.store?.change(() => { if (agent.persistent) this.store!.put("agent", agent.id, this.agents.get(agent.id)); this.store!.put("owner", agent.id, identity.id); });
         if (!this.machines.has(agent.machineId)) this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
       }
-      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true } } : {}) };
+      this.changed(); return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true } } : {}) };
     }
     if (method === "control.features") {
       const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report its features.");
-      const args = fields(params, ["folders"]); if (args.folders !== true) throw new Error("Invalid folder capability.");
-      const machine = this.machines.get(peer.id)!; machine.folders = true; await this.save("machine", peer.id, machine); this.changed(); return {};
+      const args = fields(params, ["folders", "pi"]); if (![args.folders, args.pi].some(value => value === true) || [args.folders, args.pi].some(value => value !== undefined && value !== true)) throw new Error("Invalid worker capability.");
+      const machine = this.machines.get(peer.id)!; if (args.folders) machine.folders = true; if (args.pi && !machine.harnesses.includes("pi")) machine.harnesses.push("pi"); await this.save("machine", peer.id, machine); this.changed(); return {};
     }
     if (method === "control.models") {
       const peer = this.peers.get(socket); if (browser || peer?.kind !== "worker") throw new Error("Only a registered worker can report models.");

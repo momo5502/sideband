@@ -9,6 +9,7 @@ import { writeLocal, readLocal } from "./local-wire.js";
 import { managedInstructions } from "./managed-omp.js";
 import { launchTerminal, terminalLauncher, shellQuote } from "./terminal-launch.js";
 import { terminateTree } from "./process-tree.js";
+import { StringDecoder } from "node:string_decoder";
 /** Owns only a private control channel. OMP and its terminal own all terminal I/O. */
 export class ManagedTerminal {
     executable;
@@ -18,6 +19,7 @@ export class ManagedTerminal {
     entry;
     openTerminal;
     detectTerminal;
+    settings;
     sessionFile;
     server = createServer(socket => this.accept(socket));
     sockets = new Set();
@@ -31,12 +33,15 @@ export class ManagedTerminal {
     stopping;
     exited = false;
     lastSequence = 0;
+    pluginInstance;
+    headless;
+    headlessExit;
     id = 0;
     bootstrapFile = "";
     scriptFile = "";
     runtime = {};
     pending = new Map();
-    constructor(executable, cwd, sessions, host, entry, openTerminal = launchTerminal, detectTerminal = terminalLauncher) {
+    constructor(executable, cwd, sessions, host, entry, openTerminal = launchTerminal, detectTerminal = terminalLauncher, settings = {}) {
         this.executable = executable;
         this.cwd = cwd;
         this.sessions = sessions;
@@ -44,19 +49,20 @@ export class ManagedTerminal {
         this.entry = entry;
         this.openTerminal = openTerminal;
         this.detectTerminal = detectTerminal;
+        this.settings = settings;
         // npm's Unix bin is a symlink; companion assets belong beside the actual CLI module.
         this.entry = realpathSync(entry);
     }
     async start(options) {
         const launcher = this.detectTerminal();
-        if (!launcher)
+        if (!launcher && !this.settings.headless)
             throw new Error("No terminal launcher is available. Install tmux on a headless machine, or choose Background mode.");
         await new Promise((resolve, reject) => { this.server.once("error", reject); this.server.listen(0, "127.0.0.1", () => { this.server.off("error", reject); resolve(); }); });
         const port = this.server.address().port;
-        const plugin = join(dirname(this.entry), ...(basename(this.entry) === "cli.js" ? [".."] : []), "sideband-omp.cjs");
-        this.runtime = { executable: this.executable.command, args: [...(this.executable.args ?? []), "--auto-approve", "--approval-mode", "yolo", "--no-title", "-e", plugin,
+        const plugin = join(dirname(this.entry), ...(basename(this.entry) === "cli.js" ? [".."] : []), this.settings.harness === "pi" ? "sideband-pi.cjs" : "sideband-omp.cjs");
+        this.runtime = { executable: this.executable.command, args: [...(this.executable.args ?? []), ...(this.settings.harness === "pi" ? [...(this.settings.headless ? ["--mode", "rpc"] : []), "--no-approve"] : ["--auto-approve", "--approval-mode", "yolo", "--no-title"]), "-e", plugin,
                 "--session-dir", this.sessions, "--append-system-prompt", managedInstructions,
-                ...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["--thinking", options.effort] : []), ...(options.resume ? ["--resume", options.resume] : [])],
+                ...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["--thinking", options.effort] : []), ...(options.resume ? [this.settings.harness === "pi" ? "--session" : "--resume", options.resume] : [])],
             cwd: this.cwd, env: { ...process.env, SIDEBAND_MANAGED_BRIDGE: JSON.stringify({ port, token: this.pluginToken }) } };
         await mkdir(this.sessions, { recursive: true, mode: 0o700 });
         const unique = randomUUID();
@@ -71,6 +77,11 @@ export class ManagedTerminal {
         try {
             if (this.stopped)
                 throw new Error("OMP terminal was stopped.");
+            if (this.settings.headless) {
+                this.startHeadless();
+                await ready;
+                return;
+            }
             const child = this.openTerminal(launcher, this.scriptFile, unique);
             child.on("error", error => this.ready?.reject(error));
             child.stderr?.setEncoding("utf8");
@@ -81,7 +92,7 @@ export class ManagedTerminal {
             if (launcher.kind === "tmux")
                 this.host.event("terminal", `Attach locally: tmux attach -t sb-${unique}`);
             else
-                this.host.event("terminal", "Opening OMP in a terminal window on this machine.");
+                this.host.event("terminal", `Opening ${this.settings.harness === "pi" ? "PI" : "OMP"} in a terminal window on this machine.`);
             await ready;
         }
         catch (error) {
@@ -95,6 +106,63 @@ export class ManagedTerminal {
             clearTimeout(timer);
             this.ready = undefined;
         }
+    }
+    startHeadless() {
+        const runtime = this.runtime;
+        const child = this.headless = spawn(runtime.executable, runtime.args, { cwd: runtime.cwd, env: runtime.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
+        this.headlessExit = new Promise(resolve => {
+            let done = false;
+            const finished = (error) => {
+                if (done)
+                    return;
+                done = true;
+                // A tool's surviving subprocess may hold inherited pipes. The harness
+                // process exiting, not those pipes closing, determines its lifetime.
+                child.stdin?.destroy();
+                child.stdout?.destroy();
+                child.stderr?.destroy();
+                this.exit(error);
+                resolve();
+            };
+            child.once("exit", code => finished(code === 0 ? undefined : new Error(`PI exited (${code ?? child.signalCode}).`)));
+            child.once("error", finished);
+        });
+        child.on("error", error => this.ready?.reject(error));
+        child.stdin.on("error", error => { if (!this.stopped)
+            this.ready?.reject(error); });
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", text => this.host.event("stderr", String(text)));
+        let buffer = "", dropping = false;
+        const decoder = new StringDecoder("utf8");
+        child.stdout.on("data", (chunk) => {
+            buffer += decoder.write(chunk);
+            while (buffer.includes("\n")) {
+                const end = buffer.indexOf("\n"), line = buffer.slice(0, end);
+                buffer = buffer.slice(end + 1);
+                if (dropping) {
+                    dropping = false;
+                    continue;
+                }
+                if (Buffer.byteLength(line) > 8 * 1024 * 1024)
+                    continue;
+                let packet;
+                try {
+                    packet = JSON.parse(line);
+                }
+                catch {
+                    continue;
+                }
+                // PI's RPC UI cannot stop this unattended session waiting for a dialog.
+                if (packet.type === "extension_ui_request" && ["select", "confirm", "input", "editor"].includes(packet.method))
+                    child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: packet.id, ...(packet.method === "confirm" ? { confirmed: false } : { cancelled: true }) }) + "\n");
+            }
+            // Full turn/message snapshots can be huge. The extension streams bounded
+            // deltas separately; discarding these frames must never kill a healthy PI run.
+            if (Buffer.byteLength(buffer) > 8 * 1024 * 1024) {
+                buffer = "";
+                dropping = true;
+            }
+        });
     }
     accept(socket) {
         if (this.stopped || this.sockets.size >= 8) {
@@ -124,14 +192,18 @@ export class ManagedTerminal {
                     socket.destroy();
                     return;
                 }
-                if (!packet.hasUI || packet.mode !== "tui") {
-                    this.ready?.reject(new Error("OMP did not start its normal interactive terminal UI."));
+                if (!packet.hasUI || packet.mode !== (this.settings.headless ? "rpc" : "tui")) {
+                    this.ready?.reject(new Error("The harness did not start in the requested terminal/background mode."));
                     socket.destroy();
                     return;
                 }
                 role = "plugin";
                 this.plugin = socket;
                 clearTimeout(timer);
+                if (typeof packet.instance === "string" && packet.instance !== this.pluginInstance) {
+                    this.pluginInstance = packet.instance;
+                    this.lastSequence = 0;
+                }
                 this.reconnectToken ??= randomBytes(32).toString("base64url");
                 this.sessionFile = packet.sessionFile;
                 this.host.state(packet.busy ? "busy" : "idle");
@@ -218,6 +290,17 @@ export class ManagedTerminal {
         this.ready?.reject(new Error("OMP terminal was stopped."));
         if (this.plugin && !this.plugin.destroyed)
             await this.request("shutdown", {}, SHUTDOWN_TIMEOUT_MS).catch(() => { });
+        if (this.headless && this.headless.exitCode === null && this.headless.signalCode === null) {
+            const child = this.headless;
+            const timer = setTimeout(() => terminateTree(child), SHUTDOWN_TIMEOUT_MS);
+            child.stdin?.end();
+            try {
+                await this.headlessExit;
+            }
+            finally {
+                clearTimeout(timer);
+            }
+        }
         if (!this.exited && this.owner) {
             await new Promise(resolve => {
                 let cap;

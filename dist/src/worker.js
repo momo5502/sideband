@@ -1,10 +1,10 @@
 import { STARTUP_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./timeouts.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { hostname, homedir, platform } from "node:os";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { AgentStore } from "./persistence.js";
+import { AgentStore, leaseIsLive, processStamp } from "./persistence.js";
 import { runUpdateCommand } from "./update-runtime.js";
 import { RoomClient } from "./room-client.js";
 import { launchSpec } from "./orchestration-protocol.js";
@@ -19,6 +19,7 @@ export class Worker {
     models;
     modelSupport = false;
     folderSupport = false;
+    piSupport = false;
     client;
     machine;
     root;
@@ -33,6 +34,11 @@ export class Worker {
     inventoryAgain = false;
     inventoryVersion = 0;
     savedActions = 0;
+    owner = randomUUID();
+    leaseTimer;
+    leaseTask;
+    startup;
+    probes = new AbortController();
     constructor(options) {
         this.options = options;
         this.root = resolve(options.root ?? join(stateDirectory, "workspaces"));
@@ -48,18 +54,20 @@ export class Worker {
         }
         this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
         this.client.onConnected(async () => {
-            let machine = this.machine;
             this.modelSupport = false;
             this.folderSupport = false;
+            this.piSupport = false;
+            let machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name !== "pi"), ...(this.machine.update ? { update: this.wireUpdate() } : {}) };
             try {
                 const response = await this.client.request("control.worker", { machine });
                 this.modelSupport = response.capabilities?.models === true;
                 this.folderSupport = response.capabilities?.folders === true;
+                this.piSupport = response.capabilities?.pi === true;
             }
             catch (original) {
                 let error = original;
                 if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
-                    machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name === "omp") };
+                    machine = { ...machine, harnesses: this.machine.harnesses.filter(name => name === "omp") };
                     try {
                         await this.client.request("control.worker", { machine });
                         options.onError?.(new Error("This server needs an update to launch Codex and Claude. Worker update metadata remains available."));
@@ -89,27 +97,61 @@ export class Worker {
             this.scheduleInventory(true);
             // Optional capabilities are never sent to an older server or awaited by registration.
             if (this.modelSupport)
-                for (const harness of this.machine.harnesses)
+                for (const harness of this.machine.harnesses.filter(name => name !== "pi"))
                     void this.refreshModels(harness).catch(() => { });
-            if (this.folderSupport)
-                void this.client.request("control.features", { folders: true }).catch(() => { });
+            if (this.folderSupport || this.piSupport)
+                void this.client.request("control.features", { ...(this.folderSupport ? { folders: true } : {}), ...(this.piSupport && this.machine.harnesses.includes("pi") ? { pi: true } : {}) }).then(async () => {
+                    if (this.piSupport && this.machine.update)
+                        await this.client.request("control.worker_update", { update: this.wireUpdate() });
+                    if (this.modelSupport && this.piSupport && this.machine.harnesses.includes("pi"))
+                        await this.refreshModels("pi");
+                }).catch(() => { });
         });
         this.client.onEvent((event, command) => { if (event === "control.command")
             void this.command(command); });
         options.updater?.onChange(() => {
             this.machine.update = options.updater.state;
             if (this.client.state === "on")
-                void this.client.request("control.worker_update", { update: this.machine.update }).catch(() => { });
+                void this.client.request("control.worker_update", { update: this.wireUpdate() }).catch(() => { });
         });
     }
-    executable(name) { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" }; }
+    wireUpdate() { return { ...this.machine.update, plugins: this.machine.update.plugins.filter(plugin => this.piSupport || plugin.harness !== "pi") }; }
+    executable(name) { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : name === "pi" ? process.env.PI_BINARY ?? "pi" : process.env.CLAUDE_BINARY ?? "claude" }; }
     async refreshModels(harness, fresh = false) {
         const catalog = !fresh && this.models.catalogs[harness] || await this.models.refresh(harness);
         if (!this.closing && this.modelSupport)
             await this.client.request("control.models", { harness, catalog });
     }
-    async start() {
+    start() {
+        this.startup ??= this.initialize();
+        return this.startup.catch(async (error) => { await this.close(); throw error; });
+    }
+    async initialize() {
         this.store = await AgentStore.open(this.root, this.options.profile);
+        if (this.closing)
+            return;
+        // Combined and standalone workers may reuse the same root for migration,
+        // but only one process can advertise its machine and recover its sessions.
+        const registry = this.store.registry, before = registry.get("meta", "worker-lease");
+        const live = await leaseIsLive(before), started = await processStamp(process.pid);
+        await registry.change(() => {
+            if (live || JSON.stringify(registry.get("meta", "worker-lease")) !== JSON.stringify(before))
+                throw new Error(`Another worker is already using ${this.root}. Stop it before using server --worker, or choose a different --worker-directory.`);
+            registry.put("meta", "worker-lease", { owner: this.owner, pid: process.pid, started: started ?? "", at: Date.now() });
+        });
+        if (this.closing)
+            return;
+        this.leaseTimer = setInterval(() => {
+            if (this.closing || this.leaseTask)
+                return;
+            this.leaseTask = registry.change(() => {
+                const lease = registry.get("meta", "worker-lease");
+                if (lease?.owner !== this.owner)
+                    throw new Error("This worker no longer owns its workspace root.");
+                registry.put("meta", "worker-lease", { ...lease, at: Date.now() });
+            }).catch(error => { this.options.onError?.(error); void this.close(); }).finally(() => { this.leaseTask = undefined; });
+        }, 10000);
+        this.leaseTimer.unref();
         this.machine.id = await this.store.registry.change(() => {
             const stored = this.store.registry.get("meta", "machine-id");
             if (stored)
@@ -117,10 +159,10 @@ export class Worker {
             this.store.registry.put("meta", "machine-id", this.machine.id);
             return this.machine.id;
         });
-        const detected = await Promise.all(["omp", "codex", "claude"].map(async (name) => {
-            const executable = this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : process.env.CLAUDE_BINARY ?? "claude" };
+        const detected = await Promise.all(["omp", "codex", "claude", "pi"].map(async (name) => {
+            const executable = this.executable(name);
             try {
-                await runUpdateCommand(executable.command, [...(executable.args ?? []), "--version"], { timeout: REQUEST_TIMEOUT_MS, killTree: false });
+                await runUpdateCommand(executable.command, [...(executable.args ?? []), "--version"], { timeout: REQUEST_TIMEOUT_MS, killTree: false, signal: this.probes.signal });
                 return name;
             }
             catch {
@@ -129,7 +171,11 @@ export class Worker {
         }));
         this.machine.harnesses = detected.filter(name => name !== undefined);
         this.machine.terminal = terminalLauncher()?.kind ?? "none";
+        if (this.closing)
+            return;
         await this.client.connect();
+        if (this.closing)
+            return;
         this.inventoryTimer = setInterval(() => { if (this.client.state === "on")
             this.scheduleInventory(); }, 10000);
         this.inventoryTimer.unref();
@@ -226,7 +272,7 @@ export class Worker {
             await this.store.desired(id, "running");
             try {
                 return await this.spawnRunner({ profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec, recover: true,
-                    omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" }, codex: this.options.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, claude: this.options.claude ?? { command: process.env.CLAUDE_BINARY ?? "claude" }, entry: this.options.entry });
+                    omp: this.executable("omp"), codex: this.executable("codex"), claude: this.executable("claude"), pi: this.executable("pi"), entry: this.options.entry });
             }
             catch (error) {
                 await this.store.desired(id, record.desired);
@@ -302,7 +348,7 @@ export class Worker {
             let launched = this.launches.get(id);
             if (!launched) {
                 const config = { profile: this.options.profile, id, machineId: this.machine.id, machineName: this.machine.name, root: this.root, spec,
-                    omp: this.options.omp ?? { command: process.env.OMP_BINARY ?? "omp" }, codex: this.options.codex ?? { command: process.env.CODEX_BIN ?? "codex" }, claude: this.options.claude ?? { command: process.env.CLAUDE_BINARY ?? "claude" }, entry: this.options.entry };
+                    omp: this.executable("omp"), codex: this.executable("codex"), claude: this.executable("claude"), pi: this.executable("pi"), entry: this.options.entry };
                 launched = this.spawnRunner(config);
                 this.launches.set(id, launched);
                 if (this.launches.size > 1000)
@@ -336,7 +382,28 @@ export class Worker {
         return { id: config.id };
     }
     /** Closing/updating a worker deliberately leaves its independently connected runners alive. */
-    async close() { this.closing = true; if (this.inventoryTimer)
-        clearInterval(this.inventoryTimer); this.options.updater?.close(); await Promise.all([this.client.close(), this.models.close()]); await this.inventory?.catch(() => { }); await Promise.allSettled([...this.recovering.values()]); await this.store?.close(); }
+    close() { return this.closed ??= this.shutdown(); }
+    closed;
+    async shutdown() {
+        this.closing = true;
+        this.probes.abort();
+        this.options.updater?.close();
+        const disconnected = this.client.close();
+        await this.startup?.catch(() => { });
+        if (this.inventoryTimer)
+            clearInterval(this.inventoryTimer);
+        if (this.leaseTimer)
+            clearInterval(this.leaseTimer);
+        await Promise.all([disconnected, this.models.close()]);
+        await this.inventory?.catch(() => { });
+        await Promise.allSettled([...this.recovering.values()]);
+        await this.leaseTask;
+        if (this.store) {
+            const registry = this.store.registry;
+            await registry.change(() => { if (registry.get("meta", "worker-lease")?.owner === this.owner)
+                registry.remove("meta", "worker-lease"); });
+            await this.store.close();
+        }
+    }
 }
 //# sourceMappingURL=worker.js.map
