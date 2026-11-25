@@ -137,16 +137,16 @@ export class Registry {
 export class LeaseLost extends Error {
     constructor() { super("Agent controller no longer owns its session."); }
 }
-export async function processStamp(pid) {
+export async function processStamp(pid, signal) {
     try {
         if (process.platform === "linux") {
-            const [source, boot] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8")]);
+            const [source, boot] = await Promise.all([readFile(`/proc/${pid}/stat`, { encoding: "utf8", signal }), readFile("/proc/sys/kernel/random/boot_id", { encoding: "utf8", signal })]);
             const fields = source.slice(source.lastIndexOf(")") + 2).split(" ");
             return fields[0] === "Z" ? "exited" : `${boot.trim()}:${fields[19]}`;
         }
         const command = process.platform === "win32" ? "powershell.exe" : "ps";
         const args = process.platform === "win32" ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`] : ["-p", String(pid), "-o", "lstart="];
-        return await new Promise((resolve, reject) => execFile(command, args, { windowsHide: true, timeout: REQUEST_TIMEOUT_MS, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
+        return await new Promise((resolve, reject) => execFile(command, args, { windowsHide: true, timeout: REQUEST_TIMEOUT_MS, signal, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
     }
     catch {
         return undefined;

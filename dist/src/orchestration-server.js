@@ -1,10 +1,11 @@
 import { CONTROL_TIMEOUT_MS } from "./timeouts.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { WebSocket } from "ws";
 import { fields, text, RoomError } from "./room-protocol.js";
 import { launchSpec, modelCatalog } from "./orchestration-protocol.js";
 import { parseBuild, parseUpdate } from "./update-types.js";
 import { UpdateFleet } from "./update-fleet.js";
+import { discoveredSession } from "./plugin-presence.js";
 const uuid = (value) => { const id = text(value, "ID", 64); if (!/^[a-f0-9-]{36}$/.test(id))
     throw new Error("Invalid ID."); return id; };
 /** Authenticated control plane. Room messages never pass through this broker. */
@@ -20,6 +21,8 @@ export class OrchestrationServer {
     forgotten = new Set();
     archived = new Set();
     resuming = new Set();
+    discovered = new Map();
+    discoveryTimer;
     legacyRemoval = new WeakSet();
     async stopLegacyRunner(peer) {
         try {
@@ -45,6 +48,13 @@ export class OrchestrationServer {
     constructor(send, updater, store) {
         this.send = send;
         this.store = store;
+        this.discoveryTimer = setInterval(() => { let changed = false; for (const [id, value] of this.discovered)
+            if (Date.now() - value.at > 120000) {
+                this.discovered.delete(id);
+                changed = true;
+            } if (changed)
+            this.changed(); }, 15000);
+        this.discoveryTimer.unref();
         for (const [id, machine] of store?.all("machine") ?? [])
             this.machines.set(id, { ...machine, online: false });
         for (const [id, agent] of store?.all("agent") ?? [])
@@ -162,7 +172,26 @@ export class OrchestrationServer {
                     this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
             }
             this.changed();
-            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true } } : {}) };
+            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true, discovery: true } } : {}) };
+        }
+        if (method === "control.discovered") {
+            const peer = this.peers.get(socket);
+            if (browser || peer?.kind !== "worker")
+                throw new Error("Only a registered worker can report discovered sessions.");
+            const args = fields(params, ["sessions"]);
+            if (!Array.isArray(args.sessions) || args.sessions.length > 128)
+                throw new Error("Invalid discovered-session list.");
+            const machine = this.machines.get(peer.id);
+            const agents = args.sessions.map(input => {
+                const session = discoveredSession(input), digest = createHash("sha256").update(`external\0${session.key}`).digest("hex").slice(0, 32);
+                return { id: `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`, name: session.name, harness: session.harness,
+                    machineId: peer.id, machineName: machine.name, state: "running", online: true, createdAt: session.createdAt, room: "", canResume: false, external: { pid: session.pid, ...(session.workspace ? { workspace: session.workspace } : {}) } };
+            });
+            const previous = this.discovered.get(peer.id);
+            this.discovered.set(peer.id, { at: Date.now(), agents });
+            if (JSON.stringify(previous?.agents) !== JSON.stringify(agents))
+                this.changed();
+            return {};
         }
         if (method === "control.features") {
             const peer = this.peers.get(socket);
@@ -317,7 +346,12 @@ export class OrchestrationServer {
                 this.browsers.set(socket, undefined);
             // Catalogs can contain hundreds of models. Fetch the selected catalog separately.
             const machines = [...this.machines.values()].map(machine => ({ ...machine, ...(machine.models ? { models: Object.fromEntries(Object.entries(machine.models).map(([harness, catalog]) => [harness, { ...catalog, models: [] }])) } : {}) }));
-            return { machines, agents: [...this.agents.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+            const external = new Map();
+            for (const value of this.discovered.values())
+                for (const agent of value.agents)
+                    if (!this.agents.has(agent.id) && !external.has(agent.id))
+                        external.set(agent.id, agent);
+            return { machines, agents: [...this.agents.values(), ...external.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
         }
         if (method === "control.models.list") {
             const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
@@ -365,6 +399,10 @@ export class OrchestrationServer {
                 return { events: [], first: 1, next: 1 };
             }
             const id = uuid(args.agentId);
+            if ([...this.discovered.values()].some(value => value.agents.some(agent => agent.id === id)) && !this.agents.has(id)) {
+                this.browsers.set(socket, undefined);
+                return { events: [], first: 1, next: 1 };
+            }
             if (!this.agents.has(id))
                 throw new Error("Unknown agent.");
             this.browsers.set(socket, id);
@@ -382,6 +420,8 @@ export class OrchestrationServer {
             if (action === "room" && (typeof args.room !== "string" || args.room.length > 100))
                 throw new Error("Invalid room name.");
             const agent = this.agents.get(id);
+            if (!agent && [...this.discovered.values()].some(value => value.agents.some(agent => agent.id === id)))
+                throw new Error("This externally started session is view-only. Use its harness terminal for control.");
             if (action === "dispose" && agent?.persistent)
                 action = "archive";
             if (action === "archive") {
@@ -453,6 +493,7 @@ export class OrchestrationServer {
         if (!peer)
             return;
         if (peer.kind === "worker" && this.workers.get(peer.id) === peer) {
+            this.discovered.delete(peer.id);
             this.workers.delete(peer.id);
             const machine = this.machines.get(peer.id);
             if (machine)
@@ -466,7 +507,7 @@ export class OrchestrationServer {
         }
         this.changed();
     }
-    async close() { this.updates?.close(); for (const socket of [...this.peers.keys(), ...this.browsers.keys()])
+    async close() { clearInterval(this.discoveryTimer); this.discovered.clear(); this.updates?.close(); for (const socket of [...this.peers.keys(), ...this.browsers.keys()])
         this.disconnect(socket); await this.store?.close(); this.machines.clear(); this.agents.clear(); this.runnerOwners.clear(); this.forgotten.clear(); }
 }
 //# sourceMappingURL=orchestration-server.js.map

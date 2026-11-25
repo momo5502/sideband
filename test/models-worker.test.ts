@@ -30,7 +30,7 @@ let done=false;setInterval(()=>{if(!existsSync(gate))return;
     if (supported) {
       await writeFile(gate, "open"); const end = Date.now() + testTimeout(10000); while (published.length < 4) { if (Date.now() > end) throw new Error("Models were not published"); await new Promise(r => setTimeout(r, 10)); }
       assert.deepEqual(published.map(p => p.harness).sort(), ["claude", "codex", "omp", "pi"]); assert.ok(published.every(p => p.catalog.models.length === 1));
-    } else { assert.equal(await readFile(queries, "utf8").catch(() => ""), "", "old server receives neither probes nor new requests"); assert.ok(!methods.includes("control.features")); }
+    } else { assert.equal(await readFile(queries, "utf8").catch(() => ""), "", "old server receives neither probes nor new requests"); assert.ok(!methods.includes("control.features")); assert.ok(!methods.includes("control.discovered")); }
     assert.equal(worker.client.state, "on");
   } finally { await worker.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-models-"))); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
 });

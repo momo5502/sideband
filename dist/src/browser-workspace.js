@@ -509,7 +509,7 @@ export class BrowserWorkspace {
     }
     async selectAgent(id) {
         ++this.joinGeneration;
-        const offline = this.state.control.agents.find(agent => agent.id === id)?.online === false;
+        const agent = this.state.control.agents.find(agent => agent.id === id), offline = agent?.online === false || !!agent?.external;
         this.update({ view: { kind: "agent", id }, error: "", ...(offline ? { output: [], outputAgent: id, loading: false } : {}) });
         if (offline || this.state.connection !== "on") {
             this.watched = "";
@@ -521,6 +521,8 @@ export class BrowserWorkspace {
         await this.watchAgent(id);
     }
     async watchAgent(id) {
+        if (this.state.control.agents.find(agent => agent.id === id)?.external)
+            return;
         if (this.watched === id)
             return;
         const client = this.requireClient(), generation = ++this.watchGeneration;

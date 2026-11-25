@@ -4,6 +4,7 @@ import { join } from "node:path";
 // Never let test workers write SQLite metadata into the developer's real profile.
 const testState = mkdtempSync(join(tmpdir(), "sideband-test-state-"));
 process.env.SIDEBAND_STATE_DIR = testState;
+process.env.SIDEBAND_PRESENCE_DIR = join(testState, "presence");
 process.env.PI_CODING_AGENT_DIR = join(testState, "pi");
 // Worker discovery must not launch a developer's authenticated harnesses.
 for (const name of ["OMP_BINARY", "CODEX_BIN", "CLAUDE_BINARY", "PI_BINARY"]) process.env[name] = "sideband-test-missing-harness";

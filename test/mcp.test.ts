@@ -168,7 +168,9 @@ for (const harness of ["codex", "claude"]) {
       assert.equal(anonymousBrowse.isError, true); assert.match(JSON.stringify(anonymousBrowse.content), /Ask the user to choose one/);
       assert.deepEqual((await call("sideband_status")).content, [{ type: "text", text: '{"state":"off"}' }]);
       if (harness === "codex") assert.equal((await client.callTool({ name: "sideband_status", arguments: {} })).isError, true);
-      assert.equal(stderr, "", "off-state must not spawn the invalid Codex helper");
+      // Discovery inspects the local Codex daemon even before a room join. A
+      // missing daemon must leave room tools off and expose no raw helper output.
+      assert.equal(stderr.replace("Sideband session discovery: Could not inspect loaded Codex sessions.\n", ""), "");
     } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }
   });
 }

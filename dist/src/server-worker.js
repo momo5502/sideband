@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { SHUTDOWN_TIMEOUT_MS, STARTUP_TIMEOUT_MS } from "./timeouts.js";
 import { parsePassword, serverUrl } from "./room-protocol.js";
+import { presenceDirectory } from "./plugin-presence.js";
 /** Internal bootstrap is requested over IPC; never put the server password in argv or a profile file. */
 export function requestWorkerBootstrap() {
     if (!process.send)
@@ -58,7 +59,7 @@ export class ServerWorker {
         const endpoint = new URL(serverUrl(this.bootstrap.profile.server));
         const noProxy = [process.env.no_proxy ?? process.env.NO_PROXY ?? "", endpoint.hostname, "127.0.0.1", "localhost", "::1"].filter(Boolean).join(",");
         const child = this.child = spawn(process.execPath, [resolve(this.entry), "worker", "--embedded"], { windowsHide: true, stdio: ["ignore", "inherit", "inherit", "ipc"],
-            env: { ...process.env, SIDEBAND_STATE_DIR: resolve(this.state), NO_PROXY: noProxy, no_proxy: noProxy } });
+            env: { ...process.env, SIDEBAND_STATE_DIR: resolve(this.state), SIDEBAND_PRESENCE_DIR: resolve(presenceDirectory), NO_PROXY: noProxy, no_proxy: noProxy } });
         let finished = false;
         this.exited = new Promise(resolvePromise => {
             const finish = () => { if (finished)

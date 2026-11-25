@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ManagedTerminal } from "../dist/src/managed-terminal.js";
 import { ModelDiscovery } from "../dist/src/model-discovery.js";
+import { readPluginPresence } from "../dist/src/plugin-presence.js";
+import spawn from "cross-spawn";
+import { terminateTree } from "../dist/src/process-tree.js";
 const directory = await mkdtemp(join(tmpdir(), "sideband-real-pi-"));
 let calls = 0, holds = 0, cancellations = 0;
 const server = createServer(async (req, res) => {
@@ -41,6 +44,22 @@ const make = () => new ManagedTerminal(executable, directory, join(directory, "s
 const discovery = new ModelDiscovery(() => executable, directory, entry); let driver = make();
 async function until(check) { const end = Date.now() + 120000; while (!check()) { if (failure) throw failure; if (Date.now() > end) throw new Error("PI smoke timed out"); await new Promise(r => setTimeout(r, 30)); } }
 try {
+  // A manually started, plugin-loaded session must appear before any room or model call.
+  const registry = join(directory, "presence");
+  const manual = spawn(executable.command, ["--mode", "rpc", "--no-extensions", "--no-session", "--no-approve", "--model", "sideband_fixture/fixture", "-e", resolve("dist/sideband-pi.cjs")], {
+    cwd: directory, env: { ...process.env, SIDEBAND_STATE_DIR: join(directory, "sideband"), SIDEBAND_PRESENCE_DIR: registry }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+  });
+  manual.stdout.resume(); manual.stderr.resume();
+  const exited = new Promise(resolve => manual.once("exit", resolve));
+  try {
+    const end = Date.now() + 120000;
+    while (!(await readPluginPresence(registry)).some(row => row.harness === "pi")) {
+      if (manual.exitCode !== null || Date.now() > end) throw new Error("Manual PI plugin did not publish presence.");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(calls, 0, "passive discovery never sends a model prompt");
+  } finally { terminateTree(manual, false); await exited; }
+  assert.deepEqual(await readPluginPresence(registry), [], "a dead plugin is never listed as running");
   const catalog = await discovery.refresh("pi"); assert.ok(catalog.models.some(m => m.id === "sideband_fixture/fixture"), catalog.error);
   await driver.start({ model: "sideband_fixture/fixture" });
   await driver.prompt("Reply and send a room message"); await until(() => state === "idle" && events.some(e => e.text.includes("PI_DONE")));

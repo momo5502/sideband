@@ -14,12 +14,15 @@ import { terminalLauncher } from "./terminal-launch.js";
 import { trustClaudeWorkspaces } from "./claude-trust.js";
 import { ModelDiscovery } from "./model-discovery.js";
 import { browseFolders, existingFolder } from "./worker-folders.js";
+import { presenceKey, readPluginPresence } from "./plugin-presence.js";
 export class Worker {
     options;
     models;
     modelSupport = false;
     folderSupport = false;
     piSupport = false;
+    discoverySupport = false;
+    discovering;
     client;
     machine;
     root;
@@ -57,12 +60,14 @@ export class Worker {
             this.modelSupport = false;
             this.folderSupport = false;
             this.piSupport = false;
+            this.discoverySupport = false;
             let machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name !== "pi"), ...(this.machine.update ? { update: this.wireUpdate() } : {}) };
             try {
                 const response = await this.client.request("control.worker", { machine });
                 this.modelSupport = response.capabilities?.models === true;
                 this.folderSupport = response.capabilities?.folders === true;
                 this.piSupport = response.capabilities?.pi === true;
+                this.discoverySupport = response.capabilities?.discovery === true;
             }
             catch (original) {
                 let error = original;
@@ -95,6 +100,7 @@ export class Worker {
             }
             // Inventory is optional recovery metadata, never part of transport readiness.
             this.scheduleInventory(true);
+            this.discover();
             // Optional capabilities are never sent to an older server or awaited by registration.
             if (this.modelSupport)
                 for (const harness of this.machine.harnesses.filter(name => name !== "pi"))
@@ -116,6 +122,24 @@ export class Worker {
         });
     }
     wireUpdate() { return { ...this.machine.update, plugins: this.machine.update.plugins.filter(plugin => this.piSupport || plugin.harness !== "pi") }; }
+    discover() {
+        if (!this.discoverySupport || this.discovering || this.closing || !this.store)
+            return;
+        this.discovering = (async () => {
+            const sessions = await readPluginPresence(undefined, undefined, this.probes.signal);
+            const reported = new Set(sessions.map(session => session.key)), managed = new Set();
+            for (const record of this.store.all())
+                if (record.session) {
+                    const key = presenceKey(record.agent.harness, record.session);
+                    // A saved/archived record is not a running controller. A user may have
+                    // reopened that harness session by hand after stopping it in Sideband.
+                    if (reported.has(key) && await this.store.live(record.agent.id))
+                        managed.add(key);
+                }
+            if (!this.closing && this.discoverySupport && this.client.state === "on")
+                await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)) });
+        })().catch(() => { }).finally(() => { this.discovering = undefined; });
+    }
     executable(name) { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : name === "pi" ? process.env.PI_BINARY ?? "pi" : process.env.CLAUDE_BINARY ?? "claude" }; }
     async refreshModels(harness, fresh = false) {
         const catalog = !fresh && this.models.catalogs[harness] || await this.models.refresh(harness);
@@ -176,8 +200,10 @@ export class Worker {
         await this.client.connect();
         if (this.closing)
             return;
-        this.inventoryTimer = setInterval(() => { if (this.client.state === "on")
-            this.scheduleInventory(); }, 10000);
+        this.inventoryTimer = setInterval(() => { if (this.client.state === "on") {
+            this.scheduleInventory();
+            this.discover();
+        } }, 10000);
         this.inventoryTimer.unref();
     }
     async savedAgent(record) {
@@ -396,6 +422,7 @@ export class Worker {
             clearInterval(this.leaseTimer);
         await Promise.all([disconnected, this.models.close()]);
         await this.inventory?.catch(() => { });
+        await this.discovering;
         await Promise.allSettled([...this.recovering.values()]);
         await this.leaseTask;
         if (this.store) {

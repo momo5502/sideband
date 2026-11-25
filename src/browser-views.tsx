@@ -20,7 +20,7 @@ const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digi
 export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { store: BrowserWorkspace; state: WorkspaceState; close(): void; onNew(): void; onJoin(): void; onSettings(): void }) {
   const [search, setSearch] = useState("");
   const build = state.control.updates?.current;
-  const query = search.trim().toLowerCase(), matching = state.control.agents.filter(agent => `${agent.name} ${agent.machineName}`.toLowerCase().includes(query)), agents = matching.filter(agent => !agent.archived), archived = matching.filter(agent => agent.archived);
+  const query = search.trim().toLowerCase(), matching = state.control.agents.filter(agent => `${agent.name} ${agent.machineName} ${agent.harness} ${agent.external?.workspace ?? ""}`.toLowerCase().includes(query)), agents = matching.filter(agent => !agent.archived), archived = matching.filter(agent => agent.archived);
   const rooms = allRooms(state).filter(room => room.name.toLowerCase().includes(query)).sort((a, b) => Number(state.joined.some(room => room.id === b.id)) - Number(state.joined.some(room => room.id === a.id)) || a.name.localeCompare(b.name));
   return <aside id="room-menu" className="sidebar" aria-label="Workspace navigation">
     <div className="sidebar-brand"><button className="flex items-center gap-2.5" aria-label="Sideband home" onClick={() => { store.home(); close(); }}><Brand /></button><Button id="menu-close" className="mobile-only ml-auto" variant="ghost" icon aria-label="Close navigation" onClick={close}><X size={18} /></Button></div>
@@ -29,12 +29,12 @@ export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { st
       <section className="nav-section" aria-label="Agents"><div className="nav-heading"><span>Agents <span className="ml-1 text-zinc-600">{state.control.agents.filter(agent => !agent.archived).length || ""}</span></span><Button id="new-agent" variant="ghost" icon aria-label="New agent" title="New agent" onClick={onNew}><Plus size={15} /></Button></div>
         <div id="agent-list" className="nav-list">{agents.map(agent => <button key={agent.id} type="button" data-agent-id={agent.id} className="nav-row" aria-current={state.view.kind === "agent" && state.view.id === agent.id ? "true" : undefined}
           aria-label={`${agent.name}, ${agentStatus(agent)}, ${agent.machineName}`} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}>
-          <span className="nav-icon"><Bot size={18} /><Status state={agentStatus(agent)} /></span><span className="row-copy"><span className="row-name">{agent.name}</span><span className="row-description">{agent.machineName}</span></span>
+          <span className="nav-icon"><Bot size={18} /><Status state={agentStatus(agent)} /></span><span className="row-copy"><span className="row-name">{agent.name}{agent.external && <small className="ml-2 text-zinc-500">External</small>}</span><span className="row-description">{agent.machineName}{agent.external?.workspace ? ` / ${agent.external.workspace}` : ""}</span></span>
           {agent.state === "failed" && <span className="badge text-danger">!</span>}</button>)}</div>
         {!agents.length && <p className="nav-empty">{query ? "No matching agents." : "No agents yet."}</p>}
         <Button variant="ghost" className="nav-add" onClick={onNew}><Plus size={13} />New agent</Button>
       </section>
-      {archived.length > 0 && <details className="nav-section" id="archived-agents"><summary className="nav-heading">Archived ({archived.length})</summary><div className="nav-list">{archived.map(agent => <button key={agent.id} type="button" className="nav-row" data-agent-id={agent.id} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}><Bot size={17} /><span className="row-copy"><span className="row-name">{agent.name}</span><span className="row-description">{agent.machineName}</span></span></button>)}</div></details>}
+      {archived.length > 0 && <details className="nav-section" id="archived-agents"><summary className="nav-heading">Archived ({archived.length})</summary><div className="nav-list">{archived.map(agent => <button key={agent.id} type="button" className="nav-row" data-agent-id={agent.id} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}><Bot size={17} /><span className="row-copy"><span className="row-name">{agent.name}{agent.external && <small className="ml-2 text-zinc-500">External</small>}</span><span className="row-description">{agent.machineName}{agent.external?.workspace ? ` / ${agent.external.workspace}` : ""}</span></span></button>)}</div></details>}
       <section className="nav-section" aria-label="Rooms"><div className="nav-heading"><span>Rooms</span><Button variant="ghost" icon aria-label="Join or create a room" title="Join or create a room" onClick={onJoin}><Plus size={15} /></Button></div>
         <div id="room-list" className="nav-list">{rooms.map(room => {
           const joined = state.joined.some(candidate => candidate.id === room.id), mentions = state.mentions[room.id] ?? 0, unread = state.unread[room.id] ?? 0;
@@ -112,7 +112,11 @@ export function AgentOutput({ state, agent }: { state: WorkspaceState; agent: Ma
       })}
     </div>{scroll.jump}</div></>;
 }
+export function DiscoveredAgentView({ agent }: { agent: ManagedAgent }) {
+  return <div className="empty-view h-full" id="external-agent"><div className="empty-icon"><Bot size={26} /></div><h2>Started in your harness</h2><p>Sideband found this running session through its installed plugin. Use its terminal to interact with it.</p><span className="workspace-summary">{agent.machineName}{agent.external?.workspace ? ` / ${agent.external.workspace}` : ""}</span></div>;
+}
 export function AgentDetails({ agent }: { agent: ManagedAgent }) {
+  if (agent.external) return <><h2>Agent details</h2><dl className="detail-grid"><div><dt>Machine</dt><dd>{agent.machineName}</dd></div><div><dt>Harness</dt><dd>{agent.harness}</dd></div><div><dt>Session</dt><dd>Started outside Sideband</dd></div>{agent.external.workspace && <div><dt>Workspace</dt><dd>{agent.external.workspace}</dd></div>}<div><dt>Plugin process</dt><dd>{agent.external.pid}</dd></div></dl></>;
   return <><h2>Agent details</h2><dl className="detail-grid"><div><dt>Machine</dt><dd>{agent.machineName}</dd></div><div><dt>Repository</dt><dd>{agent.repository ?? (agent.folder ? "None (existing folder)" : "None (empty workspace)")}</dd></div>{agent.ref && <div><dt>Branch or ref</dt><dd>{agent.ref}</dd></div>}<div><dt>Harness</dt><dd>{({ omp: "oh-my-pi", codex: "Codex", claude: "Claude", pi: "PI" })[agent.harness]}</dd></div><div><dt>Model</dt><dd>{agent.model ?? "Harness default"}</dd></div><div><dt>Reasoning</dt><dd>{agent.effort ?? "Harness default"}</dd></div><div><dt>Workspace</dt><dd>{agent.folder ? `${agent.folder} (used in place; files are retained)` : "Isolated workspace. Stop and resume retain its files and history."}</dd></div></dl></>;
 }
 export function MemberList({ state, openAgent }: { state: WorkspaceState; openAgent(id: string): void }) {

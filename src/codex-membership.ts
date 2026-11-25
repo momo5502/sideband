@@ -10,7 +10,7 @@ import { CodexRpc } from "./rpc.js";
 import type { RpcConnection } from "./rpc.js";
 
 type Membership = { name: string; profile: string; server: string; fingerprint: string; privateKey: string; room?: string };
-type Options = { loaded?(): Promise<string[]>; adapter?(thread: string): Promise<DeliveryAdapter>; report?(message: string): void };
+type Options = { loaded?(): Promise<string[]>; adapter?(thread: string): Promise<DeliveryAdapter>; report?(message: string): void; presence?(threads: { id: string; cwd?: string; name?: string }[]): void };
 
 /** Durable opt-in per exact host-provided thread ID. No workspace fallback or thread/resume. */
 export class CodexMembership {
@@ -26,6 +26,9 @@ export class CodexMembership {
   private errors = new Map<string, string>();
   private monitorError = "";
   private beating?: Promise<void>;
+  private metadata?: Promise<void>;
+  private loaded = new Set<string>();
+  private workspaces = new Map<string, string>();
   private constructor(private readonly db: Registry, private readonly profiles: RoomProfiles, private readonly options: Options) {
     this.tools = new RoomTools(async (key, profile, name) => {
       await this.claim(key);
@@ -108,14 +111,23 @@ export class CodexMembership {
   reconcile(): Promise<void> {
     if (this.closing) return Promise.resolve(); if (this.sweep) return this.sweep;
     this.sweep = (async () => {
-      if (!this.db.all<Membership>("membership").some(([, row]) => row.room) && !this.owned.size) return;
+      const recovering = this.db.all<Membership>("membership").some(([, row]) => row.room) || this.owned.size > 0;
+      if (!this.options.presence && !recovering) return;
       let loaded: Set<string>;
       try { loaded = new Set(await this.loadedThreads()); this.monitorError = ""; }
       catch (error) {
+        this.loaded.clear();
+        this.options.presence?.([]);
         const message = error instanceof Error ? error.message : "Cannot inspect loaded Codex threads.";
-        if (!this.closing && message !== this.monitorError) { this.monitorError = message; this.options.report?.(`Sideband room recovery: ${message}`); }
+        if (!this.closing && message !== this.monitorError) { this.monitorError = message; this.options.report?.(recovering ? `Sideband room recovery: ${message}` : "Sideband session discovery: Could not inspect loaded Codex sessions."); }
         await this.heartbeatOwned().catch(() => {});
         return;
+      }
+      if (this.options.presence) {
+        this.loaded = new Set([...loaded].slice(0, 128));
+        for (const id of this.workspaces.keys()) if (!this.loaded.has(id)) this.workspaces.delete(id);
+        this.reportPresence();
+        this.refreshMetadata();
       }
       const keys = new Set([...this.owned, ...this.db.all<Membership>("membership").filter(([, row]) => row.room).map(([id]) => id)]);
       await Promise.allSettled([...keys].map(key => this.serial(key, async () => {
@@ -136,6 +148,24 @@ export class CodexMembership {
       })));
     })().finally(() => { this.sweep = undefined; }); return this.sweep;
   }
+  private reportPresence(): void {
+    if (!this.closing) this.options.presence?.([...this.loaded].map(id => ({ id, cwd: this.workspaces.get(id), name: this.tools.connection(id)?.session.client.identity.name })));
+  }
+  private refreshMetadata(): void {
+    const monitor = this.monitor;
+    if (!monitor || this.metadata || this.closing) return;
+    this.metadata = (async () => {
+      const ids = [...this.loaded].filter(id => !this.workspaces.has(id));
+      // Optional metadata cannot hold up room recovery or lease renewal.
+      for (let offset = 0; offset < ids.length && !this.closing; offset += 4) await Promise.all(ids.slice(offset, offset + 4).map(async id => {
+        try {
+          const value = await monitor.request<{ thread: { cwd?: string } }>("thread/read", { threadId: id, includeTurns: false });
+          if (this.loaded.has(id) && typeof value.thread?.cwd === "string") this.workspaces.set(id, value.thread.cwd);
+        } catch { /* It may have unloaded. Only the latest loaded list is authoritative. */ }
+      }));
+      this.reportPresence();
+    })().catch(() => {}).finally(() => { this.metadata = undefined; });
+  }
   private async loadedThreads(): Promise<string[]> {
     if (this.options.loaded) return this.options.loaded();
     try { this.monitor ??= await CodexRpc.connect(); return (await this.monitor.request<{ data: string[] }>("thread/loaded/list")).data; }
@@ -145,7 +175,7 @@ export class CodexMembership {
   async close(): Promise<void> {
     this.closing = true; if (this.timer) clearInterval(this.timer);
     await this.closeMonitor();
-    await this.sweep?.catch(() => {}); await this.beating?.catch(() => {}); await Promise.allSettled(this.queues.values()); await this.tools.close();
+    await this.sweep?.catch(() => {}); await this.metadata; await this.beating?.catch(() => {}); await Promise.allSettled(this.queues.values()); await this.tools.close();
     for (const key of [...this.owned]) await this.release(key);
     await this.closeMonitor(); await this.db.close();
   }

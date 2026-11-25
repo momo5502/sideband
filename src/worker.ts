@@ -18,6 +18,7 @@ import { trustClaudeWorkspaces } from "./claude-trust.js";
 import { ModelDiscovery } from "./model-discovery.js";
 import type { HarnessName } from "./orchestration-protocol.js";
 import { browseFolders, existingFolder } from "./worker-folders.js";
+import { presenceKey, readPluginPresence } from "./plugin-presence.js";
 
 export type WorkerOptions = { profile: ConnectionProfile; entry: string; name?: string; root?: string; omp?: Executable; codex?: Executable; claude?: Executable; pi?: Executable;
   onConnection?: (change: ConnectionChange) => void; onError?: (error: Error) => void; updater?: RuntimeUpdater };
@@ -26,6 +27,8 @@ export class Worker {
   private modelSupport = false;
   private folderSupport = false;
   private piSupport = false;
+  private discoverySupport = false;
+  private discovering?: Promise<void>;
   readonly client: RoomClient;
   readonly machine: Machine;
   private readonly root: string;
@@ -58,8 +61,9 @@ export class Worker {
       this.modelSupport = false;
       this.folderSupport = false;
       this.piSupport = false;
+      this.discoverySupport = false;
       let machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name !== "pi"), ...(this.machine.update ? { update: this.wireUpdate() } : {}) };
-      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean; pi?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; this.piSupport = response.capabilities?.pi === true; }
+      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean; pi?: boolean; discovery?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; this.piSupport = response.capabilities?.pi === true; this.discoverySupport = response.capabilities?.discovery === true; }
       catch (original) {
         let error = original;
         if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
@@ -78,6 +82,7 @@ export class Worker {
       }
       // Inventory is optional recovery metadata, never part of transport readiness.
       this.scheduleInventory(true);
+      this.discover();
       // Optional capabilities are never sent to an older server or awaited by registration.
       if (this.modelSupport) for (const harness of this.machine.harnesses.filter(name => name !== "pi") as HarnessName[]) void this.refreshModels(harness).catch(() => {});
       if (this.folderSupport || this.piSupport) void this.client.request("control.features", { ...(this.folderSupport ? { folders: true } : {}), ...(this.piSupport && this.machine.harnesses.includes("pi") ? { pi: true } : {}) }).then(async () => {
@@ -92,6 +97,20 @@ export class Worker {
     });
   }
   private wireUpdate() { return { ...this.machine.update!, plugins: this.machine.update!.plugins.filter(plugin => this.piSupport || plugin.harness !== "pi") }; }
+  private discover(): void {
+    if (!this.discoverySupport || this.discovering || this.closing || !this.store) return;
+    this.discovering = (async () => {
+      const sessions = await readPluginPresence(undefined, undefined, this.probes.signal);
+      const reported = new Set(sessions.map(session => session.key)), managed = new Set<string>();
+      for (const record of this.store!.all()) if (record.session) {
+        const key = presenceKey(record.agent.harness, record.session);
+        // A saved/archived record is not a running controller. A user may have
+        // reopened that harness session by hand after stopping it in Sideband.
+        if (reported.has(key) && await this.store!.live(record.agent.id)) managed.add(key);
+      }
+      if (!this.closing && this.discoverySupport && this.client.state === "on") await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)) });
+    })().catch(() => { /* Discovery is optional and cannot break registration or recovery. */ }).finally(() => { this.discovering = undefined; });
+  }
   private executable(name: HarnessName): Executable { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : name === "pi" ? process.env.PI_BINARY ?? "pi" : process.env.CLAUDE_BINARY ?? "claude" }; }
   private async refreshModels(harness: HarnessName, fresh = false): Promise<void> {
     const catalog = !fresh && this.models.catalogs[harness] || await this.models.refresh(harness);
@@ -136,7 +155,7 @@ export class Worker {
     if (this.closing) return;
     await this.client.connect();
     if (this.closing) return;
-    this.inventoryTimer = setInterval(() => { if (this.client.state === "on") this.scheduleInventory(); }, 10000); this.inventoryTimer.unref();
+    this.inventoryTimer = setInterval(() => { if (this.client.state === "on") { this.scheduleInventory(); this.discover(); } }, 10000); this.inventoryTimer.unref();
   }
   private async savedAgent(record: SavedAgent): Promise<ManagedAgent> {
     if (!/^[a-f0-9-]{36}$/.test(record.agent.id)) throw new Error("Invalid saved agent ID.");
@@ -280,7 +299,7 @@ export class Worker {
     this.closing = true; this.probes.abort(); this.options.updater?.close();
     const disconnected = this.client.close(); await this.startup?.catch(() => {});
     if (this.inventoryTimer) clearInterval(this.inventoryTimer); if (this.leaseTimer) clearInterval(this.leaseTimer);
-    await Promise.all([disconnected, this.models.close()]); await this.inventory?.catch(() => {});
+    await Promise.all([disconnected, this.models.close()]); await this.inventory?.catch(() => {}); await this.discovering;
     await Promise.allSettled([...this.recovering.values()]); await this.leaseTask;
     if (this.store) { const registry = this.store.registry; await registry.change(() => { if (registry.get<Lease>("meta", "worker-lease")?.owner === this.owner) registry.remove("meta", "worker-lease"); }); await this.store.close(); }
   }

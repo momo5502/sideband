@@ -7,11 +7,14 @@ import { formatDelivery, type Delivery } from "./protocol.js";
 import type { DeliveryAdapter } from "./adapters/codex.js";
 import { loginAndSave } from "./terminal-login.js";
 import { managedOmp, type ManagedExtensionOptions } from "./omp-managed.js";
+import { PluginPresence } from "./plugin-presence.js";
+import { isMainThread } from "node:worker_threads";
 
 /** The host API subset used here. Schema builders come from OMP, with no runtime host imports. */
 export interface OmpContext {
   mode: string;
   hasUI: boolean;
+  cwd?: string;
   isIdle?(): boolean;
   abort?(): void;
   shutdown?(): void;
@@ -81,6 +84,10 @@ function unwrap(result: ToolResult): any {
 /** Each factory binding owns its own client. Subagents never inherit a connection. */
 export default function sideband(api: OmpApi, profiles = new RoomProfiles(), managed?: ManagedExtensionOptions): void {
   if (managedOmp(api, managed)) return;
+  const presenceOwner = Symbol.for("sideband.plugin.presence.owner"), owners = globalThis as typeof globalThis & { [presenceOwner]?: object }, claim = {};
+  const presence = isMainThread && !owners[presenceOwner] ? new PluginPresence(managed?.pi ? "pi" : "omp") : undefined;
+  if (presence) owners[presenceOwner] = claim;
+  const report = (ctx: OmpContext, name?: string) => presence?.replace([{ session: ctx.sessionManager.getSessionFile?.() ?? ctx.sessionManager.getSessionId(), workspace: ctx.cwd, name }]);
   type Binding = { id: string; context: OmpContext; tools: RoomTools };
   let active: Binding | undefined;
   let epoch = 0;
@@ -121,9 +128,12 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
     transition = ready.then(() => {}, () => {});
     return ready;
   };
-  for (const event of ["session_switch", "session_branch", "session_tree"]) api.on(event, () => retire());
-  api.on("session_start", async (_event, ctx) => { await retire(); await binding(ctx); });
-  api.on("session_shutdown", async () => { stopped = true; await retire(); });
+  for (const event of ["session_switch", "session_branch", "session_tree"]) api.on(event, async (_event, ctx) => { await retire(); report(ctx); });
+  api.on("session_start", async (_event, ctx) => { await retire(); await binding(ctx); report(ctx); });
+  api.on("session_shutdown", async () => {
+    stopped = true; const gone = presence?.close();
+    try { await retire(); } finally { await gone; if (owners[presenceOwner] === claim) delete owners[presenceOwner]; }
+  });
   api.on("before_agent_start", async (event, ctx) => {
     await binding(ctx);
     return { systemPrompt: [...(event.systemPrompt ?? []).filter(line => line !== sidebandInstructions), sidebandInstructions,
@@ -139,6 +149,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
         if (signal?.aborted) throw new Error("Sideband request cancelled.");
         const result = await current.tools.call(current.id, tool.name, args);
         if (result.isError) unwrap(result);
+        report(ctx, (current.tools.status(current.id) as { identity?: { name?: string } }).identity?.name);
         return { content: result.content, details: {} };
       },
     });
@@ -173,7 +184,9 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
         const owner = await binding(ctx);
         const call = async (name: string, values: Record<string, unknown> = {}) => {
           if (!current() || active !== owner) throw new Error("The oh-my-pi session changed.");
-          return unwrap(await owner.tools.call(owner.id, name, values));
+          const result = unwrap(await owner.tools.call(owner.id, name, values));
+          report(ctx, (owner.tools.status(owner.id) as { identity?: { name?: string } }).identity?.name);
+          return result;
         };
         if (command === "join" || command === "rooms") {
           if (command === "join" && !argument) throw new Error("Use /sideband join ROOM.");

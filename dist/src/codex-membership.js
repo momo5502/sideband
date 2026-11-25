@@ -24,6 +24,9 @@ export class CodexMembership {
     errors = new Map();
     monitorError = "";
     beating;
+    metadata;
+    loaded = new Set();
+    workspaces = new Map();
     constructor(db, profiles, options) {
         this.db = db;
         this.profiles = profiles;
@@ -160,7 +163,8 @@ export class CodexMembership {
         if (this.sweep)
             return this.sweep;
         this.sweep = (async () => {
-            if (!this.db.all("membership").some(([, row]) => row.room) && !this.owned.size)
+            const recovering = this.db.all("membership").some(([, row]) => row.room) || this.owned.size > 0;
+            if (!this.options.presence && !recovering)
                 return;
             let loaded;
             try {
@@ -168,13 +172,23 @@ export class CodexMembership {
                 this.monitorError = "";
             }
             catch (error) {
+                this.loaded.clear();
+                this.options.presence?.([]);
                 const message = error instanceof Error ? error.message : "Cannot inspect loaded Codex threads.";
                 if (!this.closing && message !== this.monitorError) {
                     this.monitorError = message;
-                    this.options.report?.(`Sideband room recovery: ${message}`);
+                    this.options.report?.(recovering ? `Sideband room recovery: ${message}` : "Sideband session discovery: Could not inspect loaded Codex sessions.");
                 }
                 await this.heartbeatOwned().catch(() => { });
                 return;
+            }
+            if (this.options.presence) {
+                this.loaded = new Set([...loaded].slice(0, 128));
+                for (const id of this.workspaces.keys())
+                    if (!this.loaded.has(id))
+                        this.workspaces.delete(id);
+                this.reportPresence();
+                this.refreshMetadata();
             }
             const keys = new Set([...this.owned, ...this.db.all("membership").filter(([, row]) => row.room).map(([id]) => id)]);
             await Promise.allSettled([...keys].map(key => this.serial(key, async () => {
@@ -215,6 +229,29 @@ export class CodexMembership {
         })().finally(() => { this.sweep = undefined; });
         return this.sweep;
     }
+    reportPresence() {
+        if (!this.closing)
+            this.options.presence?.([...this.loaded].map(id => ({ id, cwd: this.workspaces.get(id), name: this.tools.connection(id)?.session.client.identity.name })));
+    }
+    refreshMetadata() {
+        const monitor = this.monitor;
+        if (!monitor || this.metadata || this.closing)
+            return;
+        this.metadata = (async () => {
+            const ids = [...this.loaded].filter(id => !this.workspaces.has(id));
+            // Optional metadata cannot hold up room recovery or lease renewal.
+            for (let offset = 0; offset < ids.length && !this.closing; offset += 4)
+                await Promise.all(ids.slice(offset, offset + 4).map(async (id) => {
+                    try {
+                        const value = await monitor.request("thread/read", { threadId: id, includeTurns: false });
+                        if (this.loaded.has(id) && typeof value.thread?.cwd === "string")
+                            this.workspaces.set(id, value.thread.cwd);
+                    }
+                    catch { /* It may have unloaded. Only the latest loaded list is authoritative. */ }
+                }));
+            this.reportPresence();
+        })().catch(() => { }).finally(() => { this.metadata = undefined; });
+    }
     async loadedThreads() {
         if (this.options.loaded)
             return this.options.loaded();
@@ -235,6 +272,7 @@ export class CodexMembership {
             clearInterval(this.timer);
         await this.closeMonitor();
         await this.sweep?.catch(() => { });
+        await this.metadata;
         await this.beating?.catch(() => { });
         await Promise.allSettled(this.queues.values());
         await this.tools.close();

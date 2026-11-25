@@ -10,6 +10,7 @@ import { INSTALL_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../dist/src/timeouts.js"
 const { RoomServer } = await import("../dist/src/room-server.js");
 const { RoomClient } = await import("../dist/src/room-client.js");
 const { RoomProfiles } = await import("../dist/src/room-profiles.js");
+const { readPluginPresence } = await import("../dist/src/plugin-presence.js");
 
 const executable = process.env.OMP_BINARY ?? "omp";
 const root = resolve(import.meta.dirname, "..");
@@ -17,7 +18,7 @@ const directory = await mkdtemp(join(tmpdir(), "sideband-omp-install-"));
 const cwd = join(directory, "work");
 const env = { ...process.env, PI_CONFIG_DIR: relative(homedir(), join(directory, "config")), PI_CODING_AGENT_DIR: join(directory, "agent"),
   XDG_DATA_HOME: join(directory, "data"), XDG_STATE_HOME: join(directory, "state"), XDG_CACHE_HOME: join(directory, "cache"),
-  OMP_PROFILE: "", PI_PROFILE: "", SIDEBAND_STATE_DIR: join(directory, "sideband"), PI_NO_TITLE: "1",
+  OMP_PROFILE: "", PI_PROFILE: "", SIDEBAND_STATE_DIR: join(directory, "sideband"), SIDEBAND_PRESENCE_DIR: join(directory, "presence"), PI_NO_TITLE: "1",
   NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost",
   OPENAI_API_KEY: "sideband-offline-smoke-placeholder" };
 let child, server, peer, model;
@@ -103,7 +104,14 @@ export default function(api) {
           }
           if (frame.type === "sideband_smoke") {
             assert.equal(frame.session, true); assert.equal(frame.tools, 10);
-            child.stdin.write(JSON.stringify({ id: "join", type: "prompt", message: "Join omp-smoke with my chosen username worker." }) + "\n");
+            void (async () => {
+              const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+              while (!(await readPluginPresence(env.SIDEBAND_PRESENCE_DIR)).some(row => row.harness === "omp" && row.pid === child.pid)) {
+                if (Date.now() > deadline) throw new Error("OMP did not publish plugin presence before joining a room.");
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+              child.stdin.write(JSON.stringify({ id: "join", type: "prompt", message: "Join omp-smoke with my chosen username worker." }) + "\n");
+            })().catch(reject);
           }
           if (frame.type === "agent_end" && joined && !pushed) {
             pushed = true; peer.send(marker).catch(reject);
