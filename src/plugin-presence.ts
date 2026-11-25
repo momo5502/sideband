@@ -19,7 +19,7 @@ const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catc
 let ownStamp: string | undefined;
 const verified = new Map<number, { stamp: string; at: number }>();
 
-/** Local metadata only: no connection, room join, credentials, transcripts or command lines. */
+/** Public rows contain metadata only. Control credentials stay in the private local file. */
 export class PluginPresence {
   private readonly file: string;
   private readonly born = Date.now();
@@ -33,7 +33,7 @@ export class PluginPresence {
   private sessions = new Map<string, string>();
   private control?: PluginControl;
   private endpoint?: PluginEndpoint;
-  constructor(private readonly harness: HarnessName, private readonly directory = presenceDirectory, private readonly command?: (session: string, request: PluginCommand) => Promise<unknown>) { this.file = join(directory, `${process.pid}-${randomUUID()}.json`); }
+  constructor(private readonly harness: HarnessName, private readonly directory = presenceDirectory, private readonly command?: (session: string, request: PluginCommand) => Promise<unknown>, private readonly options?: { reload(): void; canReload?(): boolean; version: string }) { this.file = join(directory, `${process.pid}-${randomUUID()}.json`); }
   replace(sessions: LocalSession[]): void {
     if (this.closed) return;
     this.sessions = new Map(sessions.slice(0, 128).map(session => [presenceKey(this.harness, session.session), session.session]));
@@ -52,12 +52,18 @@ export class PluginPresence {
       const stamp = await (this.stamp ??= ownStamp ? Promise.resolve(ownStamp) : processStamp(process.pid, this.abort.signal).then(value => { if (value) ownStamp = value; return value; }));
       if (!stamp) { this.stamp = undefined; this.dirty = false; return; }
       if (this.command && !this.control && !this.closed) {
-        this.control = new PluginControl(request => {
+        this.control = new PluginControl(async request => {
           const session = this.sessions.get(request.key);
           if (this.closed || !session) throw new Error("This session has changed or closed. Select it again before sending.");
+          if (request.action === "reload") {
+            if (!this.options || this.harness !== "pi") throw new Error("This plugin requires a manual restart.");
+            return { queued: this.options.canReload?.() ?? true };
+          }
           return this.command!(session, request);
+        }, request => {
+          if (request.action === "reload" && !this.closed && this.sessions.has(request.key)) this.options?.reload();
         });
-        try { this.endpoint = await this.control.start(); } catch { await this.control.close(); }
+        try { this.endpoint = { ...await this.control.start(), ...(this.options && this.harness === "pi" ? { reload: true, version: this.options.version } : {}) }; } catch { await this.control.close(); }
       }
       while (this.dirty && !this.closed) {
         this.dirty = false;

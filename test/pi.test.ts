@@ -11,6 +11,7 @@ import piSideband from "../src/pi-extension.js";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
 import { RoomProfiles } from "../src/room-profiles.js";
+import { readPluginPresence } from "../src/plugin-presence.js";
 
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + testTimeout(15000); while (!await check()) { if (Date.now() > end) throw new Error("PI fixture did not settle."); await new Promise(r => setTimeout(r, 15)); } }
 test("PI efforts match its own levels rather than OMP levels", () => {
@@ -79,6 +80,7 @@ process.stdin.on('end',()=>process.exit(0));`;
   let driver = make();
   try {
     await driver.start({ model: "fixture/model", effort: "high" }); assert.equal(state, "idle");
+    assert.deepEqual(await readPluginPresence(), [], "managed PI never advertises installed-plugin presence or reload control");
     await driver.prompt("first"); await until(() => events.includes("first")); assert.deepEqual(tools, ["first"]);
     await driver.deliver("room"); await until(() => events.includes("room"));
     await driver.interrupt();

@@ -15,6 +15,40 @@ export function piSchema(schema) {
     return Type.Object(shape, { additionalProperties: false });
 }
 export default function piSideband(api) {
+    let commandContext, context, reloading = false;
+    const performReload = async (ctx, hooks) => {
+        if (reloading) {
+            hooks?.failed(new Error("PI reload is already in progress."));
+            return;
+        }
+        reloading = true;
+        try {
+            await ctx.waitForIdle();
+            hooks?.before();
+            await ctx.reload();
+            return;
+        }
+        catch (error) {
+            hooks?.failed(error);
+            if (!hooks) {
+                try {
+                    ctx.ui.notify("PI reload failed. Try /reload or restart PI.", "error");
+                }
+                catch {
+                    process.stderr.write("Sideband: PI reload failed after runtime teardown; restart PI.\n");
+                }
+            }
+        }
+        finally {
+            reloading = false;
+        }
+    };
+    api.on("session_start", (_event, ctx) => { context = ctx; });
+    api.registerCommand("sideband-reload", { description: "Reload PI resources after a Sideband update, once idle", async handler(_args, ctx) {
+            commandContext = ctx;
+            await performReload(ctx);
+            return;
+        } });
     if (isMainThread && process.env.SIDEBAND_MANAGED_BRIDGE && !roots[key]?.active)
         roots[key] = { bootstrap: JSON.parse(process.env.SIDEBAND_MANAGED_BRIDGE), active: true };
     else if (isMainThread && roots[key] && !roots[key].active) {
@@ -26,6 +60,7 @@ export default function piSideband(api) {
         registerTool(tool) { const { loadMode: _loadMode, ...definition } = tool; api.registerTool({ ...definition, promptSnippet: `${tool.name}: ${tool.description}` }); },
         registerCommand(name, command) {
             api.registerCommand(name, { ...command, async handler(args, ctx) {
+                    commandContext = ctx;
                     if (/^login(?:\s|$)/i.test(args.trim())) {
                         ctx.ui.notify("Use sideband login HOST:PORT in a separate terminal. PI does not provide masked password input.", "info");
                         return;
@@ -44,6 +79,16 @@ export default function piSideband(api) {
         },
         sendMessage(message, options) { const { attribution: _attribution, ...content } = message; api.sendMessage(content, { ...options, deliverAs: "steer" }); },
         async sendUserMessage(text) { await api.sendUserMessage(text, { deliverAs: "steer" }); },
+        requestReload(hooks) {
+            // PI 0.79.1's sendUserMessage skips command dispatch despite its docs.
+            // A user-invoked command grants a context valid until runtime replacement.
+            if (!commandContext) {
+                context?.ui.notify("Sideband updated. Run /sideband-reload (or /reload) to load it; this reloads all PI resources.", "info");
+                return;
+            }
+            void performReload(commandContext, hooks);
+        },
+        canReload: () => !!commandContext,
         getActiveTools: () => api.getActiveTools(), getAllTools: () => api.getAllTools(), async setActiveTools(names) { await api.setActiveTools(names); },
     };
     sideband(adapter, undefined, { pi: true, onToken: token => { if (roots[key])

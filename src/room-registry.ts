@@ -2,6 +2,7 @@ import { agentName, type ConnectionProfile } from "./room-protocol.js";
 import { RoomSession } from "./room-session.js";
 
 export type Harness = "codex" | "claude";
+export type RoomConnection = { session: RoomSession; profile: string };
 export function callerKey(harness: Harness, meta?: Record<string, unknown>): string {
   if (harness === "claude") return "claude-process";
   const id = meta?.threadId;
@@ -15,6 +16,14 @@ export class RoomRegistry {
   constructor(private readonly create: (key: string, profile: ConnectionProfile, name?: string) => Promise<RoomSession>) {}
   status(key: string): object { return this.sessions.get(key)?.session.status() ?? { state: this.pending.has(key) ? "connecting" : "off" }; }
   connection(key: string) { return this.sessions.get(key); }
+  async detach(key: string): Promise<RoomConnection | undefined> {
+    await this.pending.get(key)?.catch(() => {});
+    const connection = this.sessions.get(key); this.sessions.delete(key); return connection;
+  }
+  adopt(key: string, connection: RoomConnection): void {
+    if (this.closing || this.sessions.has(key) || this.pending.has(key)) throw new Error("Cannot replace an active room binding.");
+    this.sessions.set(key, connection);
+  }
   get(key: string): RoomSession {
     const entry = this.sessions.get(key); if (!entry) throw new Error("Messaging is off for this session. Join a room first."); return entry.session;
   }

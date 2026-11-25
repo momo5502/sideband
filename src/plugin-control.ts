@@ -3,10 +3,10 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readLocal, writeLocal } from "./local-wire.js";
 import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 
-export type PluginEndpoint = { port: number; token: string };
-export type PluginCommand = { key: string; action: "prompt" | "logs"; text?: string; after?: number };
+export type PluginEndpoint = { port: number; token: string; reload?: true; version?: string };
+export type PluginCommand = { key: string; action: "prompt" | "logs" | "reload"; text?: string; after?: number };
 export function pluginEndpoint(value: any): PluginEndpoint | undefined {
-  return value && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.token) ? { port: value.port, token: value.token } : undefined;
+  return value && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.token) ? { port: value.port, token: value.token, ...(value.reload === true ? { reload: true } : {}), ...(typeof value.version === "string" && /^[0-9A-Za-z.+-]{1,128}$/.test(value.version) ? { version: value.version } : {}) } : undefined;
 }
 /** Loopback only; the bearer token stays in the user's private presence file. */
 export class PluginControl {
@@ -15,7 +15,7 @@ export class PluginControl {
   private sockets = new Set<Socket>();
   private prompting = false;
   private launches: number[] = [];
-  constructor(private readonly command: (request: PluginCommand) => Promise<unknown>) {}
+  constructor(private readonly command: (request: PluginCommand) => Promise<unknown>, private readonly afterReply?: (request: PluginCommand) => void) {}
   async start(): Promise<PluginEndpoint> {
     const server = this.server = createServer(socket => {
       if (this.sockets.size >= 16) { socket.destroy(); return; }
@@ -24,20 +24,28 @@ export class PluginControl {
       readLocal(socket, packet => {
         if (received) { socket.destroy(); return; } received = true;
         void (async () => {
-          let prompt = false;
+          let prompt = false, accepted: PluginCommand | undefined;
           try {
             if (typeof packet.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(packet.token) || !timingSafeEqual(Buffer.from(packet.token), Buffer.from(this.token))) throw new Error("Unauthenticated plugin request.");
-            if (packet.type !== "request" || !/^[a-f0-9]{64}$/.test(packet.key) || !["prompt", "logs"].includes(packet.action)) throw new Error("Invalid plugin request.");
+            if (packet.type !== "request" || !/^[a-f0-9]{64}$/.test(packet.key) || !["prompt", "logs", "reload"].includes(packet.action)) throw new Error("Invalid plugin request.");
             if (packet.action === "prompt") {
               if (typeof packet.text !== "string" || !packet.text.trim() || packet.text.length > 16000) throw new Error("Invalid instructions.");
               this.launches = this.launches.filter(at => Date.now() - at < 10000);
               if (this.prompting || this.launches.length >= 10) throw new Error("This session is accepting another instruction. Try again shortly.");
               this.launches.push(Date.now()); this.prompting = prompt = true;
             } else if (packet.after !== undefined && (!Number.isSafeInteger(packet.after) || packet.after < 0)) throw new Error("Invalid output position.");
-            const result = await this.command({ key: packet.key, action: packet.action, ...(packet.action === "prompt" ? { text: packet.text } : { after: packet.after ?? 0 }) });
+            const request: PluginCommand = { key: packet.key, action: packet.action, ...(packet.action === "prompt" ? { text: packet.text } : packet.action === "logs" ? { after: packet.after ?? 0 } : {}) };
+            const result = await this.command(request); accepted = request;
             writeLocal(socket, { type: "reply", result });
           } catch (error) { writeLocal(socket, { type: "reply", error: error instanceof Error ? error.message.slice(0, 2048) : "Plugin request failed." }); }
-          finally { if (prompt) this.prompting = false; socket.end(); }
+          finally {
+            if (prompt) this.prompting = false;
+            // Reload tears down this endpoint. Flush its acknowledgement first.
+            socket.end(() => {
+              try { if (accepted) this.afterReply?.(accepted); }
+              catch { process.stderr.write("Sideband: plugin reload could not start; reload manually.\n"); }
+            });
+          }
         })();
       });
     });

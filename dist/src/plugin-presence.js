@@ -20,11 +20,12 @@ catch {
 } };
 let ownStamp;
 const verified = new Map();
-/** Local metadata only: no connection, room join, credentials, transcripts or command lines. */
+/** Public rows contain metadata only. Control credentials stay in the private local file. */
 export class PluginPresence {
     harness;
     directory;
     command;
+    options;
     file;
     born = Date.now();
     rows = [];
@@ -37,10 +38,11 @@ export class PluginPresence {
     sessions = new Map();
     control;
     endpoint;
-    constructor(harness, directory = presenceDirectory, command) {
+    constructor(harness, directory = presenceDirectory, command, options) {
         this.harness = harness;
         this.directory = directory;
         this.command = command;
+        this.options = options;
         this.file = join(directory, `${process.pid}-${randomUUID()}.json`);
     }
     replace(sessions) {
@@ -74,14 +76,22 @@ export class PluginPresence {
                 return;
             }
             if (this.command && !this.control && !this.closed) {
-                this.control = new PluginControl(request => {
+                this.control = new PluginControl(async (request) => {
                     const session = this.sessions.get(request.key);
                     if (this.closed || !session)
                         throw new Error("This session has changed or closed. Select it again before sending.");
+                    if (request.action === "reload") {
+                        if (!this.options || this.harness !== "pi")
+                            throw new Error("This plugin requires a manual restart.");
+                        return { queued: this.options.canReload?.() ?? true };
+                    }
                     return this.command(session, request);
+                }, request => {
+                    if (request.action === "reload" && !this.closed && this.sessions.has(request.key))
+                        this.options?.reload();
                 });
                 try {
-                    this.endpoint = await this.control.start();
+                    this.endpoint = { ...await this.control.start(), ...(this.options && this.harness === "pi" ? { reload: true, version: this.options.version } : {}) };
                 }
                 catch {
                     await this.control.close();

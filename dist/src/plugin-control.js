@@ -3,18 +3,20 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readLocal, writeLocal } from "./local-wire.js";
 import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 export function pluginEndpoint(value) {
-    return value && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.token) ? { port: value.port, token: value.token } : undefined;
+    return value && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.token) ? { port: value.port, token: value.token, ...(value.reload === true ? { reload: true } : {}), ...(typeof value.version === "string" && /^[0-9A-Za-z.+-]{1,128}$/.test(value.version) ? { version: value.version } : {}) } : undefined;
 }
 /** Loopback only; the bearer token stays in the user's private presence file. */
 export class PluginControl {
     command;
+    afterReply;
     token = randomBytes(32).toString("base64url");
     server;
     sockets = new Set();
     prompting = false;
     launches = [];
-    constructor(command) {
+    constructor(command, afterReply) {
         this.command = command;
+        this.afterReply = afterReply;
     }
     async start() {
         const server = this.server = createServer(socket => {
@@ -33,11 +35,11 @@ export class PluginControl {
                 }
                 received = true;
                 void (async () => {
-                    let prompt = false;
+                    let prompt = false, accepted;
                     try {
                         if (typeof packet.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(packet.token) || !timingSafeEqual(Buffer.from(packet.token), Buffer.from(this.token)))
                             throw new Error("Unauthenticated plugin request.");
-                        if (packet.type !== "request" || !/^[a-f0-9]{64}$/.test(packet.key) || !["prompt", "logs"].includes(packet.action))
+                        if (packet.type !== "request" || !/^[a-f0-9]{64}$/.test(packet.key) || !["prompt", "logs", "reload"].includes(packet.action))
                             throw new Error("Invalid plugin request.");
                         if (packet.action === "prompt") {
                             if (typeof packet.text !== "string" || !packet.text.trim() || packet.text.length > 16000)
@@ -50,7 +52,9 @@ export class PluginControl {
                         }
                         else if (packet.after !== undefined && (!Number.isSafeInteger(packet.after) || packet.after < 0))
                             throw new Error("Invalid output position.");
-                        const result = await this.command({ key: packet.key, action: packet.action, ...(packet.action === "prompt" ? { text: packet.text } : { after: packet.after ?? 0 }) });
+                        const request = { key: packet.key, action: packet.action, ...(packet.action === "prompt" ? { text: packet.text } : packet.action === "logs" ? { after: packet.after ?? 0 } : {}) };
+                        const result = await this.command(request);
+                        accepted = request;
                         writeLocal(socket, { type: "reply", result });
                     }
                     catch (error) {
@@ -59,7 +63,16 @@ export class PluginControl {
                     finally {
                         if (prompt)
                             this.prompting = false;
-                        socket.end();
+                        // Reload tears down this endpoint. Flush its acknowledgement first.
+                        socket.end(() => {
+                            try {
+                                if (accepted)
+                                    this.afterReply?.(accepted);
+                            }
+                            catch {
+                                process.stderr.write("Sideband: plugin reload could not start; reload manually.\n");
+                            }
+                        });
                     }
                 })();
             });

@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { runUpdateCommand, type RunUpdateCommand } from "./update-runtime.js";
 import type { PluginUpdate } from "./update-types.js";
+import { reloadPiPlugins } from "./plugin-reload.js";
 
 export function officialSidebandSource(value: unknown): boolean {
   if (typeof value !== "string") return false;
@@ -24,7 +25,7 @@ export async function ompSource(path: unknown): Promise<boolean> {
   return false;
 }
 /** Updates only existing Sideband installations; never installs a new harness or plugin. */
-export async function updateHarnessPlugins(run: RunUpdateCommand = runUpdateCommand, progress: (results: PluginUpdate[]) => void = () => {}): Promise<PluginUpdate[]> {
+export async function updateHarnessPlugins(run: RunUpdateCommand = runUpdateCommand, progress: (results: PluginUpdate[]) => void = () => {}, signal?: AbortSignal): Promise<PluginUpdate[]> {
   const results: PluginUpdate[] = [];
   for (const harness of ["omp", "claude", "codex"] as const) {
     let from: string | undefined;
@@ -66,12 +67,12 @@ export async function updateHarnessPlugins(run: RunUpdateCommand = runUpdateComm
     } catch (error) { results.push({ harness, from, state: missing(error) ? "skipped" : "failed", message: missing(error) ? "Harness CLI is not installed." : `${step}: ${failure(error)}` }); }
     progress([...results]);
   }
-  results.push(await updatePiPlugin(run)); progress([...results]);
+  results.push(await updatePiPlugin(run, undefined, signal)); progress([...results]);
   return results;
 }
 
 /** PI's bare update also upgrades PI itself. Refresh only an existing, unpinned Sideband extension. */
-export async function updatePiPlugin(run: RunUpdateCommand = runUpdateCommand, directory = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent")): Promise<PluginUpdate> {
+export async function updatePiPlugin(run: RunUpdateCommand = runUpdateCommand, directory = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), signal?: AbortSignal): Promise<PluginUpdate> {
   directory = resolve(directory.replace(/^~(?=[/\\]|$)/, homedir()));
   const skipped = (message: string): PluginUpdate => ({ harness: "pi", state: "skipped", message });
   let from: string | undefined;
@@ -86,6 +87,9 @@ export async function updatePiPlugin(run: RunUpdateCommand = runUpdateCommand, d
     from = await version().catch(() => undefined);
     await run("pi", ["update", "--extension", "git:github.com/momo5502/sideband", "--no-approve"], { timeout: COMMAND_TIMEOUT_MS, cwd: homedir() });
     const to = await version(); if (!to) throw new Error("Could not verify the refreshed PI package.");
-    return { harness: "pi", from, to, state: "updated", restartRequired: from !== to, message: from === to ? "Already current." : "Sideband extension refreshed. Reload PI or restart its session to apply it." };
+    let reload: { message: string; restartRequired: boolean };
+    try { reload = await reloadPiPlugins(to, signal); }
+    catch { if (signal?.aborted) throw new Error("Plugin reload cancelled."); reload = { message: "Could not contact running PI sessions; use /reload or restart them manually.", restartRequired: true }; }
+    return { harness: "pi", from, to, state: "updated", ...reload, message: `${from === to ? "Package already current." : "Sideband extension refreshed."} ${reload.message}` };
   } catch (error) { return { harness: "pi", from, state: missing(error) ? "skipped" : "failed", message: missing(error) ? "PI or its installed package is unavailable." : failure(error) }; }
 }

@@ -133,7 +133,7 @@ export class RuntimeUpdater {
             if (this.role === "worker") {
                 await this.set("plugins", "Updating installed Sideband harness plugins");
                 this.state.plugins = await this.plugins(this.run, results => { this.state = { ...this.state, plugins: results }; for (const listener of this.listeners)
-                    listener(); });
+                    listener(); }, this.abort.signal);
             }
             if (this.build.commit === target) {
                 this.abort.signal.throwIfAborted();

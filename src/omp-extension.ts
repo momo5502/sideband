@@ -1,5 +1,7 @@
 import type * as zod from "zod/v4";
-import { RoomTools, sidebandTools, sidebandInstructions, type ToolResult } from "./room-tools.js";
+import { RoomTools, sidebandTools, sidebandInstructions, SIDEBAND_VERSION, type ToolResult } from "./room-tools.js";
+import type { RoomConnection } from "./room-registry.js";
+import { STARTUP_TIMEOUT_MS } from "./timeouts.js";
 import { RoomProfiles } from "./room-profiles.js";
 import { RoomSession } from "./room-session.js";
 import { agentName, serverUrl } from "./room-protocol.js";
@@ -43,6 +45,8 @@ export interface OmpApi {
   on(event: string, handler: (event: { systemPrompt?: string[] }, ctx: OmpContext) => unknown): void;
   sendMessage(message: { customType: string; content: string; display: boolean; attribution: "agent" }, options: { deliverAs: "aside"; triggerTurn: boolean }): void;
   sendUserMessage?(content: string, options?: { deliverAs: "steer"; attribution: "user" }): Promise<void>;
+  requestReload?(hooks: { before(): void; failed(error: unknown): void }): void;
+  canReload?(): boolean;
   getActiveTools?(): string[];
   getAllTools?(): { name: string; sourceInfo?: { source?: string; path?: string } }[];
   setActiveTools?(names: string[]): Promise<void>;
@@ -83,14 +87,40 @@ function unwrap(result: ToolResult): any {
   return JSON.parse(result.content[0]!.text);
 }
 
+// Volatile handoff only: PI replaces its API objects on reload. Keep the client
+// and its keys in memory, but replace the adapter before delivering more pushes.
+const reloadKey = Symbol.for("sideband.pi.reload.binding");
+type ReloadBinding = { id: string; file?: string; connection?: RoomConnection; output: OutputBuffer; timer: NodeJS.Timeout };
+const reloads = globalThis as typeof globalThis & { [reloadKey]?: ReloadBinding };
+
 /** Each factory binding owns its own client. Subagents never inherit a connection. */
 export default function sideband(api: OmpApi, profiles = new RoomProfiles(), managed?: ManagedExtensionOptions): void {
   if (managedOmp(api, managed)) return;
   const presenceOwner = Symbol.for("sideband.plugin.presence.owner"), owners = globalThis as typeof globalThis & { [presenceOwner]?: object }, claim = {};
   let output = new OutputBuffer(), reportedSession: string | undefined;
+  let reloadPending = false;
+  let handedOff: ReloadBinding | undefined;
+  const requestReload = () => {
+    if (reloadPending || stopped || !active) return;
+    const failed = (error: unknown) => {
+      reloadPending = false; active?.tools.connection(active.id)?.session.resumeDelivery(); output.append("error", error instanceof Error ? error.message : "PI reload failed; reload manually.");
+      if (stopped && handedOff && reloads[reloadKey] === handedOff) {
+        delete reloads[reloadKey]; clearTimeout(handedOff.timer); void handedOff.connection?.session.disable();
+        process.stderr.write("Sideband: PI reload failed after teardown. Restart PI and rejoin the room.\n");
+      }
+    };
+    try {
+      if (!api.canReload?.()) { api.requestReload!({ before() {}, failed }); return; }
+      reloadPending = true;
+      api.requestReload!({ before: () => {
+      if (stopped || !active) throw new Error("The PI session changed before reload.");
+      active.tools.connection(active.id)?.session.pauseDelivery();
+    }, failed }); } catch (error) { failed(error); }
+  };
   const presence = isMainThread && !owners[presenceOwner] ? new PluginPresence(managed?.pi ? "pi" : "omp", undefined, api.sendUserMessage ? async (_session, request) => {
     if (!active || stopped) throw new Error("This session is changing or closed. Try again once it is ready.");
     if (request.action === "logs") return output.snapshot(request.after);
+    if (reloadPending) throw new Error("PI is waiting to reload after this turn. Send instructions once it is ready.");
     const instructions = request.text!;
     output.append("user", instructions);
     const errors = output;
@@ -104,7 +134,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
       await Promise.race([operation, new Promise<void>(resolve => { timer = setTimeout(resolve, 1000); })]);
     } finally { if (timer) clearTimeout(timer); }
     return { accepted: true };
-  } : undefined) : undefined;
+  } : undefined, managed?.pi && api.requestReload ? { reload: requestReload, canReload: () => api.canReload?.() === true, version: SIDEBAND_VERSION } : undefined) : undefined;
   if (presence) owners[presenceOwner] = claim;
   const report = (ctx: OmpContext, name?: string) => {
     const session = ctx.sessionManager.getSessionFile?.() ?? ctx.sessionManager.getSessionId();
@@ -174,10 +204,35 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
     }
     await retire(); report(ctx);
   });
-  api.on("session_start", async (_event, ctx) => { await retire(); await binding(ctx); report(ctx); });
-  api.on("session_shutdown", async () => {
+  api.on("session_start", async (_event, ctx) => {
+    await retire(); const next = await binding(ctx);
+    if (managed?.pi && presence && reloads[reloadKey]) {
+      const saved = reloads[reloadKey]!; delete reloads[reloadKey]; clearTimeout(saved.timer);
+      if (saved.id === next.id && saved.file === ctx.sessionManager.getSessionFile?.()) {
+        output = saved.output; reportedSession = saved.file ?? saved.id;
+        if (saved.connection) try {
+          next.tools.adopt(next.id, saved.connection);
+          await saved.connection.session.replaceAdapter(new OmpAdapter(api, () => active === next && !stopped && sessionId(next.context) === next.id));
+        } catch (error) { await Promise.allSettled([next.tools.disconnect(next.id), saved.connection.session.disable()]); throw error; }
+      } else await saved.connection?.session.disable();
+    }
+    report(ctx, (next.tools.status(next.id) as { identity?: { name?: string } }).identity?.name);
+  });
+  api.on("session_shutdown", async (event, ctx) => {
     stopped = true; const gone = presence?.close();
-    try { await retire(); } finally { await gone; if (owners[presenceOwner] === claim) delete owners[presenceOwner]; }
+    try {
+    if (managed?.pi && presence && (event as { reason?: string }).reason === "reload" && active) {
+      active.tools.connection(active.id)?.session.pauseDelivery();
+      await transition;
+      const connection = await active.tools.detach(active.id);
+      const previous = reloads[reloadKey];
+      if (previous) { clearTimeout(previous.timer); await previous.connection?.session.disable(); }
+      const saved: ReloadBinding = { id: active.id, file: ctx.sessionManager.getSessionFile?.(), connection, output, timer: undefined! };
+      saved.timer = setTimeout(() => { if (reloads[reloadKey] === saved) { delete reloads[reloadKey]; void saved.connection?.session.disable(); } }, STARTUP_TIMEOUT_MS);
+      saved.timer.unref(); reloads[reloadKey] = saved;
+      handedOff = saved;
+    }
+    } finally { try { await retire(); } finally { await gone; if (owners[presenceOwner] === claim) delete owners[presenceOwner]; } }
   });
   api.on("before_agent_start", async (event, ctx) => {
     await binding(ctx);

@@ -13,7 +13,7 @@ import { terminateTree } from "../dist/src/process-tree.js";
 const directory = await mkdtemp(join(tmpdir(), "sideband-real-pi-"));
 const errorText = "rg: regex parse error\nCommand exited with code 2";
 const errorEnvelope = { content: [{ type: "text", text: errorText }], structuredContent: { output: errorText, truncated: false, exit_code: 2, wall_time_seconds: 0.1 }, isError: true };
-let calls = 0, holds = 0, cancellations = 0;
+let calls = 0, holds = 0, cancellations = 0, releaseReload;
 const server = createServer(async (req, res) => {
   let raw = ""; for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw); calls++;
@@ -26,11 +26,15 @@ const server = createServer(async (req, res) => {
   const tool = body.tools?.find(t => t.name === (failurePrompt ? "fixture_error" : "sideband_room_send"));
   const result = last?.role === "user" && Array.isArray(last.content) && last.content.some(p => p.type === "tool_result");
   const block = tool && !result ? { type: "tool_use", id: `tool_${calls}`, name: tool.name, input: failurePrompt ? {} : { text: "PI fixture room send" } } : { type: "text", text: "PI_DONE" };
+  const finish = () => {
   send("content_block_start", { index: 0, content_block: block.type === "tool_use" ? { ...block, input: {} } : { type: "text", text: "" } });
   send("content_block_delta", { index: 0, delta: block.type === "tool_use" ? { type: "input_json_delta", partial_json: JSON.stringify(block.input) } : { type: "text_delta", text: block.text } });
   send("content_block_stop", { index: 0 });
   send("message_delta", { delta: { stop_reason: block.type === "tool_use" ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } });
   send("message_stop", {}); res.end();
+  };
+  if (JSON.stringify(last).includes("HOLD_RELOAD")) { let released = false; releaseReload = () => { released = true; finish(); }; res.once("close", () => { if (!released) cancellations++; }); return; }
+  finish();
 });
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const previous = { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_OFFLINE: process.env.PI_OFFLINE };
@@ -50,9 +54,11 @@ async function until(check) { const end = Date.now() + 120000; while (!check()) 
 try {
   // A manually started, plugin-loaded session must appear before any room or model call.
   const registry = join(directory, "presence");
-  const failingTool = join(directory, "failing-tool.mjs"), historyMarker = join(directory, "history-navigation.json");
+  const failingTool = join(directory, "failing-tool.mjs"), historyMarker = join(directory, "history-navigation.json"), reloadMarker = join(directory, "reload.json");
   await writeFile(failingTool, `import {Type} from "typebox"; import {writeFile} from "node:fs/promises";
 export default function(api) {
+  const generation=1;
+  api.on("session_start",async(_event,ctx)=>{await writeFile(${JSON.stringify(reloadMarker)},JSON.stringify({generation,id:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile()}));});
   api.registerTool({name:"fixture_error", label:"Fixture error", description:"Local failure fixture", parameters:Type.Object({}), execute(){throw new Error(${JSON.stringify(JSON.stringify(errorEnvelope))});}});
   api.registerCommand("fixture-history", {description:"Local history navigation fixture", async handler(_args,ctx) {
     try {
@@ -68,7 +74,8 @@ export default function(api) {
   const manual = spawn(executable.command, ["--mode", "rpc", "--no-extensions", "--no-session", "--no-approve", "--model", "sideband_fixture/fixture", "-e", resolve("dist/sideband-pi.cjs"), "-e", failingTool], {
     cwd: directory, env: { ...process.env, SIDEBAND_STATE_DIR: join(directory, "sideband"), SIDEBAND_PRESENCE_DIR: registry }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
   });
-  manual.stdout.resume(); manual.stderr.resume();
+  let manualBusy = false, primed = false, stdout = "";
+  manual.stdout.on("data", chunk => { stdout += chunk.toString(); while (stdout.includes("\n")) { const end = stdout.indexOf("\n"), line = stdout.slice(0,end); stdout = stdout.slice(end+1); try { const frame=JSON.parse(line); if(frame.type==="agent_start")manualBusy=true; if(frame.type==="agent_end")manualBusy=false; if(frame.id==="prime"&&frame.type==="response"&&frame.success)primed=true; } catch {} } }); manual.stderr.resume();
   const exited = new Promise(resolve => manual.once("exit", resolve));
   try {
     const end = Date.now() + 120000;
@@ -103,6 +110,44 @@ export default function(api) {
     assert.deepEqual(history, { sameSession: true }, "history navigation keeps PI's session ID and file");
     const afterTree = await requestPlugin(endpoint, { key: session.key, action: "logs" });
     assert.ok(afterTree.events.some(event => event.text === errorText), "history navigation keeps the external controller and output buffer");
+    await until(() => !manualBusy);
+    // A real user/RPC command grants PI's command-only reload context.
+    manual.stdin.write(JSON.stringify({id:"prime",type:"prompt",message:"/sideband status"})+"\n"); await until(()=>primed);
+    const beforeReload = JSON.parse(await readFile(reloadMarker,"utf8")); assert.equal(beforeReload.generation,1);
+    await writeFile(failingTool,(await readFile(failingTool,"utf8")).replace("const generation=1;","const generation=2;"));
+    const cancelBefore = cancellations;
+    await requestPlugin(endpoint,{key:session.key,action:"prompt",text:"HOLD_RELOAD"}); await until(()=>!!releaseReload);
+    assert.deepEqual(await requestPlugin(endpoint,{key:session.key,action:"reload"}),{queued:true});
+    // PI executes extension commands immediately; waitForIdle must prevent an abort.
+    await new Promise(resolve=>setTimeout(resolve,300));
+    assert.equal(JSON.parse(await readFile(reloadMarker,"utf8")).generation,1);
+    assert.equal(cancellations,cancelBefore,"queuing reload must not cancel a running model request");
+    releaseReload(); let reloaded;
+    const reloadDeadline=Date.now()+120000;
+    while (!reloaded) { const marker=await readFile(reloadMarker,"utf8").then(JSON.parse).catch(()=>undefined); if(marker?.generation===2)reloaded=marker;
+      else { if(Date.now()>reloadDeadline)throw new Error("Real PI did not import its updated extension after becoming idle"); await new Promise(resolve=>setTimeout(resolve,100)); } }
+    assert.equal(reloaded.id,beforeReload.id); assert.equal(reloaded.file,beforeReload.file);
+    let fresh;
+    while(!fresh) { const next=new Map(); await readPluginPresence(registry,undefined,undefined,next); const candidate=next.get(session.key); if(candidate&&candidate.token!==endpoint.token)fresh=candidate;
+      else { if(Date.now()>reloadDeadline)throw new Error("Reloaded PI did not publish a fresh control endpoint"); await new Promise(resolve=>setTimeout(resolve,100)); } }
+    assert.ok((await requestPlugin(fresh,{key:session.key,action:"logs"})).events.some(event=>event.text===errorText),"real reload preserves the output ring");
+    assert.deepEqual(await requestPlugin(fresh,{key:session.key,action:"reload"}),{queued:false},"fresh runtimes without a command context request a manual reload without sending a model prompt");
+    // A queued reload must also complete if the active turn is interrupted.
+    primed=false; manual.stdin.write(JSON.stringify({id:"prime",type:"prompt",message:"/sideband status"})+"\n"); await until(()=>primed);
+    await writeFile(failingTool,(await readFile(failingTool,"utf8")).replace("const generation=2;","const generation=3;"));
+    releaseReload=undefined; const cancelledBeforeAbort=cancellations;
+    await requestPlugin(fresh,{key:session.key,action:"prompt",text:"HOLD_RELOAD_ABORT"}); await until(()=>!!releaseReload);
+    assert.deepEqual(await requestPlugin(fresh,{key:session.key,action:"reload"}),{queued:true});
+    manual.stdin.write(JSON.stringify({id:"abort-reload",type:"abort"})+"\n");
+    let afterAbort, finalEndpoint; const abortDeadline=Date.now()+120000;
+    while (!afterAbort||!finalEndpoint) { const marker=await readFile(reloadMarker,"utf8").then(JSON.parse).catch(()=>undefined); if(marker?.generation===3)afterAbort=marker;
+      const next=new Map(); await readPluginPresence(registry,undefined,undefined,next); const candidate=next.get(session.key); if(candidate&&candidate.token!==fresh.token)finalEndpoint=candidate;
+      if(!afterAbort||!finalEndpoint) { if(Date.now()>abortDeadline)throw new Error("PI reload did not complete after abort"); await new Promise(resolve=>setTimeout(resolve,100)); } }
+    assert.equal(afterAbort.id,beforeReload.id); assert.ok(cancellations>cancelledBeforeAbort,"abort really cancelled the held network request");
+    const position=(await requestPlugin(finalEndpoint,{key:session.key,action:"logs"})).next;
+    await requestPlugin(finalEndpoint,{key:session.key,action:"prompt",text:"Instruction after real reload"});
+    let finalReply=false; while(!finalReply) { const logs=await requestPlugin(finalEndpoint,{key:session.key,action:"logs",after:position-1}); finalReply=logs.events.some(event=>event.kind==="assistant"&&event.text.includes("PI_DONE"));
+      if(!finalReply) { if(Date.now()>abortDeadline)throw new Error("Reloaded PI did not deliver its next reply"); await new Promise(resolve=>setTimeout(resolve,100)); } }
   } finally { terminateTree(manual, false); await exited; }
   assert.deepEqual(await readPluginPresence(registry), [], "a dead plugin is never listed as running");
   const catalog = await discovery.refresh("pi"); assert.ok(catalog.models.some(m => m.id === "sideband_fixture/fixture"), catalog.error);

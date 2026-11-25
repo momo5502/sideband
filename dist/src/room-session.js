@@ -1,6 +1,6 @@
 import { RoomClient } from "./room-client.js";
 export class RoomSession {
-    adapter;
+    currentAdapter;
     client;
     active = false;
     generation = 0;
@@ -9,9 +9,26 @@ export class RoomSession {
     unsubscribe;
     unsubscribePresence;
     lastDeliveryError;
-    constructor(profile, adapter, name, keys) {
-        this.adapter = adapter;
+    paused;
+    resume;
+    constructor(profile, currentAdapter, name, keys) {
+        this.currentAdapter = currentAdapter;
         this.client = new RoomClient(profile, name, { keys });
+    }
+    get adapter() { return this.currentAdapter; }
+    pauseDelivery() { if (!this.paused)
+        this.paused = new Promise(resolve => { this.resume = resolve; }); }
+    resumeDelivery() { const resume = this.resume; this.paused = undefined; this.resume = undefined; resume?.(); }
+    async replaceAdapter(adapter) {
+        await adapter.prepare();
+        const previous = this.currentAdapter;
+        this.currentAdapter = adapter;
+        try {
+            await previous.close();
+        }
+        finally {
+            this.resumeDelivery();
+        }
     }
     async enable() {
         try {
@@ -41,6 +58,8 @@ export class RoomSession {
         }
         this.queued++;
         this.delivered = this.delivered.then(async () => {
+            if (this.paused)
+                await this.paused;
             if (!this.active || generation !== this.generation || delivery.channelId !== this.client.room?.id)
                 return;
             await this.adapter.deliver(delivery);
@@ -58,6 +77,7 @@ export class RoomSession {
         ++this.generation;
         this.unsubscribe?.();
         this.unsubscribePresence?.();
+        this.resumeDelivery();
         await Promise.allSettled([this.client.close(), this.adapter.close()]);
     }
 }

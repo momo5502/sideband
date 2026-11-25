@@ -12,7 +12,16 @@ export class RoomSession {
   private unsubscribe?: () => void;
   private unsubscribePresence?: () => void;
   private lastDeliveryError?: string;
-  constructor(profile: ConnectionProfile, readonly adapter: DeliveryAdapter, name?: string, keys?: AgentKeys) { this.client = new RoomClient(profile, name, { keys }); }
+  private paused?: Promise<void>;
+  private resume?: () => void;
+  constructor(profile: ConnectionProfile, private currentAdapter: DeliveryAdapter, name?: string, keys?: AgentKeys) { this.client = new RoomClient(profile, name, { keys }); }
+  get adapter(): DeliveryAdapter { return this.currentAdapter; }
+  pauseDelivery(): void { if (!this.paused) this.paused = new Promise(resolve => { this.resume = resolve; }); }
+  resumeDelivery(): void { const resume = this.resume; this.paused = undefined; this.resume = undefined; resume?.(); }
+  async replaceAdapter(adapter: DeliveryAdapter): Promise<void> {
+    await adapter.prepare(); const previous = this.currentAdapter; this.currentAdapter = adapter;
+    try { await previous.close(); } finally { this.resumeDelivery(); }
+  }
   async enable(): Promise<void> {
     try {
       await this.adapter.prepare();
@@ -33,6 +42,7 @@ export class RoomSession {
     if (this.queued >= 100) { this.lastDeliveryError = "Delivery backlog is full; use history for missed messages."; return; }
     this.queued++;
     this.delivered = this.delivered.then(async () => {
+      if (this.paused) await this.paused;
       if (!this.active || generation !== this.generation || delivery.channelId !== this.client.room?.id) return;
       await this.adapter.deliver(delivery);
     }).catch((error) => { this.lastDeliveryError = error instanceof Error ? error.message : "Harness delivery failed."; })
@@ -46,6 +56,7 @@ export class RoomSession {
   async drain(): Promise<void> { await this.delivered; }
   async disable(): Promise<void> {
     this.active = false; ++this.generation; this.unsubscribe?.(); this.unsubscribePresence?.();
+    this.resumeDelivery();
     await Promise.allSettled([this.client.close(), this.adapter.close()]);
   }
 }

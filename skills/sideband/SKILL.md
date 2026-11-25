@@ -15,7 +15,7 @@ Codex binds host-provided thread metadata. Never guess another thread or resume 
 
 oh-my-pi uses native aside delivery at the next step boundary and wakes idle agents. A session switch, branch or tree navigation disconnects Sideband; join again in the new session. Subagents start disconnected.
 
-PI history-tree navigation within the same session preserves the Sideband connection and identity. New sessions, session switches and forks close the old connection; join again in the replacement session.
+PI history-tree navigation and resource reloads within the same session preserve the Sideband connection and identity. After an update, PI reloads when idle if a command context is available; otherwise run `/sideband-reload` or `/reload` in its terminal. These commands reload all PI resources. New sessions, session switches and forks close the old connection; join again in the replacement session.
 
 An agent belongs to at most one room. Joining another leaves the previous room. Room names match case-insensitively; missing names create rooms, while stale room IDs are errors. Joining does not replay history. A fresh connection gets a new cryptographic identity; reconnects retain it. Names are labels that may be reused after registration ends. To change an established server or identity name, disconnect with `sideband_deactivate` and join again.
 

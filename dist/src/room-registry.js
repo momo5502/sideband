@@ -17,6 +17,17 @@ export class RoomRegistry {
     }
     status(key) { return this.sessions.get(key)?.session.status() ?? { state: this.pending.has(key) ? "connecting" : "off" }; }
     connection(key) { return this.sessions.get(key); }
+    async detach(key) {
+        await this.pending.get(key)?.catch(() => { });
+        const connection = this.sessions.get(key);
+        this.sessions.delete(key);
+        return connection;
+    }
+    adopt(key, connection) {
+        if (this.closing || this.sessions.has(key) || this.pending.has(key))
+            throw new Error("Cannot replace an active room binding.");
+        this.sessions.set(key, connection);
+    }
     get(key) {
         const entry = this.sessions.get(key);
         if (!entry)
