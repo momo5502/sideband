@@ -1,7 +1,7 @@
 // Installed PI against a loopback model fixture and an isolated profile. No account or paid API calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ManagedTerminal } from "../dist/src/managed-terminal.js";
@@ -50,8 +50,21 @@ async function until(check) { const end = Date.now() + 120000; while (!check()) 
 try {
   // A manually started, plugin-loaded session must appear before any room or model call.
   const registry = join(directory, "presence");
-  const failingTool = join(directory, "failing-tool.mjs");
-  await writeFile(failingTool, `import {Type} from "typebox"; export default function(api) { api.registerTool({name:"fixture_error", label:"Fixture error", description:"Local failure fixture", parameters:Type.Object({}), execute(){throw new Error(${JSON.stringify(JSON.stringify(errorEnvelope))});}}); }`);
+  const failingTool = join(directory, "failing-tool.mjs"), historyMarker = join(directory, "history-navigation.json");
+  await writeFile(failingTool, `import {Type} from "typebox"; import {writeFile} from "node:fs/promises";
+export default function(api) {
+  api.registerTool({name:"fixture_error", label:"Fixture error", description:"Local failure fixture", parameters:Type.Object({}), execute(){throw new Error(${JSON.stringify(JSON.stringify(errorEnvelope))});}});
+  api.registerCommand("fixture-history", {description:"Local history navigation fixture", async handler(_args,ctx) {
+    try {
+      await ctx.waitForIdle();
+      const before=ctx.sessionManager.getSessionId(), file=ctx.sessionManager.getSessionFile();
+      const target=ctx.sessionManager.getEntries().find(entry=>entry.type==="message"&&entry.message.role==="user");
+      if(!target)throw new Error("No fixture history entry");
+      await ctx.navigateTree(target.id,{summarize:false});
+      await writeFile(${JSON.stringify(historyMarker)},JSON.stringify({sameSession:before===ctx.sessionManager.getSessionId()&&file===ctx.sessionManager.getSessionFile()}));
+    }catch(error){await writeFile(${JSON.stringify(historyMarker)},JSON.stringify({error:String(error)}));}
+  }});
+}`);
   const manual = spawn(executable.command, ["--mode", "rpc", "--no-extensions", "--no-session", "--no-approve", "--model", "sideband_fixture/fixture", "-e", resolve("dist/sideband-pi.cjs"), "-e", failingTool], {
     cwd: directory, env: { ...process.env, SIDEBAND_STATE_DIR: join(directory, "sideband"), SIDEBAND_PRESENCE_DIR: registry }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
   });
@@ -81,6 +94,15 @@ try {
       if (!failed) { if (Date.now() > end) throw new Error("PI did not report its failed tool."); await new Promise(resolve => setTimeout(resolve, 100)); }
     }
     assert.equal(failed.text, errorText, "PI wraps a thrown serialized tool result in another text block; only the error text should reach the panel");
+    manual.stdin.write(JSON.stringify({ id: "history", type: "prompt", message: "/fixture-history" }) + "\n");
+    const historyDeadline = Date.now() + 120000; let history;
+    while (!history) {
+      history = await readFile(historyMarker, "utf8").then(text => JSON.parse(text)).catch(() => undefined);
+      if (!history) { if (Date.now() > historyDeadline) throw new Error("PI did not navigate its fixture history."); await new Promise(resolve => setTimeout(resolve, 100)); }
+    }
+    assert.deepEqual(history, { sameSession: true }, "history navigation keeps PI's session ID and file");
+    const afterTree = await requestPlugin(endpoint, { key: session.key, action: "logs" });
+    assert.ok(afterTree.events.some(event => event.text === errorText), "history navigation keeps the external controller and output buffer");
   } finally { terminateTree(manual, false); await exited; }
   assert.deepEqual(await readPluginPresence(registry), [], "a dead plugin is never listed as running");
   const catalog = await discovery.refresh("pi"); assert.ok(catalog.models.some(m => m.id === "sideband_fixture/fixture"), catalog.error);

@@ -18,11 +18,12 @@ test("PI efforts match its own levels rather than OMP levels", () => {
   assert.throws(() => launchSpec({ name: "pi-agent", harness: "pi", effort: "max" }));
   assert.deepEqual(projectPiModels([{ provider: "fixture", id: "model", reasoning: true, thinkingLevelMap: { xhigh: null } }])[0]!.efforts, ["off", "minimal", "low", "medium", "high"]);
 });
-test("standalone PI uses TypeBox room tools, native steering and separate-terminal credential guidance", async () => {
+test("standalone PI preserves room identity across history navigation and isolates changed sessions", async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0 }), profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   await new RoomProfiles().save("pi-fixture", profile);
   const peer = new RoomClient(profile, "peer"), handlers = new Map<string, Function[]>(), tools = new Map<string, any>(), commands = new Map<string, any>(), received: any[] = [], notices: string[] = [];
-  const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "manual-pi" }, ui: { notify: (text: string) => notices.push(text), input: async () => { throw new Error("PI must never collect a password through its unmasked input"); } } };
+  let sessionId = "manual-pi";
+  const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => sessionId }, ui: { notify: (text: string) => notices.push(text), input: async () => { throw new Error("PI must never collect a password through its unmasked input"); } } };
   const emit = async (event: string, value: object = {}) => { const results = []; for (const handler of handlers.get(event) ?? []) results.push(await handler(value, ctx)); return results; };
   piSideband({ registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: (name: string, command: any) => commands.set(name, command), on: (name: string, handler: Function) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), sendMessage: (message: any, options: any) => received.push({ message, options }) });
   try {
@@ -33,7 +34,17 @@ test("standalone PI uses TypeBox room tools, native steering and separate-termin
     await tool.execute("join", { name: "pi-user", room: "pi-room", profile: "pi-fixture" }, undefined, undefined, ctx);
     await peer.connect(); await peer.joinRoom("pi-room"); await peer.send("PI room delivery");
     await until(() => received.some(item => item.message.content.includes("PI room delivery")));
+    const before = JSON.parse((await tools.get("sideband_status").execute("before", {}, undefined, undefined, ctx)).content[0].text);
+    await emit("session_tree", { oldLeafId: "recent", newLeafId: "earlier" });
+    const after = JSON.parse((await tools.get("sideband_status").execute("after", {}, undefined, undefined, ctx)).content[0].text);
+    assert.equal(after.state, "on"); assert.equal(after.identity.id, before.identity.id); assert.equal(after.room.id, before.room.id);
+    await peer.send("Delivery after history navigation");
+    await until(() => received.some(item => item.message.content.includes("Delivery after history navigation")));
+    assert.equal((await peer.members()).length, 2, "history navigation does not leave or rejoin the room");
     assert.ok(received.every(item => item.options.deliverAs === "steer" && !("attribution" in item.message)));
+    sessionId = "different-session"; await emit("session_tree");
+    const different = JSON.parse((await tools.get("sideband_status").execute("changed", {}, undefined, undefined, ctx)).content[0].text);
+    assert.deepEqual(different, { state: "off" }); assert.equal((await peer.members()).length, 1, "a different session cannot inherit the room");
     await emit("session_shutdown", { reason: "new" });
     const status = await tools.get("sideband_status").execute("status", {}, undefined, undefined, ctx).catch(() => undefined);
     assert.equal(status, undefined, "the retired PI extension runtime cannot reconnect its old binding");

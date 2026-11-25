@@ -173,7 +173,17 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
         return ready;
     };
     for (const event of ["session_switch", "session_branch", "session_tree"])
-        api.on(event, async (_event, ctx) => { await retire(); report(ctx); });
+        api.on(event, async (_event, ctx) => {
+            // PI's /tree moves the leaf inside the current session. Its runtime and
+            // room identity remain valid; new/resume/fork have their own shutdown path.
+            if (managed?.pi && event === "session_tree" && active?.id === sessionId(ctx)) {
+                active.context = ctx;
+                report(ctx, active.tools.status(active.id).identity?.name);
+                return;
+            }
+            await retire();
+            report(ctx);
+        });
     api.on("session_start", async (_event, ctx) => { await retire(); await binding(ctx); report(ctx); });
     api.on("session_shutdown", async () => {
         stopped = true;
