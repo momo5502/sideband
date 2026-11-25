@@ -41,6 +41,8 @@ With Bun installed:
 omp plugin install github:momo5502/sideband#main
 ```
 
+Git plugin installation is tested with OMP 18.18.8. If an older OMP reports `Invalid package name` for this source, update oh-my-pi (`omp update`, or your original installer) and retry.
+
 Restart oh-my-pi, then run `/sideband login YOUR-SERVER:8765`. Enter the password in its masked dialog. `/sideband join ROOM` asks for your username and joins directly; `/sideband rooms`, `leave`, `off` and `status` are also available. No app server or MCP registration is needed.
 
 ### PI (pi.dev)

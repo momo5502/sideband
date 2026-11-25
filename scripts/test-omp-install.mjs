@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, copyFile, writeFile, cp, rm } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve, relative } from "node:path";
 import { createServer } from "node:http";
+import { INSTALL_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../dist/src/timeouts.js";
 
 const { RoomServer } = await import("../dist/src/room-server.js");
 const { RoomClient } = await import("../dist/src/room-client.js");
@@ -63,7 +64,7 @@ try {
   await copyFile(join(root, "package.json"), join(pkg, "package.json"));
   // Default to a local snapshot; optionally pass a Git install spec to exercise the public installer.
   const linked = spawnSync(executable, ["plugin", process.argv[2] ? "install" : "link", process.argv[2] ?? pkg],
-    { cwd, env, encoding: "utf8", windowsHide: true, timeout: 90000 });
+    { cwd, env, encoding: "utf8", windowsHide: true, timeout: INSTALL_TIMEOUT_MS });
   if (linked.error) throw linked.error;
   assert.equal(linked.status, 0, linked.stderr || linked.stdout);
   const probe = join(directory, "probe.mjs");
@@ -83,7 +84,7 @@ export default function(api) {
   let stderr = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4000); });
   await new Promise((resolve, reject) => {
     let buffer = "", checked = false, pushed = false;
-    timer = setTimeout(() => reject(failure ?? new Error(`OMP smoke check timed out. ${stderr}`)), 30000);
+    timer = setTimeout(() => reject(failure ?? new Error(`OMP smoke check timed out. ${stderr}`)), REQUEST_TIMEOUT_MS);
     child.once("error", reject);
     child.once("exit", code => { if (!checked || code !== 0) reject(new Error(`OMP exited (${code}). ${stderr}`)); else resolve(); });
     child.stdout.setEncoding("utf8");

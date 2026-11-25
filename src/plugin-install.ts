@@ -44,7 +44,11 @@ export async function installHarnessPlugin(harness: InstallHarness, run: RunUpda
       const listed = JSON.parse(await command("omp", ["plugin", "list", "--json"], { timeout: REQUEST_TIMEOUT_MS }));
       const existing = listed.npm?.find((plugin: any) => plugin.name === "sideband");
       if (existing) { if (!await ompSource(existing.path)) throw new Error("Sideband is installed from another or local source. Keep that installation or remove it yourself first."); return present(); }
-      await command("omp", ["plugin", "install", "github:momo5502/sideband#main"]);
+      try { await command("omp", ["plugin", "install", "github:momo5502/sideband#main"]); }
+      catch (error) {
+        if (!(error instanceof Error) || !/Invalid package name:.*github:momo5502\/sideband#main/.test(error.message)) throw error;
+        throw new Error("This OMP installation rejected the Git plugin source. Update oh-my-pi (omp update, or your original installer), then rerun sideband install --harness omp. Git installation is tested with OMP 18.18.8.");
+      }
     } else {
       const raw = JSON.parse(await command(harness, ["plugin", "marketplace", "list", "--json"], { timeout: REQUEST_TIMEOUT_MS }));
       const marketplace = (Array.isArray(raw) ? raw : raw.marketplaces ?? []).find((item: any) => item.name?.toLowerCase() === "sideband");

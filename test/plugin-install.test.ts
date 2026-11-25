@@ -18,6 +18,25 @@ test("installer detects CLIs independently and validates explicit selection with
   assert.deepEqual(selectedHarnesses(["codex, PI", "codex", "claude"]), ["codex", "pi", "claude"]);
   assert.throws(() => selectedHarnesses(["unknown"])); assert.throws(() => selectedHarnesses([""]));
 });
+test("OMP installation reports legacy Git rejection and preserves existing sources", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-omp-installer-")), path = join(directory, "node_modules", "sideband");
+  let installed = false, legacy = true; const mutations: string[][] = [];
+  const run: RunUpdateCommand = async (command, args) => {
+    assert.equal(command, "omp");
+    if (args.includes("list")) return JSON.stringify({ npm: installed ? [{ name: "sideband", path }] : [] });
+    assert.deepEqual(args, ["plugin", "install", "github:momo5502/sideband#main"]); mutations.push(args);
+    if (legacy) throw new Error("omp exited (1): Failed to install github:momo5502/sideband#main: Error: Invalid package name: github:momo5502/sideband#main");
+    return "installed";
+  };
+  try {
+    await mkdir(path, { recursive: true }); await writeFile(join(directory, "package.json"), JSON.stringify({ dependencies: { sideband: "github:momo5502/sideband#main" } }));
+    const failure = await installHarnessPlugin("omp", run); assert.equal(failure.state, "failed"); assert.match(failure.message, /omp update.*sideband install --harness omp/); assert.equal(mutations.length, 1, "never retry another Git alias or upgrade the harness automatically");
+    legacy = false; assert.equal((await installHarnessPlugin("omp", run)).state, "installed"); assert.equal(mutations.length, 2);
+    installed = true; assert.equal((await installHarnessPlugin("omp", run)).state, "present"); assert.equal(mutations.length, 2);
+    await writeFile(join(directory, "package.json"), JSON.stringify({ dependencies: { sideband: "github:other/sideband" } }));
+    assert.equal((await installHarnessPlugin("omp", run)).state, "failed"); assert.equal(mutations.length, 2);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 for (const harness of ["codex", "claude"] as const) test(`${harness} installer reuses only official marketplaces and never replaces a fork`, async () => {
   let present = false, official = true, existingMarketplace = true; const calls: string[][] = [];
   const run: RunUpdateCommand = async (command, original, options) => {
