@@ -6,6 +6,16 @@ import { randomBytes } from "node:crypto";
 import * as zod from "zod/v4";
 import sideband, { type OmpApi, type OmpContext, type OmpTool } from "../src/omp-extension.js";
 import { writeLocal, readLocal } from "../src/local-wire.js";
+import { emitOmpEvent } from "../src/managed-omp.js";
+
+test("OMP and PI tool results show text blocks, structured output and nested error flags", () => {
+  const events: { kind: string; text: string }[] = [], host = { event: (kind: string, text: string) => events.push({ kind, text }), state() {} };
+  emitOmpEvent(host, { type: "tool_execution_end", result: { content: [{ type: "text", text: "rg: regex parse error" }], structuredContent: { output: "duplicate", exit_code: 2 }, isError: true } });
+  emitOmpEvent(host, { type: "tool_execution_update", partialResult: { content: [{ type: "text", text: "first" }, { type: "image", data: "ignored" }, { type: "text", text: "second" }] } });
+  emitOmpEvent(host, { type: "tool_execution_end", isError: true, result: { structuredContent: { output: "fallback failure" } } });
+  emitOmpEvent(host, { type: "tool_stream_update", output: "already plain" });
+  assert.deepEqual(events, [{ kind: "error", text: "rg: regex parse error" }, { kind: "tool-output", text: "first\nsecond" }, { kind: "error", text: "fallback failure" }, { kind: "tool-output", text: "already plain" }]);
+});
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean) { const end = Date.now() + testTimeout(5000); while (!check()) { if (Date.now() > end) throw new Error("Managed plugin condition timed out."); await pause(10); } }

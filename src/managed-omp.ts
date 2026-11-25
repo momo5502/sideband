@@ -132,6 +132,8 @@ export function emitOmpEvent(host: Pick<OmpHost, "event" | "state">, frame: any)
     if (frame.type === "tool_execution_start") host.event("tool", `${frame.toolName}\n${JSON.stringify(frame.args ?? frame.arguments ?? {})}`);
     else if (["tool_execution_end", "tool_execution_update", "tool_stream_update"].includes(frame.type)) {
       const result = frame.result ?? frame.partialResult ?? frame.output ?? frame;
-      host.event(frame.isError ? "error" : "tool-output", typeof result === "string" ? result : JSON.stringify(result));
+      const parts = Array.isArray(result?.content) ? result.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text) : [];
+      const output = typeof result === "string" ? result : parts.length ? parts.join("\n") : typeof result?.structuredContent?.output === "string" ? result.structuredContent.output : JSON.stringify(result);
+      host.event(frame.isError || result?.isError ? "error" : "tool-output", output);
     } else if (["notice", "extension_error", "auto_compaction_start", "auto_compaction_end", "auto_retry_start", "auto_retry_end", "prompt_result"].includes(frame.type)) host.event(frame.type, JSON.stringify(frame));
 }

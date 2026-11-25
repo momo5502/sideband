@@ -78,7 +78,7 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
             throw new Error("This session is changing or closed. Try again once it is ready.");
         if (request.action === "logs")
             return output.snapshot(request.after);
-        const instructions = `[Sideband web instructions]\n${request.text}`;
+        const instructions = request.text;
         output.append("user", instructions);
         const errors = output;
         let timer;

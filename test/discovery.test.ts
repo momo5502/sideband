@@ -142,6 +142,7 @@ test("external PI and OMP sessions accept web instructions and return live outpu
       if (text.endsWith("Hold the turn")) return new Promise<void>((_resolve, reject) => { lateFailure = reject; });
       await emit("message_start"); await emit("message_update", { assistantMessageEvent: { type: "text_delta", delta: `${harness} replied` } });
       await emit("tool_execution_start", { toolName: "read", args: { path: "hello" } }); await emit("agent_end");
+      await emit("tool_execution_end", { result: { content: [{ type: "text", text: "Readable rg failure" }], structuredContent: { output: "Readable rg failure", exit_code: 2 }, isError: true } });
     } };
     if (harness === "pi") piSideband(api); else sideband(api as OmpApi);
     let page: Awaited<ReturnType<typeof browserPage>> | undefined;
@@ -154,9 +155,11 @@ test("external PI and OMP sessions accept web instructions and return live outpu
       assert.equal(page.doc.querySelector('[aria-label="Agent actions"]'), null);
       page.fill("#agent-prompt", "Hello from the web"); page.submit("#agent-instructions");
       await until(() => instructions.length === 1 && ready() && page!.get("#agent-output").textContent?.includes(`${harness} replied`) === true);
-      assert.equal(instructions[0], "[Sideband web instructions]\nHello from the web");
+      assert.equal(instructions[0], "Hello from the web");
       assert.equal(page.get<HTMLTextAreaElement>("#agent-prompt").value, "");
       assert.ok(page.get("#agent-output").textContent?.includes("read"));
+      await until(() => page!.doc.querySelector(".output-error")?.textContent === "Readable rg failure");
+      assert.doesNotMatch(page.get("#agent-output").textContent!, /structuredContent|exit_code|\[Sideband web instructions\]/);
       page.fill("#agent-prompt", "Hold the turn"); page.submit("#agent-instructions");
       await until(() => !!lateFailure && ready() && page!.get<HTMLTextAreaElement>("#agent-prompt").value === "", "The held instruction was not acknowledged by the composer.");
       page.fill("#agent-prompt", "Steer while running"); page.submit("#agent-instructions");
