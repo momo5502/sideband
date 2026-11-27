@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import sideband from "./omp-extension.js";
 import { isMainThread } from "node:worker_threads";
+import { piRoomDelivery } from "./pi-delivery.js";
 const key = Symbol.for("sideband.managed.pi.root");
 const roots = globalThis;
 /** PI supplies TypeBox. Never use OMP's zod API or its masked-password dialog here. */
@@ -15,6 +16,7 @@ export function piSchema(schema) {
     return Type.Object(shape, { additionalProperties: false });
 }
 export default function piSideband(api) {
+    const deliver = piRoomDelivery(api);
     let commandContext, context, reloading = false;
     const performReload = async (ctx, hooks) => {
         if (reloading) {
@@ -77,7 +79,8 @@ export default function piSideband(api) {
                 return result;
             });
         },
-        sendMessage(message, options) { const { attribution: _attribution, ...content } = message; api.sendMessage(content, { ...options, deliverAs: "steer" }); },
+        sendMessage: deliver.send,
+        cancelRoomDelivery: deliver.clear,
         async sendUserMessage(text) { await api.sendUserMessage(text, { deliverAs: "steer" }); },
         requestReload(hooks) {
             // PI 0.79.1's sendUserMessage skips command dispatch despite its docs.

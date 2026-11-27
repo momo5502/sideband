@@ -61,7 +61,7 @@ export class OmpAdapter {
         // Native aside delivery reaches the next step boundary without aborting the tool batch.
         this.api.sendMessage({ customType: "sideband", content: formatDelivery(message), display: true, attribution: "agent" }, { deliverAs: "aside", triggerTurn: true });
     }
-    async close() { this.closed = true; }
+    async close() { this.closed = true; this.api.cancelRoomDelivery?.(); }
 }
 function unwrap(result) {
     if (result.isError)
@@ -299,6 +299,8 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
                 const result = await current.tools.call(current.id, tool.name, args);
                 if (result.isError)
                     unwrap(result);
+                if (["sideband_leave_room", "sideband_deactivate"].includes(tool.name))
+                    api.cancelRoomDelivery?.();
                 report(ctx, current.tools.status(current.id).identity?.name);
                 return { content: result.content, details: {} };
             },
@@ -340,6 +342,8 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
                     if (!current() || active !== owner)
                         throw new Error("The oh-my-pi session changed.");
                     const result = unwrap(await owner.tools.call(owner.id, name, values));
+                    if (["sideband_leave_room", "sideband_deactivate"].includes(name))
+                        api.cancelRoomDelivery?.();
                     report(ctx, owner.tools.status(owner.id).identity?.name);
                     return result;
                 };

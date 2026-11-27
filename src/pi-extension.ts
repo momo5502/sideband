@@ -1,6 +1,7 @@
 import { Type, type TSchema } from "typebox";
 import sideband, { type OmpApi } from "./omp-extension.js";
 import { isMainThread } from "node:worker_threads";
+import { piRoomDelivery } from "./pi-delivery.js";
 
 const key = Symbol.for("sideband.managed.pi.root");
 type Root = { bootstrap: { port: number; token: string }; active: boolean };
@@ -18,6 +19,7 @@ export function piSchema(schema: any): TSchema {
   return Type.Object(shape, { additionalProperties: false });
 }
 export default function piSideband(api: any): void {
+  const deliver = piRoomDelivery(api);
   let commandContext: any, context: any, reloading = false;
   const performReload = async (ctx: any, hooks?: { before(): void; failed(error: unknown): void }) => {
     if (reloading) { hooks?.failed(new Error("PI reload is already in progress.")); return; } reloading = true;
@@ -52,7 +54,8 @@ export default function piSideband(api: any): void {
         return result;
       });
     },
-    sendMessage(message: any, options: any) { const { attribution: _attribution, ...content } = message; api.sendMessage(content, { ...options, deliverAs: "steer" }); },
+    sendMessage: deliver.send,
+    cancelRoomDelivery: deliver.clear,
     async sendUserMessage(text: string) { await api.sendUserMessage(text, { deliverAs: "steer" }); },
     requestReload(hooks: { before(): void; failed(error: unknown): void }) {
       // PI 0.79.1's sendUserMessage skips command dispatch despite its docs.

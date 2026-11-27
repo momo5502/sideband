@@ -13,17 +13,19 @@ import { terminateTree } from "../dist/src/process-tree.js";
 const directory = await mkdtemp(join(tmpdir(), "sideband-real-pi-"));
 const errorText = "rg: regex parse error\nCommand exited with code 2";
 const errorEnvelope = { content: [{ type: "text", text: errorText }], structuredContent: { output: errorText, truncated: false, exit_code: 2, wall_time_seconds: 0.1 }, isError: true };
-let calls = 0, holds = 0, cancellations = 0, releaseReload;
+let calls = 0, holds = 0, cancellations = 0, releaseReload, releaseBurst;
+const modelRequests = [];
 const server = createServer(async (req, res) => {
   let raw = ""; for await (const chunk of req) raw += chunk;
-  const body = JSON.parse(raw); calls++;
+  const body = JSON.parse(raw); calls++; modelRequests.push(body);
   res.writeHead(200, { "content-type": "text/event-stream" });
   const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   const id = `msg_${calls}`, last = body.messages?.at(-1);
   send("message_start", { message: { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } });
   if (JSON.stringify(last).includes("HOLD_STREAM")) { holds++; res.once("close", () => cancellations++); return; }
   const failurePrompt = JSON.stringify(body.messages).includes("FAIL_JSON_WRAPPER");
-  const tool = body.tools?.find(t => t.name === (failurePrompt ? "fixture_error" : "sideband_room_send"));
+  const burst = /HOLD_BURST|ROOM_BURST_/.test(JSON.stringify(last));
+  const tool = burst ? undefined : body.tools?.find(t => t.name === (failurePrompt ? "fixture_error" : "sideband_room_send"));
   const result = last?.role === "user" && Array.isArray(last.content) && last.content.some(p => p.type === "tool_result");
   const block = tool && !result ? { type: "tool_use", id: `tool_${calls}`, name: tool.name, input: failurePrompt ? {} : { text: "PI fixture room send" } } : { type: "text", text: "PI_DONE" };
   const finish = () => {
@@ -34,6 +36,7 @@ const server = createServer(async (req, res) => {
   send("message_stop", {}); res.end();
   };
   if (JSON.stringify(last).includes("HOLD_RELOAD")) { let released = false; releaseReload = () => { released = true; finish(); }; res.once("close", () => { if (!released) cancellations++; }); return; }
+  if (JSON.stringify(last).includes("HOLD_BURST")) { releaseBurst = finish; return; }
   finish();
 });
 await new Promise(r => server.listen(0, "127.0.0.1", r));
@@ -44,7 +47,7 @@ await writeFile(join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.strin
   baseUrl: `http://127.0.0.1:${server.address().port}`, api: "anthropic-messages", apiKey: "synthetic-local-key",
   models: [{ id: "fixture", name: "Local fixture", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
 } } }));
-await writeFile(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), JSON.stringify({ packages: [] }));
+await writeFile(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), JSON.stringify({ packages: [], steeringMode: "one-at-a-time" }));
 const executable = { command: process.env.SIDEBAND_PI_TEST_CLI ?? "pi" }, entry = resolve("dist/src/cli.js");
 const tools = [], events = []; let state = "starting", failure;
 const host = { event: (kind, text) => events.push({ kind, text }), state: value => { state = value; }, exit: error => { failure = error ?? new Error("PI exited unexpectedly"); }, tool: async (name, args) => { tools.push({ name, args }); return { sent: true }; } };
@@ -152,14 +155,24 @@ export default function(api) {
   assert.deepEqual(await readPluginPresence(registry), [], "a dead plugin is never listed as running");
   const catalog = await discovery.refresh("pi"); assert.ok(catalog.models.some(m => m.id === "sideband_fixture/fixture"), catalog.error);
   await driver.start({ model: "sideband_fixture/fixture" });
-  await driver.prompt("Reply and send a room message"); await until(() => state === "idle" && events.some(e => e.text.includes("PI_DONE")));
+  const burstStart = calls, burstOutputStart = events.length;
+  await driver.prompt("HOLD_BURST"); await until(() => !!releaseBurst);
+  for (let i=1;i<=5;i++) await driver.deliver(`ROOM_BURST_${i}`);
+  releaseBurst(); await until(() => modelRequests.length > burstStart+1);
+  const nextRequest = JSON.stringify(modelRequests[burstStart+1]);
+  for (let i=1;i<=5;i++) assert.ok(nextRequest.includes(`ROOM_BURST_${i}`),`the very next model call must see room message ${i}, even with PI's one-at-a-time steering mode`);
+  await until(() => state === "idle" && events.slice(burstOutputStart).filter(e => e.kind === "assistant" && e.text.includes("PI_DONE")).length >= 2);
+  assert.equal(calls,burstStart+2,"five queued room messages need one combined follow-up, not five replies");
+  const replyStart = events.length;
+  await driver.prompt("Reply and send a room message"); await until(() => state === "idle" && events.slice(replyStart).some(e => e.text.includes("PI_DONE")) && tools.some(t => t.name === "sideband_room_send"));
   assert.ok(tools.some(t => t.name === "sideband_room_send"));
-  const count = calls; await driver.deliver("A room message"); await until(() => calls > count && state === "idle");
+  const count = calls, roomOutputStart = events.length; await driver.deliver("A room message"); await until(() => calls > count && state === "idle" && events.slice(roomOutputStart).some(e => e.text.includes("PI_DONE")));
   const held = driver.prompt("HOLD_STREAM"); held.catch(() => {}); await until(() => holds > 0); await driver.interrupt(); await until(() => cancellations > 0 && state === "idle"); await held;
   const session = driver.sessionFile; assert.ok(session); await driver.stop(); driver = make();
   await driver.start({ model: "sideband_fixture/fixture", resume: session }); assert.equal(driver.sessionFile, session);
   await driver.prompt("Resume and reply"); await until(() => state === "idle" && calls > count + 1);
-  console.log(`Real PI passed: model discovery, room tool, text, room delivery, interrupt, exact resume (${calls} fixture requests; ${cancellations} cancellation).`);
+  assert.equal(JSON.parse(await readFile(join(process.env.PI_CODING_AGENT_DIR,"settings.json"),"utf8")).steeringMode,"one-at-a-time","Sideband must leave the user's steering mode unchanged");
+  console.log(`Real PI passed: five-message burst in the next model call, model discovery, room tool, text, room delivery, interrupt, exact resume (${calls} fixture requests; ${cancellations} cancellation).`);
 } finally {
   await driver.stop(); await discovery.close(); server.closeAllConnections(); await new Promise(r => server.close(r));
   for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;

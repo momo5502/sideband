@@ -44,6 +44,7 @@ export interface OmpApi {
   registerCommand(name: string, command: { description: string; handler(args: string, ctx: OmpContext): Promise<void> }): void;
   on(event: string, handler: (event: { systemPrompt?: string[] }, ctx: OmpContext) => unknown): void;
   sendMessage(message: { customType: string; content: string; display: boolean; attribution: "agent" }, options: { deliverAs: "aside"; triggerTurn: boolean }): void;
+  cancelRoomDelivery?(): void;
   sendUserMessage?(content: string, options?: { deliverAs: "steer"; attribution: "user" }): Promise<void>;
   requestReload?(hooks: { before(): void; failed(error: unknown): void }): void;
   canReload?(): boolean;
@@ -68,7 +69,7 @@ export function toolParameters(api: OmpApi, schema: { properties?: Record<string
 
 export class OmpAdapter implements DeliveryAdapter {
   private closed = false;
-  constructor(private readonly api: Pick<OmpApi, "sendMessage">, private readonly isCurrent: () => boolean) {}
+  constructor(private readonly api: Pick<OmpApi, "sendMessage" | "cancelRoomDelivery">, private readonly isCurrent: () => boolean) {}
   private assertCurrent(): void {
     if (this.closed || !this.isCurrent()) throw new Error("The oh-my-pi session changed; join again in the current session.");
   }
@@ -79,7 +80,7 @@ export class OmpAdapter implements DeliveryAdapter {
     this.api.sendMessage({ customType: "sideband", content: formatDelivery(message), display: true, attribution: "agent" },
       { deliverAs: "aside", triggerTurn: true });
   }
-  async close(): Promise<void> { this.closed = true; }
+  async close(): Promise<void> { this.closed = true; this.api.cancelRoomDelivery?.(); }
 }
 
 function unwrap(result: ToolResult): any {
@@ -249,6 +250,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
         if (signal?.aborted) throw new Error("Sideband request cancelled.");
         const result = await current.tools.call(current.id, tool.name, args);
         if (result.isError) unwrap(result);
+        if (["sideband_leave_room", "sideband_deactivate"].includes(tool.name)) api.cancelRoomDelivery?.();
         report(ctx, (current.tools.status(current.id) as { identity?: { name?: string } }).identity?.name);
         return { content: result.content, details: {} };
       },
@@ -285,6 +287,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
         const call = async (name: string, values: Record<string, unknown> = {}) => {
           if (!current() || active !== owner) throw new Error("The oh-my-pi session changed.");
           const result = unwrap(await owner.tools.call(owner.id, name, values));
+          if (["sideband_leave_room", "sideband_deactivate"].includes(name)) api.cancelRoomDelivery?.();
           report(ctx, (owner.tools.status(owner.id) as { identity?: { name?: string } }).identity?.name);
           return result;
         };
