@@ -121,8 +121,20 @@ export class BrowserWorkspace {
             this.window.history.replaceState(null, "", this.window.location.pathname + this.window.location.search);
             void this.window.fetch("/local-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }), credentials: "same-origin" })
                 .then(async (response) => { if (!response.ok)
-                throw new Error("The automatic login link expired or was already used. Restart sideband run, or log in with your saved server password."); return response.json(); })
-                .then(value => this.login(saved?.name ?? "", value.password)).catch(error => this.update({ error: errorText(error) }));
+                throw new Error("The automatic login link expired or was already used. Run sideband run again for a fresh link, or log in with your saved server password."); return response.json(); })
+                .then(async (value) => {
+                try {
+                    await this.login(saved?.name ?? "", value.password);
+                }
+                catch (error) {
+                    // A fresh browser tab has a new identity. Keep an already-open tab's name
+                    // reserved and use an unnamed identity here rather than requiring a password.
+                    if (saved?.name && error.code === "NAME_IN_USE")
+                        await this.login("", value.password);
+                    else
+                        throw error;
+                }
+            }).catch(error => this.update({ error: errorText(error) }));
         }
         else if (saved?.password)
             void this.login(saved.name, saved.password).catch(() => { });

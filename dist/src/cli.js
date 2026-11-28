@@ -57,7 +57,7 @@ Local server + worker, foreground, localhost only. First run offers plugin insta
   sideband --version | version
   sideband --help | help
 
-run always binds 127.0.0.1. --no-browser prints the ordinary URL without a login token.
+run always binds 127.0.0.1. --no-browser prints a single-use browser login link.
 server includes a worker by default; --no-worker disables it (--worker is an explicit alias).
 server listens on all interfaces unless --host is given; credentials persist across restarts.
 --domain enables automatic browser HTTPS; ACME options require --domain.
@@ -200,8 +200,13 @@ Ctrl+C stops the server/worker; detached agents keep running. Rooms/history are 
                 localWorker.start();
             }
             process.send?.({ type: "sideband.ready" });
-            if (local && !values["no-browser"])
-                await openBrowser(server.createLocalLogin()).catch(() => console.error("Could not open the browser. Open the printed URL and use your saved server credentials."));
+            if (local) {
+                const loginUrl = server.createLocalLogin();
+                if (values["no-browser"])
+                    console.log(`One-time browser login (single use, expires in 2 minutes): ${loginUrl}`);
+                else
+                    await openBrowser(loginUrl).catch(() => console.error("Could not open the browser. Run sideband run --no-browser for a one-time login link."));
+            }
         }
         catch (error) {
             const stopped = closing;

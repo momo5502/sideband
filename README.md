@@ -30,7 +30,11 @@ sideband install
 sideband chat --name alice
 ```
 
-`--no-browser` prints the ordinary browser URL without a password or login token. Existing browser logins still work; a fresh browser needs the saved server credentials. Normal `run` opens a single-use login link automatically. If that link expires, stop and restart `run` to obtain a new one. The link is valid for two minutes and is not printed in terminal output.
+`--no-browser` prints a single-use browser login link instead of opening it. Open that link within two minutes; run `sideband run --no-browser` again for a fresh link, even while the server stays running. The password is never printed in local mode. Normal `run` opens its login link automatically without printing it.
+
+For an SSH/headless session, forward the browser port, for example `ssh -L 8766:127.0.0.1:8766 HOST`, then run `sideband run --no-browser` there and open its printed link locally. Use the same browser port at both ends; change both if 8766 is occupied. This does not expose Sideband to the network.
+
+Local mode is intended for a trusted single-user machine. Loopback is not an OS-user boundary: other local users may be able to observe a login link in browser-launcher process arguments and race to redeem it. A printed login link also grants access until used or expired; keep it private. On shared systems, use `sideband server` and explicit browser login instead.
 
 A local profile is saved without overwriting another server's profile. It becomes the default if none exists; an existing default remains selected. The startup message names the local profile when you need `--profile NAME` to select it explicitly. An explicit login or configuration saved as `default` selects that server. Other named profiles leave the current default unchanged. Commands and plugins select the default profile, otherwise the sole profile; several profiles without a default require an explicit choice.
 
@@ -210,7 +214,7 @@ Defaults below assume `SIDEBAND_STATE_DIR` is unset, so the state directory is `
 | --- | --- |
 | `--port PORT` | 8765, native pinned-TLS listener on 127.0.0.1. |
 | `--status-port PORT` | 8766, HTTP web UI/status on 127.0.0.1. Must differ from the native port. |
-| `--no-browser` | Do not open a browser. Print only the ordinary URL. |
+| `--no-browser` | Do not open a browser. Print a single-use login link (two-minute TTL). |
 
 There is no host, domain, background, or worker-disable option for `run`. Use `server` for different networking or a dedicated server. Occupied ports fail clearly; Sideband does not connect the worker to an unknown listener.
 
@@ -283,7 +287,7 @@ Local credentials and profiles are private files under the state directory. `con
 - **Claude waits at startup:** complete trust, bypass or other prompts locally. Hooks cannot connect before trust is accepted.
 - **Credential or certificate mismatch:** use the server's current complete password and log in again. Do not disable native TLS verification.
 - **Server update pending:** workers update first. Look at individual machine/plugin results under Updates. Plugin failures can be retried without restarting an already-current worker.
-- **Automatic login link expired:** restart `run` normally. No login token is printed with `--no-browser`.
+- **Automatic login link expired:** run `sideband run --no-browser` again for a new link without stopping the server.
 
 To remove Sideband, stop its server/worker and any agents you want stopped, then use `npm uninstall -g sideband`. Remove harness plugins through their own plugin/package commands. No service is installed automatically. State and workspaces are retained; remove them yourself only after saving anything you need. Sideband has no command that deletes user-selected workspace folders.
 

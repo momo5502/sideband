@@ -48,7 +48,7 @@ export class LocalRun {
       } else {
         const url = typeof record?.url === "string" && /^http:\/\/127\.0\.0\.1:\d+\/chat$/.test(record.url) ? record.url : undefined;
         console.log(`Sideband is already running${Number.isInteger(record?.pid) ? ` (PID ${record.pid})` : ""}.${url ? `\nBrowser: ${url}` : " It is still starting; check its terminal."}`);
-        if (url && !noBrowser) {
+        if (url) {
           let target = url;
           if (typeof record?.profile === "string") {
             let client: RoomClient | undefined;
@@ -60,7 +60,8 @@ export class LocalRun {
             } catch { console.error("Could not sign in automatically. Your existing browser login can still be used."); }
             finally { await client?.close(); }
           }
-          await openBrowser(target).catch(() => console.error("Could not open the browser. Open the printed URL."));
+          if (noBrowser && target !== url) console.log(`One-time browser login (single use, expires in 2 minutes): ${target}`);
+          else if (!noBrowser) await openBrowser(target).catch(() => console.error("Could not open the browser. Open the printed URL."));
         }
         return;
       }
@@ -96,14 +97,18 @@ export class LocalRun {
     if (!available.length) { console.log("No supported harnesses found. Install one, then run sideband install. Restart Sideband to detect it."); await privateJson(file, { complete: true }); return; }
     console.log(available.map((item, i) => `  [ ] ${i + 1}. ${item.harness}: ${item.version}`).join("\n"));
     const reader = options.choose ? undefined : createInterface({ input: process.stdin, output: process.stdout }); let selected: InstallHarness[];
+    reader?.once("SIGINT", () => { this.controller.abort(); process.emit("SIGINT"); });
     try {
-      const question = "Install Sideband plugins: numbers separated by commas, all, or Enter to skip: ";
-      const answer = (await (options.choose ? options.choose(question) : reader!.question(question, { signal: this.controller.signal }))).trim();
-      const indexes = [...new Set(answer.split(/[\s,]+/).filter(Boolean))];
-      if (answer.toLowerCase() === "all") selected = available.map(item => item.harness);
-      else {
-        if (indexes.some(value => !/^[1-9][0-9]*$/.test(value) || !available[Number(value) - 1])) throw new Error("Choose only numbers shown in the harness list. Setup will be offered again next time.");
-        selected = indexes.map(value => available[Number(value) - 1]!.harness);
+      while (true) {
+        const question = "Install Sideband plugins: numbers separated by commas, all, or Enter to skip: ";
+        const answer = (await (options.choose ? options.choose(question) : reader!.question(question, { signal: this.controller.signal }))).trim();
+        const indexes = [...new Set(answer.split(/[\s,]+/).filter(Boolean))];
+        if (answer.toLowerCase() === "all") selected = available.map(item => item.harness);
+        else {
+          if (indexes.some(value => !/^[1-9][0-9]*$/.test(value) || !available[Number(value) - 1])) { console.log("Choose only numbers shown in the harness list, all, or Enter to skip."); continue; }
+          selected = indexes.map(value => available[Number(value) - 1]!.harness);
+        }
+        break;
       }
     } finally { reader?.close(); }
     let failed = false;

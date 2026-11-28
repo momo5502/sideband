@@ -21,13 +21,17 @@ test("local login is loopback-only, same-origin, single-use and removed from bro
   const origin = `http://127.0.0.1:${server.statusPort}`, url = server.createLocalLogin(), token = url.split("=")[1]!;
   const exchange = (value: string, source = origin) => fetch(`${origin}/local-login`, { method: "POST", headers: { Origin: source, "Content-Type": "application/json" }, body: JSON.stringify({ token: value }) });
   const dom = new JSDOM("<html></html>", { url }); let store: BrowserWorkspace | undefined;
+  const existingTab = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "existing-tab");
   try {
+    await existingTab.connect();
+    dom.window.localStorage.setItem("sideband.login.v1", JSON.stringify({ name: "existing-tab", password: server.password }));
     assert.equal((await exchange(token, "https://evil.invalid")).status, 403);
     assert.equal((await fetch(`${origin}/local-login`)).status, 403);
     let historyCleared = false;
     dom.window.fetch = (async (_url, options) => { historyCleared = dom.window.location.hash === ""; return fetch(`${origin}/local-login`, { ...options, headers: { ...options!.headers, Origin: origin } }); }) as typeof fetch;
     store = new BrowserWorkspace(dom.window as unknown as Window, (endpoint, password, name, key) => new BrowserRoomClient(endpoint, password, name, key, address => new WebSocket(address, { origin }) as unknown as globalThis.WebSocket));
     store.start(); await until(() => store!.snapshot().connection === "on"); assert.equal(historyCleared, true);
+    assert.equal(store.snapshot().identity?.name, undefined, "an already-open tab's name must not block automatic login in a fresh tab");
     assert.equal((await exchange(token)).status, 403, "the browser consumed its ticket exactly once");
     assert.equal(store.snapshot().control.localOnly, true);
     const ticket = server.createLocalLogin().split("=")[1]!;
@@ -39,7 +43,7 @@ test("local login is loopback-only, same-origin, single-use and removed from bro
       await native.connect(); const fresh = await native.request<{ url: string }>("local_browser_login");
       assert.equal((await exchange(fresh.url.split("=")[1]!)).status, 200, "repeat run can mint a fresh login through pinned, authenticated TLS");
     } finally { await native.close(); }
-  } finally { store?.dispose(); dom.window.close(); await server.close(); }
+  } finally { store?.dispose(); dom.window.close(); await existingTab.close(); await server.close(); }
   const ordinary = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   try { assert.throws(() => ordinary.createLocalLogin(), /only in/); } finally { await ordinary.close(); }
 });
@@ -78,9 +82,9 @@ test("local profiles preserve an existing default, persist their own default and
     assert.equal(await LocalRun.claim(directory, true), undefined);
     await local.offerPlugins({ interactive: false }); await assert.rejects(readFile(join(directory, "local-setup.json")), "non-interactive startup must leave setup pending");
     let attempts = 0, choices = 0;
-    const options = { interactive: true, detect: async () => [{ harness: "pi" as const, version: "fixture" }], choose: async () => { choices++; return "1"; }, install: async () => ({ harness: "pi" as const, state: ++attempts === 1 ? "failed" as const : "installed" as const, message: "fixture" }) };
+    const options = { interactive: true, detect: async () => [{ harness: "pi" as const, version: "fixture" }], choose: async () => { choices++; return choices === 1 ? "typo" : "1"; }, install: async () => ({ harness: "pi" as const, state: ++attempts === 1 ? "failed" as const : "installed" as const, message: "fixture" }) };
     await local.offerPlugins(options); await assert.rejects(readFile(join(directory, "local-setup.json")));
-    await local.offerPlugins(options); await local.offerPlugins(options); assert.equal(attempts, 2); assert.equal(choices, 2);
+    await local.offerPlugins(options); await local.offerPlugins(options); assert.equal(attempts, 2); assert.equal(choices, 3, "an invalid answer must re-prompt instead of aborting setup");
     await rm(join(directory, "local-setup.json"));
     await local.offerPlugins({ ...options, choose: async () => "" }); await local.offerPlugins(options);
     assert.equal(attempts, 2, "an explicit skip is remembered without installing anything");
@@ -119,11 +123,16 @@ test("run stays foreground, publishes a local worker without logging passwords, 
   const exit = new Promise<void>(r => child.once("exit", () => { ended = true; r(); }));
   try {
     await until(() => /Worker connected and registered/.test(log), "local CLI did not start"); assert.equal(ended, false);
-    assert.match(log, /http:\/\/127\.0\.0\.1:\d+\/chat/); assert.doesNotMatch(log, /sb1\.|local-login=/);
+    assert.match(log, /http:\/\/127\.0\.0\.1:\d+\/chat/); assert.doesNotMatch(log, /sb1\./);
+    const firstLink = /One-time browser login[^\r\n]* (http:\/\/127\.0\.0\.1:\d+\/chat#local-login=[A-Za-z0-9_-]+)/.exec(log)![1]!;
+    const redeem = (url: string) => { const target = new URL(url); return fetch(`${target.origin}/local-login`, { method: "POST", headers: { Origin: target.origin, "Content-Type": "application/json" }, body: JSON.stringify({ token: target.hash.split("=")[1] }) }); };
+    assert.equal((await redeem(firstLink)).status, 200); assert.equal((await redeem(firstLink)).status, 403);
     const saved = await new RoomProfiles(directory).resolve(); assert.equal(saved.name, "local");
     const second = spawn(process.execPath, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); let secondLog = "";
     second.stdout!.on("data", data => secondLog += data); second.stderr!.on("data", data => secondLog += data);
     const code = await new Promise<number | null>(r => second.once("exit", r)); assert.equal(code, 0); assert.match(secondLog, /already running/);
+    const secondLink = /One-time browser login[^\r\n]* (http:\/\/127\.0\.0\.1:\d+\/chat#local-login=[A-Za-z0-9_-]+)/.exec(secondLog)![1]!;
+    assert.notEqual(secondLink, firstLink); assert.equal((await redeem(secondLink)).status, 200);
     child.send({ type: "sideband.shutdown" }); await until(() => ended); await exit; assert.equal(child.exitCode, 0); assert.match(log, /Stopped server and worker/);
     const invalid = spawn(process.execPath, [entry, "run", "--host", "0.0.0.0"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); let error = ""; invalid.stderr!.on("data", data => error += data);
     assert.equal(await new Promise<number | null>(r => invalid.once("exit", r)), 1); assert.match(error, /localhost-only/);
