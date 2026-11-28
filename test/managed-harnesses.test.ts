@@ -84,6 +84,10 @@ for (const name of ["codex", "claude"] as const) test(`${name} driver keeps one 
     const requests = (await readFile(join(temp.directory, "requests.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     if (name === "codex") { assert.ok(requests.some(request => request.method === "turn/steer")); assert.equal(requests.filter(request => request.method === "turn/start").length, 3); }
     else { assert.equal(requests.filter(request => request.type === "user").length, 4); assert.ok(requests.some(request => request.request?.subtype === "interrupt")); }
+    const roomText = '<sideband sender="peer">room content</sideband>';
+    await driver.deliver(roomText); await until(() => events.some(event => event.text === `reply:${roomText}`));
+    const delivered = JSON.parse((await readFile(join(temp.directory, "requests.jsonl"), "utf8")).trim().split("\n").at(-1)!);
+    assert.equal(name === "codex" ? delivered.params.input[0].text : delivered.message.content[0].text, roomText);
   } finally { await driver.stop(); await temp.close(); }
 });
 
@@ -133,6 +137,7 @@ test("native Claude gates input on its own hooks, refuses dialogs and only inter
     const interrupted = inputs.length; await driver.interrupt(); assert.equal(inputs.length, interrupted, "a repeated interrupt must not clear the idle input box");
     await send("PreToolUse"); await driver.interrupt(); assert.equal(inputs.length, interrupted + 1, "new main-agent activity restores busy state");
     await send("Stop"); await driver.deliver("<sideband sender=\"peer\">hello</sideband>"); await send("UserPromptSubmit", { prompt: inputs.at(-1)!.text });
+    assert.equal(inputs.at(-1)!.text, '<sideband sender="peer">hello</sideband>');
     assert.equal(events.filter(event => event.kind === "user").length, 2, "room delivery must not appear as a duplicate owner instruction");
   } finally { socket?.destroy(); await driver.stop(); await start.catch(() => {}); assert.ok(stopped); await temp.close(); }
 });

@@ -122,7 +122,7 @@ test("packaged server CLI reuses its default state file and rotates only with --
     assert.equal(forced, false, "Supervised server did not shut down before the backstop.");
   };
   const start = async (rotate = false) => {
-    const child = spawn(process.execPath, [resolve("dist/sideband.cjs"), "server", "--host", "127.0.0.1", "--port", "0", "--status-port", "0", ...(rotate ? ["--rotate-password"] : [])],
+    const child = spawn(process.execPath, [resolve("dist/sideband.cjs"), "server", "--no-worker", "--host", "127.0.0.1", "--port", "0", "--status-port", "0", ...(rotate ? ["--rotate-password"] : [])],
       { env: { ...process.env, SIDEBAND_STATE_DIR: f.directory }, stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true });
     children.add(child);
     let timer: NodeJS.Timeout;

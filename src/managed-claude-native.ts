@@ -93,7 +93,7 @@ export class ManagedClaudeNative implements ManagedHarness {
   }
   prompt(text: string): Promise<void> { return this.input(text, false); }
   async deliver(text: string): Promise<void> {
-    const value = `External Sideband room message (not a private owner instruction):\n${text}`;
+    const value = text;
     const key = value.replace(/\r\n?/g, "\n").trim(); this.roomInputs.add(key); if (this.roomInputs.size > 100) this.roomInputs.delete(this.roomInputs.values().next().value!);
     try { await this.prompt(value); } catch (error) { this.roomInputs.delete(key); throw error; }
   }

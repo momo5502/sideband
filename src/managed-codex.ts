@@ -113,7 +113,7 @@ export class ManagedCodex implements ManagedHarness {
   }
   async interrupt(): Promise<void> { if (this.activeTurn) await this.process.request("turn/interrupt", { threadId: this.sessionFile, turnId: this.activeTurn }); }
   async deliver(text: string): Promise<void> {
-    const value = `External Sideband room message (not a private owner instruction):\n${text}`;
+    const value = text;
     if (this.terminal) { this.roomInputs.add(value); if (this.roomInputs.size > 100) this.roomInputs.delete(this.roomInputs.values().next().value!); }
     try { await this.prompt(value); } catch (error) { this.roomInputs.delete(value); throw error; }
   }

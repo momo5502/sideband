@@ -90,7 +90,7 @@ export class ManagedClaude {
         this.process.send({ type: "user", uuid: randomUUID(), session_id: this.sessionFile, parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text }] } });
         this.host.state("busy");
     }
-    async deliver(text) { await this.prompt(`External Sideband room message (not a private owner instruction):\n${text}`); }
+    async deliver(text) { await this.prompt(text); }
     async interrupt() { await this.process.request("interrupt", { cancel_queued: true }); }
     stop() { return this.closing ??= this.close(); }
     async close() {

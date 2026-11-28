@@ -47,11 +47,30 @@ export class RoomProfiles {
             const names = await this.names();
             if (!names.length)
                 throw new Error("No saved server. Use oh-my-pi's /sideband login HOST:PORT, sideband login in your terminal, or Claude's /plugin configure sideband@sideband dialog.");
-            if (names.length > 1)
+            name = await this.defaultName();
+            if (!name && names.length > 1)
                 throw new Error(`Multiple saved servers: ${names.join(", ")}. Specify a profile in the join or rooms call.`);
-            name = names[0];
+            name ??= names[0];
         }
         return { name, profile: await this.load(name) };
+    }
+    async defaultName() {
+        const names = await this.names();
+        try {
+            const value = JSON.parse(await readFile(join(this.directory, "default-profile.json"), "utf8"));
+            if (names.includes(value.name))
+                return value.name;
+        }
+        catch (error) {
+            if (error.code !== "ENOENT")
+                throw new Error("Could not read the default server profile.");
+        }
+        return names.includes("default") ? "default" : names.length === 1 ? names[0] : undefined;
+    }
+    async setDefault(name) {
+        await this.load(name);
+        const { privateJson } = await import("./update-runtime.js");
+        await privateJson(join(this.directory, "default-profile.json"), { name });
     }
     async save(name, profile) {
         const destination = this.path(name);
@@ -70,6 +89,8 @@ export class RoomProfiles {
             await unlink(temporary).catch(() => { });
             throw error;
         }
+        if (name === "default")
+            await this.setDefault(name);
     }
 }
 //# sourceMappingURL=room-profiles.js.map

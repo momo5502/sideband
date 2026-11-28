@@ -12,7 +12,7 @@ import { generate } from "selfsigned";
 
 const root = resolve(process.argv[2] ?? ".cache/install-check/node_modules/sideband");
 const entry = process.argv[3] ? resolve(process.argv[3]) : join(root, "dist/src/cli.js");
-for (const asset of ["sideband.cjs", "sideband-omp.cjs", "sideband-pi.cjs", "src/pi-model-probe.js", "src/server-worker.js", "src/plugin-install.js", "src/plugin-presence.js", "src/plugin-control.js", "THIRD_PARTY_NOTICES.txt"]) await access(join(root, "dist", asset));
+for (const asset of ["sideband.cjs", "sideband-omp.cjs", "sideband-pi.cjs", "src/pi-model-probe.js", "src/server-worker.js", "src/local-run.js", "src/plugin-install.js", "src/plugin-presence.js", "src/plugin-control.js", "THIRD_PARTY_NOTICES.txt"]) await access(join(root, "dist", asset));
 const { RoomClient } = await import(pathToFileURL(join(root, "dist/src/room-client.js")).href);
 const { BrowserRoomClient } = await import(pathToFileURL(join(root, "dist/src/browser-protocol.js")).href);
 const { default: NodeWebSocket } = await import("ws");

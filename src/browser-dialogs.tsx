@@ -23,6 +23,7 @@ function CopyCommand({ text }: { text: string }) {
   }}>{copied ? <Check size={15} /> : <Copy size={15} />}</Button></div>;
 }
 function WorkerSetup({ state }: { state: WorkspaceState }) {
+  if (state.control.localOnly) return <div className="setup-box"><p className="font-medium text-zinc-300">Local workspace</p><p>This server accepts connections only from this machine. Its local worker starts automatically. To connect other machines, stop this run and use <code>sideband server --host ADDRESS</code> with appropriate network access.</p></div>;
   const port = state.control.serverPort ?? 8765;
   const server = `${location.hostname}${port === 443 ? "" : `:${port}`}`;
   return <div className="setup-box"><p className="font-medium text-zinc-300">Connect a machine</p><p className="mt-1">On a machine with OMP and Sideband installed, sign in once:</p><CopyCommand text={`sideband login ${server}`} /><p className="mt-3">Then keep its worker running:</p><CopyCommand text="sideband worker" /></div>;

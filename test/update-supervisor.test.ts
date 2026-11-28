@@ -54,3 +54,17 @@ test("ordinary startup failure does not roll back an installed runtime", async (
     assert.equal((await activeRuntime(directory, "worker"))?.commit, target);
   } finally { assert.ok(directory.startsWith(join(tmpdir(), "sideband-supervisor-"))); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("run uses the server runtime slot and keeps its foreground command across an update", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-supervisor-run-"));
+  try {
+    const base = join(directory, "base.mjs"), next = runtimeEntry(directory, target), script = join(directory, "supervisor.mjs"), rt = runtimeDirectory(directory);
+    await mkdir(dirname(next), { recursive: true });
+    await writeFile(base, `import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(join(rt, "server-active.json"))},JSON.stringify({commit:'${target}',previous:null}));process.send({type:'sideband.restart',args:['run','--no-browser']},()=>process.exit(75));`);
+    await writeFile(next, "console.log('updated '+process.argv.slice(2).join(' '));process.send({type:'sideband.ready'});process.disconnect();");
+    await privateJson(join(rt, "worker-active.json"), { commit: other, previous: null });
+    await writeFile(script, `import{supervise}from ${JSON.stringify(pathToFileURL(resolve("dist/src/update-supervisor.js")).href)};process.exitCode=await supervise(${JSON.stringify(base)},['run'],${JSON.stringify(directory)});`);
+    const result = await run(script, directory); assert.equal(result.code, 0, result.output); assert.match(result.output, /updated run --no-browser/);
+    assert.equal((await activeRuntime(directory, "worker"))?.commit, other); assert.equal((await activeRuntime(directory, "server"))?.commit, target);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

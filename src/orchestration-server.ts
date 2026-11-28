@@ -15,6 +15,7 @@ const uuid = (value: unknown) => { const id = text(value, "ID", 64); if (!/^[a-f
 
 /** Authenticated control plane. Room messages never pass through this broker. */
 export class OrchestrationServer {
+  get runningAgentCount(): number { return [...this.agents.values()].filter(agent => agent.online && !["stopped", "failed"].includes(agent.state)).length; }
   private peers = new Map<WebSocket, Peer>();
   private workers = new Map<string, Peer>();
   private runners = new Map<string, Peer>();

@@ -17,7 +17,7 @@ const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catc
 
 test("combined CLI boots without login, exposes an updater-enabled local machine and shuts down both supervisors", { timeout: testTimeout(45000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-combined-"));
-  const child = spawn(process.execPath, [entry, "server", "--worker", "--worker-name", "local-test", "--host", "127.0.0.1", "--port", "0", "--status-port", "0"],
+  const child = spawn(process.execPath, [entry, "server", "--worker-name", "local-test", "--host", "127.0.0.1", "--port", "0", "--status-port", "0"],
     { windowsHide: true, env: { ...process.env, SIDEBAND_STATE_DIR: directory }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
   let log = "", ended = false; child.stdout!.on("data", data => { log += data; }); child.stderr!.on("data", data => { log += data; });
   const exit = new Promise<void>(r => child.once("exit", () => { ended = true; r(); })); let web: BrowserRoomClient | undefined;

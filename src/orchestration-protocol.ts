@@ -13,7 +13,7 @@ export type DiscoveredSession = { key: string; harness: HarnessName; name: strin
 export type OutputEvent = { seq: number; at: number; kind: string; text: string };
 export type OutputSnapshot = { events: OutputEvent[]; first: number; next: number };
 export type ControlCommand = { id: string; method: string; params: Record<string, unknown> };
-export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number; updates?: FleetUpdates };
+export type ControlSnapshot = { machines: Machine[]; agents: ManagedAgent[]; serverPort?: number; localOnly?: boolean; updates?: FleetUpdates };
 
 export function modelCatalog(input: unknown): ModelCatalog {
   const value = fields(input, ["models", "at", "error"]);

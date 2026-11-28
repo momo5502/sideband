@@ -300,7 +300,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
           let profile: string | undefined;
           if (!status.identity) {
             const names = await profiles.names();
-            if (names.length > 1) {
+            if (names.length > 1 && !await profiles.defaultName()) {
               if (!ctx.hasUI || ctx.mode !== "tui") throw new Error("Choose a profile using the sideband tools.");
               profile = await ctx.ui.select("Sideband server", names, { signal: dialog.signal });
               if (!profile || !current()) return;

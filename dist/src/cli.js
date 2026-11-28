@@ -8,6 +8,7 @@ import { hiddenInput, terminalLogin } from "./terminal-login.js";
 import { buildInfo } from "./update-runtime.js";
 import { RuntimeUpdater } from "./updater.js";
 import { forwardRuntime, supervise, UPDATE_RESTART } from "./update-supervisor.js";
+import { LocalRun, openBrowser } from "./local-run.js";
 import { ServerWorker, requestWorkerBootstrap } from "./server-worker.js";
 async function main() {
     requireNodeVersion();
@@ -17,13 +18,13 @@ async function main() {
     delete process.env.SIDEBAND_SUPERVISED;
     delete process.env.SIDEBAND_RUNTIME_SELECTED;
     const embedded = command === "worker" && process.argv.includes("--embedded") ? await requestWorkerBootstrap() : undefined;
-    if (["server", "worker"].includes(command ?? "") && !supervised) {
+    if (["server", "run", "worker"].includes(command ?? "") && !supervised) {
         process.exitCode = await supervise(resolve(process.argv[1]), process.argv.slice(2), stateDirectory, embedded);
         if (embedded && process.connected)
             process.disconnect();
         return;
     }
-    if (!["server", "worker", "mcp", "managed-mcp", "managed-hook", "agent-runner", "terminal-agent", "--runtime-version"].includes(command ?? "") && !selected) {
+    if (!["server", "run", "worker", "mcp", "managed-mcp", "managed-hook", "agent-runner", "terminal-agent", "--runtime-version"].includes(command ?? "") && !selected) {
         const code = await forwardRuntime(resolve(process.argv[1]), process.argv.slice(2));
         if (code !== undefined) {
             process.exitCode = code;
@@ -36,7 +37,37 @@ async function main() {
         return;
     }
     if (["help", "--help", "-h"].includes(command ?? "") || (!command && (!process.stdin.isTTY || !process.stdout.isTTY))) {
-        console.log("Sideband\n\n  sideband [chat] [--profile NAME] [--name NAME]\n  sideband server [--host ADDRESS] [--port 8765] [--status-port 8766] [--rotate-password] [--credentials-file PATH]\n    [--domain HOST] [--email ADDRESS] [--http-port 80] [--https-port 443] [--acme-staging]\n    [--worker] [--worker-directory PATH] [--worker-name NAME]\n  sideband install [--harness codex,claude,omp,pi | --all]\n  sideband worker [--profile NAME] [--name NAME] [--omp PATH] [--codex PATH] [--claude PATH] [--pi PATH] [--directory PATH]\n  sideband login IP:port [--profile default]\n  sideband configure [--profile default] [--server IP:port]\n  sideband mcp --harness codex|claude\n\nRun sideband in a terminal to browse rooms and chat with agents.\nLogin uses a hidden terminal password prompt; it does not join a room.\nClaude also supports /plugin configure sideband@sideband.\nThe server saves its password and TLS identity; only rooms and history are ephemeral.\nUse --rotate-password to explicitly replace saved server credentials.");
+        console.log(`Sideband
+
+Quick start: sideband run
+Local server + worker, foreground, localhost only. First run offers plugin installation.
+
+  sideband run [--port 8765] [--status-port 8766] [--no-browser]
+  sideband server [--host ADDRESS] [--port 8765] [--status-port 8766]
+    [--no-worker] [--worker-name NAME] [--worker-directory PATH]
+    [--credentials-file PATH] [--rotate-password]
+    [--domain HOST] [--email ADDRESS] [--http-port 80] [--https-port 443] [--acme-staging]
+  sideband worker [--profile NAME] [--name NAME] [--directory PATH]
+    [--omp PATH] [--codex PATH] [--claude PATH] [--pi PATH]
+  sideband install [--harness codex,claude,omp,pi | --all]
+  sideband [chat] [--profile NAME] [--name NAME]
+  sideband login HOST[:PORT] [--profile default]
+  sideband configure [--profile default] [--server HOST[:PORT]]
+  sideband mcp --harness codex|claude
+  sideband --version | version
+  sideband --help | help
+
+run always binds 127.0.0.1. --no-browser prints the ordinary URL without a login token.
+server includes a worker by default; --no-worker disables it (--worker is an explicit alias).
+server listens on all interfaces unless --host is given; credentials persist across restarts.
+--domain enables automatic browser HTTPS; ACME options require --domain.
+--worker-directory defaults to <state>/workspaces; --worker-name defaults to the machine name.
+worker --directory defaults to <state>/workspaces; harness paths override detected executables.
+install prompts in a terminal; --all selects detected harnesses; --harness selects explicitly.
+login/configure use a hidden password prompt. Never pass passwords as arguments.
+chat and worker select the saved default profile, or the sole profile; use --profile to override.
+State: SIDEBAND_STATE_DIR or ~/.sideband. See README for all defaults and advanced setup.
+Ctrl+C stops the server/worker; detached agents keep running. Rooms/history are ephemeral.`);
         return;
     }
     if (!command || command === "chat" || command.startsWith("--")) {
@@ -45,12 +76,24 @@ async function main() {
         await (await import("./terminal-chat.js")).terminalChat(values);
         return;
     }
-    if (command === "server") {
+    if (command === "server" || command === "run") {
+        const local = command === "run";
         const { values } = parseArgs({ args: process.argv.slice(3), options: { host: { type: "string" }, port: { type: "string", default: "8765" },
                 "status-port": { type: "string", default: "8766" }, "rotate-password": { type: "boolean", default: false }, "credentials-file": { type: "string" },
-                domain: { type: "string" }, email: { type: "string" }, "acme-staging": { type: "boolean" }, "http-port": { type: "string" }, "https-port": { type: "string" }, worker: { type: "boolean" }, "worker-directory": { type: "string" }, "worker-name": { type: "string" } } });
-        if (!values.worker && (values["worker-directory"] !== undefined || values["worker-name"] !== undefined))
-            throw new Error("Worker options require --worker.");
+                domain: { type: "string" }, email: { type: "string" }, "acme-staging": { type: "boolean" }, "http-port": { type: "string" }, "https-port": { type: "string" }, worker: { type: "boolean" }, "no-worker": { type: "boolean" }, "no-browser": { type: "boolean" }, "worker-directory": { type: "string" }, "worker-name": { type: "string" } } });
+        if (local) {
+            const forbidden = Object.keys(values).filter(key => !["port", "status-port", "no-browser", "rotate-password"].includes(key) || key === "rotate-password" && values[key]);
+            if (forbidden.length)
+                throw new Error("sideband run is localhost-only. Use sideband server for networking and worker options.");
+        }
+        else if (values["no-browser"])
+            throw new Error("--no-browser applies to sideband run.");
+        if (values.worker && values["no-worker"])
+            throw new Error("Use --no-worker or --worker, not both.");
+        if (values["no-worker"] && (values["worker-directory"] !== undefined || values["worker-name"] !== undefined))
+            throw new Error("Worker options cannot be used with --no-worker.");
+        const workerEnabled = !values["no-worker"];
+        const host = local ? "127.0.0.1" : values.host;
         const port = Number(values.port);
         if (!Number.isInteger(port) || port < 0 || port > 65535)
             throw new Error("Invalid port.");
@@ -72,12 +115,29 @@ async function main() {
             if (values.email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email))
                 throw new Error("Invalid --email address.");
         }
+        const localRun = local ? await LocalRun.claim(stateDirectory, !!values["no-browser"]) : undefined;
+        if (local && !localRun)
+            return;
         let server;
         let localWorker;
-        let closing = false;
-        const close = async () => { if (closing)
-            return; closing = true; await localWorker?.close(); await server?.close(); if (process.connected)
-            process.disconnect(); };
+        let closing = false, restarting = false;
+        const close = async () => {
+            if (closing)
+                return;
+            closing = true;
+            const remaining = server?.runningAgentCount ?? 0;
+            try {
+                await localWorker?.close();
+                await server?.close();
+            }
+            finally {
+                await localRun?.close();
+                if (process.connected)
+                    process.disconnect();
+            }
+            if (local && !restarting)
+                console.log(`Stopped server and worker. ${remaining} managed agent(s) last reported running; they will reconnect when this server starts again. Stop agents in the web panel before closing Sideband if you want them to exit.`);
+        };
         const updater = process.send ? new RuntimeUpdater("server", resolve(process.argv[1]), stateDirectory, async () => {
             const args = process.argv.slice(2).filter(value => value !== "--rotate-password");
             const set = (key, value) => { const i = args.findIndex(arg => arg === key || arg.startsWith(`${key}=`)); if (i < 0)
@@ -86,13 +146,15 @@ async function main() {
                 args[i] = `${key}=${value}`;
             else
                 args[i + 1] = value; };
-            set("--credentials-file", credentialsFile);
+            if (!local)
+                set("--credentials-file", credentialsFile);
             set("--port", String(server.port));
             set("--status-port", String(server.statusPort));
             if (values.domain) {
                 set("--https-port", String(server.nativePort));
                 set("--http-port", String(server.acmePort));
             }
+            restarting = true;
             process.send?.({ type: "sideband.restart", args });
             process.exitCode = UPDATE_RESTART;
             await close();
@@ -102,29 +164,53 @@ async function main() {
         process.once("disconnect", () => { void close(); });
         process.once("SIGINT", () => { void close(); });
         process.once("SIGTERM", () => { void close(); });
-        await updater?.restore();
-        if (closing)
-            return;
-        const build = updater?.build ?? buildInfo(process.argv[1]);
-        console.log(`Sideband server v${build.version} (${build.commit?.slice(0, 8) ?? "bootstrap"}) starting...`);
-        const { RoomServer } = await import("./room-server.js");
-        server = await RoomServer.start({ host: values.host, port, statusPort,
-            updater, credentialsFile, databaseFile: `${credentialsFile}.sqlite`, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
-                    httpPort, httpsPort, email: values.email, staging: values["acme-staging"], log: message => console.log(message) } } : {}) });
-        if (closing) {
-            await server.close();
-            return;
+        try {
+            await updater?.restore();
+            if (closing)
+                return;
+            const build = updater?.build ?? buildInfo(process.argv[1]);
+            console.log(`Sideband server v${build.version} (${build.commit?.slice(0, 8) ?? "bootstrap"}) starting...`);
+            const { RoomServer } = await import("./room-server.js");
+            server = await RoomServer.start({ host, port, statusPort, localMode: local,
+                updater, credentialsFile, databaseFile: `${credentialsFile}.sqlite`, rotatePassword: values["rotate-password"], ...(values.domain ? { browserHttps: { domain: values.domain, directory: join(dirname(credentialsFile), "https"),
+                        httpPort, httpsPort, email: values.email, staging: values["acme-staging"], log: message => console.log(message) } } : {}) });
+            if (closing) {
+                await server.close();
+                return;
+            }
+            const browserUrl = `http://127.0.0.1:${server.statusPort}/chat`;
+            if (localRun) {
+                const profileName = await localRun.profile({ server: `127.0.0.1:${server.port}`, password: server.password });
+                await localRun.ready(browserUrl, profileName);
+                console.log(`Sideband is local to this machine.\nBrowser: ${browserUrl}\nKeep this terminal open. Ctrl+C stops the server and worker; agent sessions keep running.`);
+                await localRun.offerPlugins();
+                if (closing)
+                    return;
+            }
+            else {
+                const address = server.browserUrl ? new URL(server.browserUrl).host : `<your-VPS-IP>:${server.port}`;
+                console.log(`Sideband listening on ${host ?? "*"}:${server.nativePort}\n\nClient address: ${address}\nClient login: sideband login ${address}\nPassword: ${server.password}\n\nBrowser: ${server.browserUrl ?? `http://<your-VPS-IP>:${server.statusPort}`}/chat\nCredentials: ${credentialsFile}\nThe password and native TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
+                if (server.browserUrl)
+                    console.log(`Native agents and browsers share HTTPS port ${server.nativePort}. Existing ports ${server.port}/${server.statusPort} remain available.\nAutomatic certificates use Let's Encrypt. Setup and renewals require public port 80 to reach --http-port.`);
+            }
+            if (workerEnabled) {
+                const workerHost = !host || ["0.0.0.0", "::"].includes(host) ? "127.0.0.1" : host;
+                localWorker = new ServerWorker(resolve(process.argv[1]), join(dirname(credentialsFile), "server-worker"), { profile: { server: `${workerHost.includes(":") ? `[${workerHost}]` : workerHost}:${server.port}`, password: server.password },
+                    directory: resolve(values["worker-directory"] ?? join(stateDirectory, "workspaces")), name: values["worker-name"] });
+                localWorker.start();
+            }
+            process.send?.({ type: "sideband.ready" });
+            if (local && !values["no-browser"])
+                await openBrowser(server.createLocalLogin()).catch(() => console.error("Could not open the browser. Open the printed URL and use your saved server credentials."));
         }
-        const address = server.browserUrl ? new URL(server.browserUrl).host : `<your-VPS-IP>:${server.port}`;
-        console.log(`Sideband listening on ${values.host ?? "*"}:${server.nativePort}\n\nClient address: ${address}\nClient login: sideband login ${address}\nPassword: ${server.password}\n\nBrowser: ${server.browserUrl ?? `http://<your-VPS-IP>:${server.statusPort}`}/chat\nCredentials: ${credentialsFile}\nThe password and native TLS identity are reused on restart. Use --rotate-password to replace them.\nRooms and history disappear when the server stops.`);
-        if (server.browserUrl)
-            console.log(`Native agents and browsers share HTTPS port ${server.nativePort}. Existing ports ${server.port}/${server.statusPort} remain available.\nAutomatic certificates use Let's Encrypt. Setup and renewals require public port 80 to reach --http-port.`);
-        process.send?.({ type: "sideband.ready" });
-        if (values.worker) {
-            const host = !values.host || ["0.0.0.0", "::"].includes(values.host) ? "127.0.0.1" : values.host;
-            localWorker = new ServerWorker(resolve(process.argv[1]), join(dirname(credentialsFile), "server-worker"), { profile: { server: `${host.includes(":") ? `[${host}]` : host}:${server.port}`, password: server.password },
-                directory: resolve(values["worker-directory"] ?? join(stateDirectory, "workspaces")), name: values["worker-name"] });
-            localWorker.start();
+        catch (error) {
+            const stopped = closing;
+            await close();
+            if (stopped)
+                return;
+            if (error.code === "EADDRINUSE")
+                throw new Error("A Sideband port is already in use. Stop the other listener, or choose --port and --status-port. No connection was made to that listener.");
+            throw error;
         }
         return;
     }

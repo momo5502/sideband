@@ -23,7 +23,7 @@ type Member = { identity: AgentIdentity; roomIds: Set<string>; roomId?: string; 
 type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
 type Connection = { browser: boolean; alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
 export type RoomServerOptions = { host?: string; port?: number; statusPort?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
-  credentialsFile?: string; databaseFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions; updater?: RuntimeUpdater };
+  credentialsFile?: string; databaseFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions; updater?: RuntimeUpdater; localMode?: boolean };
 
 /** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
 export class RoomServer {
@@ -44,6 +44,15 @@ export class RoomServer {
   private readonly tcpSockets = new Set<Duplex>();
   private heartbeat?: NodeJS.Timeout;
   private stopping = false;
+  private localLogins = new Map<string, number>();
+  createLocalLogin(): string {
+    if (!this.options.localMode || !this.statusPort) throw new Error("Automatic login is available only in sideband run.");
+    const now = Date.now();
+    for (const [token, expiry] of this.localLogins) if (expiry < now) this.localLogins.delete(token);
+    while (this.localLogins.size >= 16) this.localLogins.delete(this.localLogins.keys().next().value!);
+    const token = randomBytes(32).toString("base64url"); this.localLogins.set(token, now + 120000);
+    return `http://127.0.0.1:${this.statusPort}/chat#local-login=${token}`;
+  }
   private roomChangeTimer?: NodeJS.Timeout;
   private roomsChanged(): void {
     if (this.stopping || this.roomChangeTimer) return;
@@ -88,6 +97,7 @@ export class RoomServer {
     this.ws.handleUpgrade(req, socket, head, client => this.accept(client, browser));
   }
   static async start(options: RoomServerOptions = {}): Promise<RoomServer> {
+    if (options.localMode && (options.host !== "127.0.0.1" || options.browserHttps || options.statusPort === undefined)) throw new Error("Local mode requires loopback HTTP and HTTPS listeners.");
     if (options.rotatePassword && !options.credentialsFile) throw new Error("Password rotation requires a credentials file.");
     const existing = options.credentialsFile && !options.rotatePassword ? await loadServerIdentity(options.credentialsFile) : undefined;
     const identity = existing ?? await createServerIdentity();
@@ -118,6 +128,7 @@ export class RoomServer {
     return server;
   }
   get port(): number { const address = this.http.address(); if (!address || typeof address === "string") throw new Error("Server is not listening."); return address.port; }
+  get runningAgentCount(): number { return this.orchestration.runningAgentCount; }
   get statusPort(): number | undefined { const address = this.plainHttp?.address(); return address && typeof address !== "string" ? address.port : undefined; }
   get browserUrl(): string | undefined { return this.browserHttps?.url; }
   get nativePort(): number { return this.browserHttps?.port ?? this.port; }
@@ -133,6 +144,23 @@ export class RoomServer {
     let path: string;
     try { path = new URL(req.url ?? "/", "https://sideband.invalid").pathname; }
     catch { res.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" }); res.end("Bad request.\n"); return; }
+    if (path === "/local-login") {
+      const origin = `http://127.0.0.1:${this.statusPort}`;
+      if (!this.options.localMode || req.method !== "POST" || req.headers.origin !== origin || req.headers.host !== new URL(origin).host || req.socket.remoteAddress !== "127.0.0.1" || req.headers["content-type"] !== "application/json") {
+        res.writeHead(403, headers); res.end(); req.resume(); return;
+      }
+      let body = "", oversized = false;
+      req.on("data", chunk => { if (oversized) return; body += chunk; if (Buffer.byteLength(body) > 256) { oversized = true; body = ""; } });
+      req.on("error", () => {});
+      req.on("end", () => {
+        let token: string | undefined; try { token = JSON.parse(body).token; } catch { /* Invalid. */ }
+        const expiry = typeof token === "string" ? this.localLogins.get(token) : undefined;
+        if (token) this.localLogins.delete(token);
+        if (oversized || !expiry || expiry < Date.now()) { res.writeHead(403, headers); res.end(); return; }
+        res.writeHead(200, { ...headers, "Content-Type": "application/json" }); res.end(JSON.stringify({ password: this.password }));
+      });
+      return;
+    }
     if (path === "/webhooks") {
       void this.webhookRequest(req, res, headers).catch(() => {
         if (!res.headersSent) res.writeHead(500, { ...headers, "Content-Type": "text/plain; charset=utf-8", Connection: "close" });
@@ -295,8 +323,13 @@ export class RoomServer {
     }
     const member = connection.member;
     if (!member || member.socket !== socket) throw new RoomError("AUTH_REQUIRED", "Authenticate first.");
+    if (method === "local_browser_login") {
+      fields(params, []);
+      if (!this.options.localMode || connection.browser) throw new RoomError("FORBIDDEN", "Local browser login requires the local native client.");
+      return { url: this.createLocalLogin() };
+    }
     if (method.startsWith("control.")) return this.orchestration.request(socket, connection.browser, method, params, member.identity).then(result =>
-      method === "control.list" ? { ...(result as object), serverPort: this.nativePort } : result).catch(error => {
+      method === "control.list" ? { ...(result as object), serverPort: this.nativePort, ...(this.options.localMode ? { localOnly: true } : {}) } : result).catch(error => {
       if (error instanceof RoomError) throw error;
       throw new RoomError("CONTROL", error instanceof Error ? error.message : "Control request failed.");
     });

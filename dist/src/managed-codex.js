@@ -210,7 +210,7 @@ export class ManagedCodex {
     async interrupt() { if (this.activeTurn)
         await this.process.request("turn/interrupt", { threadId: this.sessionFile, turnId: this.activeTurn }); }
     async deliver(text) {
-        const value = `External Sideband room message (not a private owner instruction):\n${text}`;
+        const value = text;
         if (this.terminal) {
             this.roomInputs.add(value);
             if (this.roomInputs.size > 100)

@@ -12,6 +12,7 @@ const uuid = (value) => { const id = text(value, "ID", 64); if (!/^[a-f0-9-]{36}
 export class OrchestrationServer {
     send;
     store;
+    get runningAgentCount() { return [...this.agents.values()].filter(agent => agent.online && !["stopped", "failed"].includes(agent.state)).length; }
     peers = new Map();
     workers = new Map();
     runners = new Map();

@@ -156,7 +156,7 @@ export class ManagedClaudeNative {
     }
     prompt(text) { return this.input(text, false); }
     async deliver(text) {
-        const value = `External Sideband room message (not a private owner instruction):\n${text}`;
+        const value = text;
         const key = value.replace(/\r\n?/g, "\n").trim();
         this.roomInputs.add(key);
         if (this.roomInputs.size > 100)

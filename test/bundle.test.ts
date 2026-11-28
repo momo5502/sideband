@@ -25,7 +25,7 @@ test("standalone plugin runs without node_modules and uses native Claude credent
   let timer: NodeJS.Timeout | undefined;
   try {
     const help = spawnSync(process.execPath, [entry, "--help"], { cwd: directory, env, encoding: "utf8", windowsHide: true });
-    assert.equal(help.status, 0, help.stderr); assert.match(help.stdout, /sideband login IP:port/);
+    assert.equal(help.status, 0, help.stderr); assert.match(help.stdout, /sideband login HOST\[:PORT\]/);
     assert.match(help.stdout, /sideband \[chat\]/);
     const chat = spawnSync(process.execPath, [entry, "chat"], { cwd: directory, env, encoding: "utf8", windowsHide: true });
     assert.equal(chat.status, 1); assert.match(chat.stderr, /interactive terminal/);

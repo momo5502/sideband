@@ -190,7 +190,7 @@ export async function terminalChat(options: { profile?: string; name?: string } 
   const terminate = () => ui.close();
   process.once("SIGTERM", terminate);
   try {
-    let profileName = options.profile ?? (names.length === 1 ? names[0] : undefined);
+    let profileName = options.profile ?? await profiles.defaultName();
     while (!profileName) {
       ui.write("Saved connections:"); names.forEach((name, index) => ui.write(`  ${index + 1}. ${name}`));
       const answer = await ui.question("Connection (number/name): ");

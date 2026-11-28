@@ -100,7 +100,15 @@ export class BrowserWorkspace {
     const saved = this.storage("localStorage", loginStorage);
     if (typeof saved?.name === "string" && typeof saved?.password === "string") return saved;
   }
-  start() { const saved = this.savedLogin(); if (saved?.password) void this.login(saved.name, saved.password).catch(() => {}); }
+  start() {
+    const saved = this.savedLogin(), token = /^#local-login=([A-Za-z0-9_-]{43})$/.exec(this.window.location.hash)?.[1];
+    if (token) {
+      this.window.history.replaceState(null, "", this.window.location.pathname + this.window.location.search);
+      void this.window.fetch("/local-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }), credentials: "same-origin" })
+        .then(async response => { if (!response.ok) throw new Error("The automatic login link expired or was already used. Restart sideband run, or log in with your saved server password."); return response.json(); })
+        .then(value => this.login(saved?.name ?? "", value.password)).catch(error => this.update({ error: errorText(error) }));
+    } else if (saved?.password) void this.login(saved.name, saved.password).catch(() => {});
+  }
   async login(name: string, password: string): Promise<void> {
     if (this.wanted) return;
     const generation = ++this.generation;

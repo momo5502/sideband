@@ -30,7 +30,7 @@ export async function supervise(entry: string, args: string[], directory = state
   process.on("message", parentMessage); process.once("disconnect", parentStop);
   try {
   while (true) {
-    const role = args[0] === "server" ? "server" : "worker";
+    const role = ["server", "run"].includes(args[0]!) ? "server" : "worker";
     const active = await activeRuntime(directory, role); const selected = active ? runtimeEntry(directory, active.commit) : base;
     if (stopping) return 0;
     let ready = false, requested = false;
