@@ -6,6 +6,7 @@ import type { Duplex } from "node:stream";
 import type { TLSSocket } from "node:tls";
 import { createServer as createHttpServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { statusPage, type PublicStatus } from "./status-page.js";
+import { RoomCatalog, roomName } from "./room-catalog.js";
 import { webPage } from "./web-page.js";
 import { browserScript } from "./browser-bundle.js";
 import { Registry } from "./persistence.js";
@@ -16,16 +17,16 @@ import { BrowserHttps, type BrowserHttpsOptions } from "./browser-https.js";
 import type { RuntimeUpdater } from "./updater.js";
 import {
   VERSION, MAX_TEXT_BYTES, RoomError, agentName, fields, identityFor, loginProof, messageProof, text, validSignature,
-  type AgentIdentity, type Room, type SignedMessage, type PresenceKind,
+  type AgentIdentity, type Room, type SignedMessage, type PresenceKind, type PresenceEvent, type Rename,
 } from "./room-protocol.js";
 
 type Member = { identity: AgentIdentity; roomIds: Set<string>; roomId?: string; socket?: WebSocket; expiry?: NodeJS.Timeout };
-type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[] };
+type RoomState = { id: string; name: string; members: Set<string>; history: SignedMessage[]; events: PresenceEvent[] };
 type Connection = { browser: boolean; alive: boolean; challenge: string; candidate?: AgentIdentity; member?: Member; authTimer: NodeJS.Timeout; tokens: number; lastRefill: number };
 export type RoomServerOptions = { host?: string; port?: number; statusPort?: number; graceMs?: number; heartbeatMs?: number; authTimeoutMs?: number; maxClients?: number;
   credentialsFile?: string; databaseFile?: string; rotatePassword?: boolean; browserHttps?: BrowserHttpsOptions; updater?: RuntimeUpdater; localMode?: boolean };
 
-/** Rooms and messages are ephemeral. The CLI supplies a file to persist the server identity. */
+/** Room metadata and identity labels use the registry; membership and messages are ephemeral. */
 export class RoomServer {
   readonly password: string;
   readonly fingerprint: string;
@@ -38,12 +39,14 @@ export class RoomServer {
   private readonly browserHttps?: BrowserHttps;
   private readonly ws: WebSocketServer;
   private readonly members = new Map<string, Member>();
-  private readonly names = new Map<string, string>();
+  private readonly catalog: RoomCatalog;
   private readonly rooms = new Map<string, RoomState>();
   private readonly connections = new Map<WebSocket, Connection>();
   private readonly tcpSockets = new Set<Duplex>();
   private heartbeat?: NodeJS.Timeout;
   private stopping = false;
+  private identityNames = new Map<string, string>();
+  private identityOperations = Promise.resolve();
   private localLogins = new Map<string, number>();
   createLocalLogin(): string {
     if (!this.options.localMode || !this.statusPort) throw new Error("Automatic login is available only in sideband run.");
@@ -62,8 +65,23 @@ export class RoomServer {
     }, 40);
     this.roomChangeTimer.unref();
   }
-  private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions, store?: Registry) {
-    this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater, store);
+  private constructor(identity: ServerIdentity, private readonly options: RoomServerOptions, private readonly store?: Registry) {
+    this.catalog = new RoomCatalog(store);
+    for (const [id, value] of store?.all<{ name: string }>("identity-name") ?? []) { const name = agentName(value.name); if (name) this.identityNames.set(id, name); }
+    this.orchestration = new OrchestrationServer((socket, packet) => this.send(socket, packet), options.updater, store, {
+      identity: id => { const member = this.members.get(id); return member?.socket?.readyState === WebSocket.OPEN ? member.identity : undefined; },
+      renameIdentity: async (id, name, actor) => { const member = this.members.get(id); if (!member) throw new Error("This room identity is offline."); await this.renameIdentity(member, name, actor); },
+      rememberName: (id, name) => {
+        const operation = this.identityOperations.then(async () => {
+          await this.store?.change(() => this.store!.put("identity-name", id, { name })); this.identityNames.set(id, name);
+          const member = this.members.get(id);
+          if (member) { member.identity = { ...member.identity, name }; if (member.socket) this.send(member.socket, { event: "identity.changed", data: member.identity }); }
+        });
+        this.identityOperations = operation.then(() => {}, () => {}); return operation;
+      },
+      room: (id, name) => this.catalog.resolve(id) ?? this.catalog.resolve(name),
+      renamed: (rename, actor, room) => { const target = this.catalog.resolve(room); const active = target && this.rooms.get(target.id); if (active) this.renamed(active, rename, actor); },
+    });
     this.fingerprint = createHash("sha256").update(new X509Certificate(identity.certificate).raw).digest("base64url");
     this.secret = createHash("sha256").update(identity.secret).digest();
     this.webhooks = new Webhooks(this.secret);
@@ -220,10 +238,11 @@ export class RoomServer {
     const githubEvent = req.headers["x-github-event"];
     try { body = webhookText(payload, typeof githubEvent === "string" ? githubEvent : undefined); }
     catch { respond(400, "JSON nesting is too deep.\n"); return; }
-    const room = [...this.rooms.values()].find(room => room.name.toLowerCase() === target.room);
+    const targetRoom = this.catalog.legacy(target.room);
+    const room = targetRoom && this.rooms.get(targetRoom.id);
     // A retained reconnecting member does not make an otherwise empty room an active destination.
     if (!room || ![...room.members].some(id => this.members.get(id)?.socket?.readyState === WebSocket.OPEN)) { respond(204); return; }
-    if (this.names.has(target.sender.toLowerCase())) { respond(409, "Webhook sender name is in use by a connected participant.\n"); return; }
+    if ([...this.members.values()].some(member => member.identity.name?.toLowerCase() === target.sender.toLowerCase())) { respond(409, "Webhook sender name is in use by a connected participant.\n"); return; }
     const message = this.webhooks.message(target, room.id, body);
     this.broadcast(room, message);
     respond(204);
@@ -286,7 +305,7 @@ export class RoomServer {
       }
     });
   }
-  private request(socket: WebSocket, connection: Connection, method: string, params: unknown): unknown {
+  private async request(socket: WebSocket, connection: Connection, method: string, params: unknown): Promise<unknown> {
     if (method === "hello") {
       if (connection.member || connection.candidate) throw new RoomError("AUTH_STATE", "Handshake already started.");
       const args = fields(params, ["publicKey", "name"]);
@@ -295,13 +314,12 @@ export class RoomServer {
     }
     if (method === "authenticate") {
       const args = fields(params, ["secret", "signature"]);
-      const candidate = connection.candidate;
+      let candidate = connection.candidate;
       const digest = createHash("sha256").update(typeof args.secret === "string" ? args.secret : "").digest();
       if (connection.member || !candidate || !timingSafeEqual(digest, this.secret) || !validSignature(candidate.publicKey, loginProof(connection.challenge, this.fingerprint, candidate), args.signature)) {
         throw new RoomError("AUTH_FAILED", "Password or identity proof is invalid.");
       }
-      const reserved = candidate.name ? this.names.get(candidate.name.toLowerCase()) : undefined;
-      if (reserved && reserved !== candidate.id) throw new RoomError("NAME_IN_USE", "That agent name is already registered. Choose another name.");
+      const renamed = this.identityNames.get(candidate.id); if (renamed) candidate = { ...candidate, name: renamed };
       let member = this.members.get(candidate.id);
       const resumed = !!member;
       if (!connection.browser && member && member.roomIds.size > 1) throw new RoomError("IDENTITY_MODE", "This identity is joined to multiple rooms in the browser.");
@@ -310,7 +328,7 @@ export class RoomServer {
         if (this.members.size >= (this.options.maxClients ?? 1024)) throw new RoomError("CAPACITY", "Server client capacity reached.");
         member = { identity: candidate, roomIds: new Set() };
         this.members.set(candidate.id, member);
-        if (candidate.name) this.names.set(candidate.name.toLowerCase(), candidate.id);
+
       }
       if (member.expiry) clearTimeout(member.expiry);
       const prior = member.socket;
@@ -337,30 +355,35 @@ export class RoomServer {
     switch (method) {
       case "webhook": {
         const args = fields(params, ["room", "sender"]);
-        if (typeof args.sender === "string" && this.names.has(args.sender.toLowerCase())) throw new RoomError("NAME_IN_USE", "Choose a webhook sender name distinct from connected participants.");
-        return this.webhooks.create(args.room, args.sender);
+        if (typeof args.sender === "string" && [...this.members.values()].some(member => member.identity.name?.toLowerCase() === args.sender!.toString().toLowerCase())) throw new RoomError("NAME_IN_USE", "Choose a webhook sender name distinct from connected participants.");
+        const target = await this.catalog.ensure(roomName(args.room)); return this.webhooks.create(this.store ? target.id : target.name, args.sender);
       }
       case "rooms": fields(params, []); return [...this.rooms.values()].map((room) => this.summary(room));
+      case "identity_rename": {
+        const args = fields(params, ["name"]), name = agentName(args.name); if (!name) throw new RoomError("INVALID_ARGUMENT", "Choose an agent name.");
+        return this.renameIdentity(member, name);
+
+      }
+      case "room_rename": {
+        if (!connection.browser) throw new RoomError("FORBIDDEN", "Rename rooms through the web panel.");
+        const args = fields(params, ["room", "name"]), room = this.memberRoom(member, args.room), oldName = room.name;
+        const renamed = await this.catalog.rename(room.id, args.name); room.name = renamed.name;
+        if (oldName !== room.name) {
+          await this.orchestration.roomRenamed(room.id, oldName, room.name);
+          this.renamed(room, { kind: "room", id: room.id, oldName, newName: room.name }, member.identity); this.roomsChanged();
+        }
+        return this.summary(room);
+      }
+      case "room_events": { const args = fields(params, ["room"]); return this.memberRoom(member, args.room).events; }
       case "create": {
-        // Compatibility with pre-0.11 clients. Current clients expose only join.
-        const args = fields(params, ["name"]);
-        const name = text(args.name, "room name", 100).trim();
-        if (!name || /[\x00-\x1f\x7f]/.test(name)) throw new RoomError("INVALID_ARGUMENT", "Invalid room name.");
-        if ([...this.rooms.values()].some((room) => room.name.toLowerCase() === name.toLowerCase())) throw new RoomError("ROOM_EXISTS", "Room name is in use; join it explicitly.");
-        const room: RoomState = { id: randomUUID(), name, members: new Set(), history: [] };
-        this.rooms.set(room.id, room); this.join(member, room); return this.summary(room);
+        const args = fields(params, ["name"]), name = roomName(args.name);
+        if ([...this.rooms.values()].some(room => room.name.toLowerCase() === name.toLowerCase())) throw new RoomError("ROOM_EXISTS", "Room name is in use; join it explicitly.");
+        const metadata = await this.catalog.ensure(name), room = this.activeRoom(metadata); this.join(member, room); return this.summary(room);
       }
       case "join":
       case "subscribe": {
-        const args = fields(params, ["room"]); const target = text(args.room, "room", 100).trim();
-        if (!target || /[\x00-\x1f\x7f]/.test(target)) throw new RoomError("INVALID_ARGUMENT", "Invalid room name.");
-        let room = this.rooms.get(target) ?? [...this.rooms.values()].find((room) => room.name.toLowerCase() === target.toLowerCase());
-        if (!room) {
-          // A stale ID must not become a new room named after that ID during recovery.
-          if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(target)) throw new RoomError("ROOM_NOT_FOUND", "Room ID does not exist. Join by name to create a room.");
-          room = { id: randomUUID(), name: target, members: new Set(), history: [] };
-          this.rooms.set(room.id, room);
-        }
+        const args = fields(params, ["room"]), target = roomName(args.room);
+        const metadata = await this.catalog.ensure(target), room = this.activeRoom(metadata);
         if (method === "subscribe") this.subscribe(member, room); else this.join(member, room);
         return this.summary(room);
       }
@@ -396,6 +419,27 @@ export class RoomServer {
       }
       default: throw new RoomError("UNKNOWN_METHOD", "Unknown method.");
     }
+  }
+  private renameIdentity(member: Member, name: string, actor = member.identity): Promise<AgentIdentity> {
+    const operation = this.identityOperations.then(async () => {
+      const previous = member.identity; if (previous.name === name) return previous;
+      await this.store?.change(() => this.store!.put("identity-name", previous.id, { name })); this.identityNames.set(previous.id, name);
+      member.identity = { ...previous, name };
+      if (member.socket) this.send(member.socket, { event: "identity.changed", data: member.identity });
+      for (const id of member.roomIds) { const room = this.rooms.get(id); if (room) this.renamed(room, { kind: "agent", id: previous.id, oldName: previous.name ?? previous.id, newName: name }, actor); }
+      return member.identity;
+    });
+    this.identityOperations = operation.then(() => {}, () => {}); return operation;
+  }
+  private activeRoom(metadata: { id: string; name: string }): RoomState {
+    let room = this.rooms.get(metadata.id);
+    if (!room) { room = { ...metadata, members: new Set(), history: [], events: [] }; this.rooms.set(room.id, room); }
+    return room;
+  }
+  private renamed(room: RoomState, rename: Rename, participant: AgentIdentity): void {
+    const data: PresenceEvent = { id: randomUUID(), roomId: room.id, kind: "renamed", rename, participant, createdAt: Date.now() };
+    room.events.push(data); if (room.events.length > 50) room.events.shift();
+    for (const id of room.members) { const peer = this.members.get(id); if (peer?.socket) this.send(peer.socket, { event: "presence", data }); }
   }
   private summary(room: RoomState): Room { return { id: room.id, name: room.name, members: room.members.size }; }
   private memberRoom(member: Member, value: unknown): RoomState {
@@ -444,7 +488,7 @@ export class RoomServer {
   private remove(member: Member): void {
     if (member.expiry) clearTimeout(member.expiry);
     this.leave(member); this.members.delete(member.identity.id);
-    if (member.identity.name) this.names.delete(member.identity.name.toLowerCase());
+
   }
   async close(): Promise<void> {
     this.options.updater?.close();
@@ -459,6 +503,6 @@ export class RoomServer {
     await new Promise<void>((resolve) => this.ws.close(() => resolve()));
     await new Promise<void>((resolve) => this.http.close(() => resolve()));
     if (this.plainHttp) await new Promise<void>(resolve => this.plainHttp!.close(() => resolve()));
-    this.members.clear(); this.names.clear(); this.rooms.clear();
+    this.members.clear(); this.rooms.clear();
   }
 }

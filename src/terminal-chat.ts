@@ -26,7 +26,7 @@ export function terminalText(value: string): string {
 
 export function chatMessage(message: ChatMessage, colors = false): string {
   const time = new Date(message.createdAt).toLocaleTimeString();
-  let timestamp = time; let sender = terminalText(identityLabel(message.sender));
+  let timestamp = time; let sender = terminalText(identityLabel(message.sender) + (message.sender.name ? `#${message.sender.id.replace(/^agent-/, "").slice(0, 12)}` : ""));
   if (colors) {
     const palette = [36, 32, 35, 33, 94, 96];
     const color = palette[createHash("sha256").update(message.sender.id).digest()[0]! % palette.length];
@@ -93,7 +93,7 @@ export async function runChatSession(client: RoomClient, ui: ChatTerminal): Prom
     const key = `${event.roomId}:${event.id}`;
     if (!force && shown.has(key)) return;
     remember(key);
-    if ("kind" in event) ui.write(`* ${identityLabel(event.participant)} ${event.kind}.`);
+    if ("kind" in event) ui.write(event.rename ? terminalText(`* ${event.rename.kind === "room" ? "Room " : ""}${event.rename.oldName} is now ${event.rename.newName} (#${event.rename.id.replace(/^agent-/, "").slice(0, 12)}).`) : `* ${identityLabel(event.participant)} ${event.kind}.`);
     else printMessage(event);
   };
   const receive = (event: SignedMessage | PresenceEvent) => {

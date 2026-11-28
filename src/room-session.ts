@@ -29,7 +29,7 @@ export class RoomSession {
       const generation = ++this.generation;
       this.unsubscribe = this.client.onMessage((message) => this.receive(message, generation));
       this.unsubscribePresence = this.client.onPresence((event) => this.enqueue({ messageId: event.id, channelId: event.roomId,
-        sender: event.participant, senderAccountId: event.participant.id, presence: event.kind,
+        sender: event.participant, senderAccountId: event.participant.id, presence: event.kind, rename: event.rename,
         text: "", attachments: [], createdAt: event.createdAt }, generation));
     } catch (error) { await this.disable(); throw error; }
   }

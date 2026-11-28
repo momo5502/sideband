@@ -197,13 +197,13 @@ test("end-to-end TLS broadcast reaches an MCP native channel notification with n
     await sender.send("Pushed from a real WebSocket peer");
     await arrived;
     assert.equal(notifications.length, 1);
-    assert.deepEqual(notifications[0].params, { content: '<sideband sender="sender">\nPushed from a real WebSocket peer\n</sideband>' });
+    assert.deepEqual(notifications[0].params, { content: `<sideband sender="sender" sender_id="${sender.identity.id}">\nPushed from a real WebSocket peer\n</sideband>` });
     await visitor.connect(); await visitor.joinRoom(room.id); await visitor.close();
     const deadline = Date.now() + testTimeout(4000);
     while (notifications.length < 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert.deepEqual(notifications.slice(1).map(notification => notification.params), [
-      { content: '<sideband event="joined" participant="visitor" />' },
-      { content: '<sideband event="left" participant="visitor" />' },
+      { content: `<sideband event="joined" participant="visitor" participant_id="${visitor.identity.id}" />` },
+      { content: `<sideband event="left" participant="visitor" participant_id="${visitor.identity.id}" />` },
     ]);
     await call("sideband_deactivate");
     assert.equal((await sender.members()).length, 1);

@@ -45,7 +45,7 @@ test("new workers retain updater metadata while an older server accepts only OMP
   try {
     await worker.start(); assert.deepEqual(worker.machine.harnesses, ["omp", "codex", "claude"]);
     assert.deepEqual(registrations.at(-1).harnesses, ["omp"]); assert.equal(registrations.at(-1).build.commit, updater.build.commit); assert.equal(registrations.at(-1).updater, true);
-  } finally { await worker.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-harnesses-"))); await rm(directory, { recursive: true, force: true }); }
+  } finally { await worker.close(); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-harnesses-"))); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });
 
 test("inventory waits, old-server rejections and database failures never disconnect an updated worker", { timeout: testTimeout(30000) }, async () => {
@@ -98,7 +98,7 @@ test("inventory waits, old-server rejections and database failures never disconn
     assert.match(warnings[0]!, /without disconnecting/);
   } finally {
     rejectHeld?.(new Error("Fixture closing")); web.disconnect(); await worker.close(); await server.close();
-    assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-inventory-"))); await rm(directory, { recursive: true, force: true });
+    assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-inventory-"))); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
 async function stop(child: ChildProcess) { if (child.exitCode === null && child.signalCode === null) { child.kill(); await new Promise<void>(resolve => child.once("exit", () => resolve())); } }
@@ -147,7 +147,7 @@ test("worker on shared HTTPS retries a prolonged outage, re-registers after serv
     await until(() => process.log.includes("Worker cannot reconnect"));
     assert.match(process.log, /certificate does not match/); assert.match(process.log, /sideband login again/);
     assert.equal(await process.exited, 1, "permanent failures exit nonzero instead of silently abandoning recovery");
-  } finally { await stop(process.child); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-reconnect-"))); await rm(directory, { recursive: true, force: true }); }
+  } finally { await stop(process.child); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-reconnect-"))); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });
 test("worker started during an outage waits for the server instead of exiting", { timeout: testTimeout(15000) }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "sideband-worker-initial-")), credentialsFile = join(directory, "identity.json");
@@ -157,5 +157,5 @@ test("worker started during an outage waits for the server instead of exiting", 
   try {
     await until(() => process.log.includes("retrying")); assert.equal(process.child.exitCode, null);
     server = await RoomServer.start({ host: "127.0.0.1", port, credentialsFile }); await until(() => process.log.includes("connected and registered"));
-  } finally { await stop(process.child); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-initial-"))); await rm(directory, { recursive: true, force: true }); }
+  } finally { await stop(process.child); await server.close(); assert.ok(directory.startsWith(join(tmpdir(), "sideband-worker-initial-"))); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });

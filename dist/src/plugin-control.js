@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readLocal, writeLocal } from "./local-wire.js";
 import { REQUEST_TIMEOUT_MS } from "./timeouts.js";
 export function pluginEndpoint(value) {
-    return value && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.token) ? { port: value.port, token: value.token, ...(value.reload === true ? { reload: true } : {}), ...(typeof value.version === "string" && /^[0-9A-Za-z.+-]{1,128}$/.test(value.version) ? { version: value.version } : {}) } : undefined;
+    return value && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(value.token) ? { port: value.port, token: value.token, ...(value.reload === true ? { reload: true } : {}), ...(typeof value.version === "string" && /^[0-9A-Za-z.+-]{1,128}$/.test(value.version) ? { version: value.version } : {}), ...(value.rename === true ? { rename: true } : {}) } : undefined;
 }
 /** Loopback only; the bearer token stays in the user's private presence file. */
 export class PluginControl {
@@ -39,8 +39,10 @@ export class PluginControl {
                     try {
                         if (typeof packet.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(packet.token) || !timingSafeEqual(Buffer.from(packet.token), Buffer.from(this.token)))
                             throw new Error("Unauthenticated plugin request.");
-                        if (packet.type !== "request" || !/^[a-f0-9]{64}$/.test(packet.key) || !["prompt", "logs", "reload"].includes(packet.action))
+                        if (packet.type !== "request" || !/^[a-f0-9]{64}$/.test(packet.key) || !["prompt", "logs", "reload", "rename"].includes(packet.action))
                             throw new Error("Invalid plugin request.");
+                        if (packet.action === "rename" && (typeof packet.text !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(packet.text)))
+                            throw new Error("Invalid agent name.");
                         if (packet.action === "prompt") {
                             if (typeof packet.text !== "string" || !packet.text.trim() || packet.text.length > 16000)
                                 throw new Error("Invalid instructions.");
@@ -52,7 +54,7 @@ export class PluginControl {
                         }
                         else if (packet.after !== undefined && (!Number.isSafeInteger(packet.after) || packet.after < 0))
                             throw new Error("Invalid output position.");
-                        const request = { key: packet.key, action: packet.action, ...(packet.action === "prompt" ? { text: packet.text } : packet.action === "logs" ? { after: packet.after ?? 0 } : {}) };
+                        const request = { key: packet.key, action: packet.action, ...(["prompt", "rename"].includes(packet.action) ? { text: packet.text } : packet.action === "logs" ? { after: packet.after ?? 0 } : {}) };
                         const result = await this.command(request);
                         accepted = request;
                         writeLocal(socket, { type: "reply", result });

@@ -100,8 +100,8 @@ test("graceful last departure deletes room and history; failed join keeps previo
     await assert.rejects(a.joinRoom("bad\u0000room"), /Invalid room name/);
     assert.equal(a.room!.id, room.id); assert.equal((await a.history()).length, 1);
     await a.leaveRoom(); assert.deepEqual(await b.listRooms(), []);
-    await assert.rejects(b.joinRoom(room.id), /does not exist/);
-    const fresh = await a.joinRoom("temporary"); assert.notEqual(fresh.id, room.id); assert.deepEqual(await a.history(), []);
+    assert.equal((await b.joinRoom(room.id)).id, room.id); await b.leaveRoom();
+    const fresh = await a.joinRoom("temporary"); assert.equal(fresh.id, room.id); assert.deepEqual(await a.history(), []);
   } finally { await f.close(); }
 });
 test("reconnect retains private-key identity and membership during grace without replaying history", async () => {
@@ -121,11 +121,11 @@ test("crashed last member is reaped and its room disappears after disconnect gra
     a.dropConnection(); await until(async () => (await observer.listRooms()).length === 0);
   } finally { await f.close(); }
 });
-test("a fresh process/session gets a fresh ID; names cannot claim an existing registered agent", async () => {
+test("separate identities may reuse names without sharing keys or message ownership", async () => {
   const f = await fixture();
   try {
     const a = await f.client("reviewer"); const b = new RoomClient(f.profile, "REVIEWER"); f.clients.push(b);
-    await assert.rejects(b.connect(), /already registered/);
+    await b.connect(); assert.notEqual(a.identity.id, b.identity.id);
     const c = await f.client("other"); assert.notEqual(a.identity.id, c.identity.id);
     await a.close(); const restarted = await f.client("reviewer"); assert.notEqual(a.identity.id, restarted.identity.id);
   } finally { await f.close(); }

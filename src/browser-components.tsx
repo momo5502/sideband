@@ -28,8 +28,8 @@ export function Menu({ label, children }: { label: string; children: ReactNode }
       else trigger.current?.focus();
     }}>{children}</Dropdown.Content></Dropdown.Portal></Dropdown.Root>;
 }
-export function MenuItem({ children, onSelect, disabled, danger, defer }: { children: ReactNode; onSelect(): void; disabled?: boolean; danger?: boolean; defer?: boolean }) {
-  return <Dropdown.Item className={clsx("dropdown-item", danger && "text-danger")} disabled={disabled} onSelect={() => { if (defer) window.setTimeout(onSelect, 0); else onSelect(); }}>{children}</Dropdown.Item>;
+export function MenuItem({ children, onSelect, disabled, danger, defer, title }: { children: ReactNode; onSelect(): void; disabled?: boolean; danger?: boolean; defer?: boolean; title?: string }) {
+  return <Dropdown.Item title={title} className={clsx("dropdown-item", danger && "text-danger")} disabled={disabled} onSelect={() => { if (defer) window.setTimeout(onSelect, 0); else onSelect(); }}>{children}</Dropdown.Item>;
 }
 export function Field({ label, hint, children, htmlFor }: { label: string; hint?: string; children: ReactNode; htmlFor: string }) {
   return <div className="field"><label htmlFor={htmlFor}>{label}</label>{children}{hint && <p className="field-hint">{hint}</p>}</div>;

@@ -27,17 +27,21 @@ export async function runMcp(harness: Harness): Promise<void> {
   // Claude gives each interactive session its own MCP process. It does not
   // provide a session ID in the MCP startup handshake.
   const claudeSession = `claude-mcp:${randomUUID()}`;
-  const recovery = harness === "codex" ? await CodexMembership.open(profiles, { report: message => console.error(message), presence: threads => presence.replace(threads.map(thread => ({ session: thread.id, workspace: thread.cwd, name: thread.name }))) }) : undefined;
+  const recovery = harness === "codex" ? await CodexMembership.open(profiles, { report: message => console.error(message), presence: threads => presence.replace(threads.map(thread => ({ session: thread.id, workspace: thread.cwd, name: thread.name, identityId: thread.identityId }))) }) : undefined;
   const tools = recovery?.tools ?? new RoomTools(async (key, profile, name) => {
     const adapter = harness === "claude" ? new ClaudeAdapter(server) : new CodexAdapter(await CodexRpc.connect(), key);
-    try { return new RoomSession(profile, adapter, name); }
+    try {
+      const session = new RoomSession(profile, adapter, name);
+      session.client.onEvent(event => { if (harness === "claude" && event === "identity.changed") presence.replace([{ session: claudeSession, workspace: process.cwd(), name: session.client.identity.name, identityId: session.client.identity.id }]); });
+      return session;
+    }
     catch (error) { await adapter.close(); throw error; }
   }, profiles);
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: sidebandTools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const key = callerKey(harness, request.params._meta), result = await (recovery ?? tools).call(key, request.params.name, request.params.arguments);
-      if (harness === "claude") presence.replace([{ session: claudeSession, workspace: process.cwd(), name: (tools.status(key) as { identity?: { name?: string } }).identity?.name }]);
+      if (harness === "claude") presence.replace([{ session: claudeSession, workspace: process.cwd(), name: (tools.status(key) as { identity?: { name?: string } }).identity?.name, identityId: (tools.status(key) as { identity?: { id?: string } }).identity?.id }]);
       return result;
     }
     catch (error) { return toolError(error); }

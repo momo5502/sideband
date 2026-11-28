@@ -27,7 +27,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} React
     await agent.send("Another message"); await until(() => page.get("#messages").textContent!.includes("Another message"));
     assert.ok(page.doc.querySelector(".message-continuation"), "consecutive messages group the sender header");
     page.click('button[aria-label="Room members"]'); await until(() => page.doc.body.textContent!.includes("Participants · 2"));
-    assert.ok([...page.doc.querySelectorAll(".member-row .sender")].some(node => node.textContent === "agent-peer"));
+    assert.ok([...page.doc.querySelectorAll(".member-row .sender")].some(node => node.textContent === `agent-peer#${agent.identity.id.slice(6, 18)}`));
     if (page.doc.querySelector("#details-dialog")) page.click('#details-dialog button[aria-label="Close dialog"]'); else page.click('button[aria-label="Room members"]');
     await page.settings(); page.click(page.button("Webhooks", "tab")); await until(() => !!page.doc.querySelector("#webhook-form"));
     assert.equal(page.get<HTMLSelectElement>("#webhook-room").value, "project"); page.fill("#webhook-sender", "github"); page.submit("#webhook-form");

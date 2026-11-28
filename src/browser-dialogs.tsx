@@ -63,7 +63,7 @@ function FolderPicker({ machine, store, value, onChange }: { machine?: Machine; 
 export function NewAgent({ state, store, close, initial }: { state: WorkspaceState; store: BrowserWorkspace; close(): void; initial?: ManagedAgent }) {
   const [source, setSource] = useState(initial?.folder ? "folder" : "new"), [folder, setFolder] = useState(initial?.folder ?? "");
   const [repository, setRepository] = useState(initial?.repository ?? ""), [name, setName] = useState(() => {
-    if (!initial) return ""; const names = new Set(state.control.agents.map(agent => agent.name.toLowerCase())); const base = initial.name.slice(0, 55); let result = base, index = 2; while (names.has(result.toLowerCase())) result = `${base}-${index++}`; return result;
+    return initial?.name ?? "";
   }), [room, setRoom] = useState(initial?.room ?? state.joined.find(room => room.id === state.lastRoom)?.name ?? "");
   const harnessOrder = ["omp", "codex", "claude", "pi"] as const;
   const [machine, setMachine] = useState(() => {
@@ -106,8 +106,8 @@ export function NewAgent({ state, store, close, initial }: { state: WorkspaceSta
     if (candidate) chooseMachine(candidate.id);
   }, [machine, harness, state.control.machines, initial?.folder]);
   const suggestName = (value: string) => {
-    if (editedName.current) return; const base = value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55), used = new Set(state.control.agents.map(agent => agent.name.toLowerCase()));
-    let result = base, index = 2; while (used.has(result.toLowerCase())) result = `${base}-${index++}`; setName(result);
+    if (editedName.current) return;
+    setName(value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55));
   };
   return <Modal id="new-agent-dialog" open onOpenChange={open => { if (!open && !busy && !trustBusy) close(); }} title="New agent" description="Choose a machine, harness and workspace. Your agent stays available for new work.">
     <form id="agent-launch-form" onSubmit={event => {
@@ -196,6 +196,15 @@ export function AgentActionDialog({ mode, agent, state, store, close }: { mode: 
     }}>
       {mode === "room" && <Field label="Room" htmlFor="agent-room"><RoomPicker id="agent-room" rooms={allRooms(state)} value={room} onChange={setRoom} /></Field>}
       <ErrorMessage text={error} /><div className="form-actions"><Button variant="ghost" onClick={close} disabled={busy}>Cancel</Button><Button id="agent-room-apply" type="submit" variant={mode === "remove" ? "danger" : "primary"} disabled={busy}>{busy && <Spinner />}{mode === "room" ? "Save room" : agent.persistent ? "Archive agent" : agent.online ? "Remove agent" : "Forget agent"}</Button></div>
+    </form></Modal>;
+}
+export function RenameDialog({ room, agent, store, close }: { room?: Room; agent?: ManagedAgent; store: BrowserWorkspace; close(): void }) {
+  const [name, setName] = useState(room?.name ?? agent!.name), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  return <Modal id="rename-dialog" open onOpenChange={open => { if (!open && !busy) close(); }} title={room ? "Rename room" : "Rename agent"} description="The ID, history and workspace stay the same. A rename event appears in the room.">
+    <form onSubmit={event => { event.preventDefault(); if (busy || !name.trim()) return; setBusy(true); setError("");
+      void (room ? store.renameRoom(room.id, name.trim()) : store.action(agent!.id, "rename", { name: name.trim() })).then(close).catch(error => setError(error instanceof Error ? error.message : "Rename failed.")).finally(() => setBusy(false)); }}>
+      <Field label="New name" htmlFor="rename-name"><input id="rename-name" className="input" autoFocus required maxLength={room ? 100 : 64} pattern={room ? undefined : "[a-zA-Z0-9][a-zA-Z0-9_-]*"} value={name} onChange={event => setName(event.target.value)} /></Field>
+      <ErrorMessage text={error} /><div className="form-actions"><Button variant="ghost" disabled={busy} onClick={close}>Cancel</Button><Button id="rename-apply" variant="primary" type="submit" disabled={busy || !name.trim()}>{busy && <Spinner />}Save name</Button></div>
     </form></Modal>;
 }
 export function Login({ store, state }: { store: BrowserWorkspace; state: WorkspaceState }) {

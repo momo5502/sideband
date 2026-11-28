@@ -151,6 +151,15 @@ export class AgentStore {
       this.registry.put("agent", id, { ...record, desired, updatedAt: Date.now() });
     });
   }
+  async metadata(id: string, patch: { name?: string; room?: string; roomId?: string }): Promise<void> {
+    const lease = this.registry.get<Lease>("lease", id);
+    if (await this.live(id)) throw new Error("This agent's controller is still alive. Wait for it to reconnect before changing its saved metadata.");
+    await this.registry.change(() => {
+      if (JSON.stringify(lease) !== JSON.stringify(this.registry.get("lease", id))) throw new Error("This agent resumed while its metadata was being changed. Retry once it reconnects.");
+      const record = this.get(id); if (!record) throw new Error("No saved agent exists.");
+      this.registry.put("agent", id, { ...record, agent: { ...record.agent, ...patch }, updatedAt: Date.now() });
+    });
+  }
   release(id: string, owner: string): Promise<void> {
     return this.registry.change(() => { if (this.registry.get<Lease>("lease", id)?.owner === owner) this.registry.remove("lease", id); });
   }

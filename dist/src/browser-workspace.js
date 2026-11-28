@@ -18,8 +18,11 @@ export function identityColor(identity) {
     }
     return color;
 }
-export function mentionsUsername(text, name) {
-    return !!name && new RegExp(`(^|[^a-zA-Z0-9_@-])@${name}(?![a-zA-Z0-9_-])`, "i").test(text);
+export function mentionsUsername(text, name, id) {
+    if (!name)
+        return false;
+    const pattern = new RegExp(`(^|[^a-zA-Z0-9_@-])@${name}(?:#([a-zA-Z0-9_-]+))?(?![a-zA-Z0-9_#-])`, "gi");
+    return [...text.matchAll(pattern)].some(match => !match[2] || !!id?.replace(/^agent-/, "").startsWith(match[2]));
 }
 const outputSizes = new WeakMap();
 const outputEncoder = new TextEncoder();
@@ -122,19 +125,7 @@ export class BrowserWorkspace {
             void this.window.fetch("/local-login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }), credentials: "same-origin" })
                 .then(async (response) => { if (!response.ok)
                 throw new Error("The automatic login link expired or was already used. Run sideband run again for a fresh link, or log in with your saved server password."); return response.json(); })
-                .then(async (value) => {
-                try {
-                    await this.login(saved?.name ?? "", value.password);
-                }
-                catch (error) {
-                    // A fresh browser tab has a new identity. Keep an already-open tab's name
-                    // reserved and use an unnamed identity here rather than requiring a password.
-                    if (saved?.name && error.code === "NAME_IN_USE")
-                        await this.login("", value.password);
-                    else
-                        throw error;
-                }
-            }).catch(error => this.update({ error: errorText(error) }));
+                .then(value => this.login(saved?.name ?? "", value.password)).catch(error => this.update({ error: errorText(error) }));
         }
         else if (saved?.password)
             void this.login(saved.name, saved.password).catch(() => { });
@@ -157,7 +148,7 @@ export class BrowserWorkspace {
             const remembered = this.storage("sessionStorage", roomsStorage);
             this.restore.clear();
             if (remembered?.name === name && Array.isArray(remembered.rooms))
-                for (const room of remembered.rooms)
+                for (const room of (Array.isArray(remembered.refs) ? remembered.refs.map((ref) => ref?.id) : remembered.rooms))
                     if (typeof room === "string" && room && room.length <= 100)
                         this.restore.add(room);
             client.onMessage = item => { if (this.client === client)
@@ -230,15 +221,26 @@ export class BrowserWorkspace {
                 return;
             }
         }
-        let last = this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? (typeof remembered?.active === "string" ? remembered.active : undefined);
-        for (const name of this.restore) {
-            await client.subscribe(name);
+        let last = this.state.joined.find(room => room.id === this.state.lastRoom)?.id ?? remembered?.activeId ?? (typeof remembered?.active === "string" ? remembered.active : undefined);
+        for (const target of [...this.restore]) {
+            let joined;
+            try {
+                joined = await client.subscribe(target);
+            }
+            catch (error) {
+                const ref = remembered?.refs?.find((ref) => ref?.id === target);
+                if (error.code !== "ROOM_NOT_FOUND" || !ref?.name)
+                    throw error;
+                joined = await client.subscribe(ref.name);
+            }
+            this.restore.delete(target);
+            this.restore.add(joined.id);
             if (!current()) {
                 client.disconnect();
                 return;
             }
         }
-        const active = [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === last?.toLowerCase());
+        const active = [...client.joinedRooms.values()].find(room => room.id === last || room.name.toLowerCase() === last?.toLowerCase());
         for (const old of previousRooms) {
             const replacement = [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === old.name.toLowerCase());
             const draft = this.drafts.get(`room:${old.id}`);
@@ -252,7 +254,7 @@ export class BrowserWorkspace {
             for (const entry of savedDrafts.entries.slice(0, 200)) {
                 if (typeof entry?.text !== "string" || entry.text.length > 16000 || typeof entry.id !== "string")
                     continue;
-                const room = entry.kind === "room" ? [...client.joinedRooms.values()].find(room => room.name.toLowerCase() === entry.id.toLowerCase()) : undefined;
+                const room = entry.kind === "room" ? [...client.joinedRooms.values()].find(room => (room.id === entry.roomId || room.name.toLowerCase() === entry.id.toLowerCase())) : undefined;
                 if (room)
                     this.drafts.set(`room:${room.id}`, entry.text);
                 else if (entry.kind === "agent" && /^[a-f0-9-]{36}$/.test(entry.id))
@@ -264,7 +266,7 @@ export class BrowserWorkspace {
         const mentions = { ...this.state.mentions };
         if (Array.isArray(remembered?.pings))
             for (const ping of remembered.pings) {
-                const room = [...client.joinedRooms.values()].find(room => room.name === ping?.room);
+                const room = [...client.joinedRooms.values()].find(room => room.id === ping?.roomId || room.name === ping?.room);
                 if (room && Number.isSafeInteger(ping?.count) && ping.count > 0)
                     mentions[room.id] = ping.count;
             }
@@ -321,10 +323,19 @@ export class BrowserWorkspace {
     saveRooms() {
         if (!this.state.identity)
             return false;
-        return this.storage("sessionStorage", roomsStorage, { name: this.state.identity.name ?? "", rooms: [...this.restore], active: this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? null,
-            pings: this.state.joined.filter(room => this.state.mentions[room.id]).map(room => ({ room: room.name, count: this.state.mentions[room.id] })) }) === true;
+        return this.storage("sessionStorage", roomsStorage, { name: this.state.identity.name ?? "", rooms: this.state.joined.map(room => room.name), refs: this.state.joined.map(room => ({ id: room.id, name: room.name })), activeId: this.state.lastRoom, active: this.state.joined.find(room => room.id === this.state.lastRoom)?.name ?? null,
+            pings: this.state.joined.filter(room => this.state.mentions[room.id]).map(room => ({ room: room.name, roomId: room.id, count: this.state.mentions[room.id] })) }) === true;
     }
     receive(item) {
+        if ("kind" in item && item.rename?.kind === "room") {
+            const { oldName, newName } = item.rename;
+            this.restore.delete(oldName);
+            this.restore.add(item.roomId);
+            for (const [id, spec] of this.launchSpecs)
+                if (spec.room?.toLowerCase() === oldName.toLowerCase())
+                    this.launchSpecs.set(id, { ...spec, room: newName });
+            this.update({ rooms: this.state.rooms.map(room => room.id === item.roomId ? { ...room, name: newName } : room), joined: [...(this.client?.joinedRooms.values() ?? [])] });
+        }
         const previous = this.state.messages[item.roomId] ?? [];
         if (previous.some(existing => existing.id === item.id))
             return;
@@ -341,7 +352,7 @@ export class BrowserWorkspace {
             if (this.state.view.kind !== "room" || this.state.view.id !== item.roomId || this.window.document.visibilityState === "hidden")
                 unread[item.roomId] = Math.min(999, (unread[item.roomId] ?? 0) + 1);
             const key = `${item.roomId}:${item.id}`;
-            if (mentionsUsername(item.text, this.client?.identity.name) && item.sender.id !== this.client?.identity.id && !this.pinged.has(key)) {
+            if (mentionsUsername(item.text, this.client?.identity.name, this.client?.identity.id) && item.sender.id !== this.client?.identity.id && !this.pinged.has(key)) {
                 this.pinged.add(key);
                 if (this.pinged.size > 10000)
                     this.pinged.delete(this.pinged.values().next().value);
@@ -452,7 +463,7 @@ export class BrowserWorkspace {
             if (this.client !== client)
                 return;
             this.leftRooms.delete(joined.name.toLowerCase());
-            this.restore.add(joined.name);
+            this.restore.add(joined.id);
             this.update({ joined: [...client.joinedRooms.values()] });
             this.saveRooms();
             if (generation !== this.joinGeneration)
@@ -483,10 +494,10 @@ export class BrowserWorkspace {
         const client = this.client;
         if (!client || client.room?.id !== room.id)
             return;
-        const history = await client.history();
+        const [history, events] = await Promise.all([client.history(), client.request("room_events", { room: room.id }).catch(() => [])]);
         if (this.client !== client)
             return;
-        const items = [...new Map([...history, ...(this.state.messages[room.id] ?? [])].map(item => [item.id, item])).values()].sort((a, b) => a.createdAt - b.createdAt).slice(-200);
+        const items = [...new Map([...history, ...events, ...(this.state.messages[room.id] ?? [])].map(item => [item.id, item])).values()].sort((a, b) => a.createdAt - b.createdAt).slice(-200);
         this.update({ messages: { ...this.state.messages, [room.id]: items } });
     }
     async refreshMembers() {
@@ -500,11 +511,17 @@ export class BrowserWorkspace {
         }
         catch { /* Reconnection and room switches refresh the list again. */ }
     }
+    async renameRoom(id, name) {
+        await this.requireClient().request("room_rename", { room: id, name });
+        await this.refreshRooms();
+    }
     async leaveRoom() {
         const client = this.client, room = this.state.joined.find(room => room.id === this.state.lastRoom);
         if (!client || !room)
             return;
         this.restore.delete(room.name);
+        this.restore.delete(room.id);
+        this.leftRooms.add(room.id);
         this.leftRooms.add(room.name.toLowerCase());
         this.markRead(room.id);
         ++this.joinGeneration;
@@ -637,7 +654,7 @@ export class BrowserWorkspace {
             if (key.startsWith("agent:"))
                 return [{ kind: "agent", id: key.slice(6), text }];
             const room = this.state.joined.find(room => `room:${room.id}` === key);
-            return room ? [{ kind: "room", id: room.name, text }] : [];
+            return room ? [{ kind: "room", id: room.name, roomId: room.id, text }] : [];
         });
         if (!this.storage("sessionStorage", draftsStorage, { name: this.state.identity?.name ?? "", entries }) || !roomsSaved) {
             this.update({ serverUpdate: { ...update, automatic: false }, error: "Could not save this tab for refresh. Copy your drafts before reloading the page." });

@@ -61,12 +61,12 @@ export class Worker {
     this.client = new RoomClient(options.profile, undefined, { keepAlive: true, retryInitial: true, onConnection: options.onConnection, onError: options.onError });
     this.client.onConnected(async () => {
       this.modelSupport = false;
-      this.folderSupport = false;
+      this.folderSupport = false; this.renameSupport = false;
       this.piSupport = false;
       this.discoverySupport = false;
       this.discoveryControl = false;
       let machine = { ...this.machine, harnesses: this.machine.harnesses.filter(name => name !== "pi"), ...(this.machine.update ? { update: this.wireUpdate() } : {}) };
-      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean; pi?: boolean; discovery?: boolean; discoveryControl?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; this.piSupport = response.capabilities?.pi === true; this.discoverySupport = response.capabilities?.discovery === true; this.discoveryControl = response.capabilities?.discoveryControl === true; }
+      try { const response = await this.client.request<{ capabilities?: { models?: boolean; folders?: boolean; pi?: boolean; discovery?: boolean; discoveryControl?: boolean; rename?: boolean } }>("control.worker", { machine }); this.modelSupport = response.capabilities?.models === true; this.folderSupport = response.capabilities?.folders === true; this.piSupport = response.capabilities?.pi === true; this.discoverySupport = response.capabilities?.discovery === true; this.discoveryControl = response.capabilities?.discoveryControl === true; this.renameSupport = response.capabilities?.rename === true; }
       catch (original) {
         let error = original;
         if (error instanceof RoomError && /Invalid harness list/.test(error.message)) {
@@ -88,7 +88,7 @@ export class Worker {
       this.discover();
       // Optional capabilities are never sent to an older server or awaited by registration.
       if (this.modelSupport) for (const harness of this.machine.harnesses.filter(name => name !== "pi") as HarnessName[]) void this.refreshModels(harness).catch(() => {});
-      if (this.folderSupport || this.piSupport) void this.client.request("control.features", { ...(this.folderSupport ? { folders: true } : {}), ...(this.piSupport && this.machine.harnesses.includes("pi") ? { pi: true } : {}) }).then(async () => {
+      if (this.folderSupport || this.piSupport || this.renameSupport) void this.client.request("control.features", { ...(this.renameSupport ? { rename: true } : {}), ...(this.folderSupport ? { folders: true } : {}), ...(this.piSupport && this.machine.harnesses.includes("pi") ? { pi: true } : {}) }).then(async () => {
         if (this.piSupport && this.machine.update) await this.client.request("control.worker_update", { update: this.wireUpdate() });
         if (this.modelSupport && this.piSupport && this.machine.harnesses.includes("pi")) await this.refreshModels("pi");
       }).catch(() => {});
@@ -99,6 +99,7 @@ export class Worker {
       if (this.client.state === "on") void this.client.request("control.worker_update", { update: this.wireUpdate() }).catch(() => {});
     });
   }
+  private renameSupport = false;
   private wireUpdate() { return { ...this.machine.update!, plugins: this.machine.update!.plugins.filter(plugin => this.piSupport || plugin.harness !== "pi") }; }
   private discover(): void {
     if (!this.discoverySupport || this.discovering || this.closing || !this.store) return;
@@ -111,7 +112,7 @@ export class Worker {
         // reopened that harness session by hand after stopping it in Sideband.
         if (reported.has(key) && await this.store!.live(record.agent.id)) managed.add(key);
       }
-      if (!this.closing && this.discoverySupport && this.client.state === "on") await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)).map(session => { const { interactive, ...row } = session; return { ...row, ...(this.discoveryControl && interactive ? { interactive: true } : {}) }; }) });
+      if (!this.closing && this.discoverySupport && this.client.state === "on") await this.client.request("control.discovered", { sessions: sessions.filter(session => !managed.has(session.key)).map(session => { const { interactive, canRename, identityId, ...row } = session; return { ...row, ...(this.renameSupport ? { ...(canRename ? { canRename } : {}), ...(identityId ? { identityId } : {}) } : {}), ...(this.discoveryControl && interactive ? { interactive: true } : {}) }; }) });
     })().catch(() => { /* Discovery is optional and cannot break registration or recovery. */ }).finally(() => { this.discovering = undefined; });
   }
   private executable(name: HarnessName): Executable { return this.options[name] ?? { command: name === "omp" ? process.env.OMP_BINARY ?? "omp" : name === "codex" ? process.env.CODEX_BIN ?? "codex" : name === "pi" ? process.env.PI_BINARY ?? "pi" : process.env.CLAUDE_BINARY ?? "claude" }; }
@@ -192,8 +193,12 @@ export class Worker {
         const checked = await Promise.allSettled(records.slice(offset, offset + 30).map(record => this.savedAgent(record)));
         const agents = checked.flatMap(result => { if (result.status === "fulfilled") return [result.value]; this.options.onError?.(new Error(`A saved agent could not be loaded: ${result.reason instanceof Error ? result.reason.message : "Invalid record."}`)); return []; });
         if (version !== this.inventoryVersion || this.savedActions) return;
-        const response = await this.client.request<{ archived: string[]; errors: { id: string; message: string }[] }>("control.inventory", { agents });
+        const response = await this.client.request<{ archived: string[]; errors: { id: string; message: string }[]; roomUpdates?: { id: string; room: string; roomId: string }[] }>("control.inventory", { agents });
         for (const error of response.errors ?? []) { const key = `${error.id}:${error.message}`; if (!this.inventoryErrors.has(key)) { this.inventoryErrors.add(key); this.options.onError?.(new Error(`Saved agent ${error.id}: ${error.message}`)); } }
+        for (const update of response.roomUpdates ?? []) {
+          if (version !== this.inventoryVersion || this.savedActions) break;
+          if (this.store!.get(update.id) && !await this.store!.live(update.id)) await this.store!.metadata(update.id, { room: update.room, roomId: update.roomId });
+        }
         // A response captured before/during a local action must not undo that action.
         for (const id of response.archived) {
           if (version !== this.inventoryVersion || this.savedActions) break;
@@ -234,12 +239,12 @@ export class Worker {
     try {
       if (command.method === "external") {
         const { key, action, text, after } = command.params;
-        if (!this.discoveryControl || typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || !["prompt", "logs"].includes(action as string) || Object.keys(command.params).some(key => !["key", "action", "text", "after"].includes(key))) throw new Error("External session controls are unavailable.");
+        if (!this.discoveryControl || typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key) || !["prompt", "logs", ...(this.renameSupport ? ["rename"] : [])].includes(action as string) || Object.keys(command.params).some(key => !["key", "action", "text", "after"].includes(key))) throw new Error("External session controls are unavailable.");
         if (action === "prompt" && (typeof text !== "string" || !text.trim() || text.length > 16000) || after !== undefined && (!Number.isSafeInteger(after) || (after as number) < 0)) throw new Error("Invalid external session request.");
         const endpoints = new Map<string, PluginEndpoint>();
         await readPluginPresence(undefined, undefined, this.probes.signal, endpoints);
-        const endpoint = endpoints.get(key); if (!endpoint) throw new Error("This session is no longer reachable. Reload its plugin or check its terminal.");
-        const result = await requestPlugin(endpoint, { key, action: action as "prompt" | "logs", ...(action === "prompt" ? { text: text as string } : { after: after as number | undefined }) }, this.probes.signal);
+        const endpoint = endpoints.get(key); if (action === "rename" && !endpoint?.rename) throw new Error("Reload this session plugin before renaming it."); if (!endpoint) throw new Error("This session is no longer reachable. Reload its plugin or check its terminal.");
+        const result = await requestPlugin(endpoint, { key, action: action as "prompt" | "logs" | "rename", ...(["prompt", "rename"].includes(action as string) ? { text: text as string } : { after: after as number | undefined }) }, this.probes.signal);
         await this.client.request("control.reply", { id: command.id, result }); return;
       }
       if (command.method === "folders") {
@@ -253,6 +258,13 @@ export class Worker {
         const harness = command.params.harness as HarnessName;
         if (Object.keys(command.params).length !== 1 || !this.machine.harnesses.includes(harness) || !this.modelSupport) throw new Error("Model discovery is unavailable for this harness.");
         await this.refreshModels(harness, true); await this.client.request("control.reply", { id: command.id, result: {} }); return;
+      }
+      if (command.method === "rename") {
+        const { id, name } = command.params;
+        if (!this.renameSupport || typeof id !== "string" || typeof name !== "string" || Object.keys(command.params).length !== 2 || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(name)) throw new Error("Invalid saved-agent rename.");
+        this.savedActions++; this.inventoryVersion++;
+        try { await this.store!.metadata(id, { name }); } finally { this.savedActions--; this.inventoryVersion++; }
+        await this.client.request("control.reply", { id: command.id, result: { renamed: true } }); this.scheduleInventory(true); return;
       }
       if (["resume", "archive", "stop"].includes(command.method)) {
         const id = command.params.id;

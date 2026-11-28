@@ -28,7 +28,7 @@ test("terminal redraw preserves a draft when messages arrive; Ctrl+C and EOF rel
     ui.write(chatMessage({ sender: { id: "alice", name: "alice", publicKey: "" }, text: "live message\x1b]52;c;clipboard\x07", createdAt: 0 }));
     input.write("\r");
     assert.equal(await answer, "unfinished draft");
-    assert.ok(printed.includes("alice: live message\\u001b]52;c;clipboard\\u0007\n\n"), "messages end with an empty line before restoring the draft");
+    assert.ok(printed.includes("alice#alice: live message\\u001b]52;c;clipboard\\u0007\n\n"), "messages end with an empty line before restoring the draft");
     assert.ok(!printed.includes("\x1b]52;"));
     const cancelled = ui.question("room> "); input.write("\x03");
     assert.equal(await cancelled, undefined); assert.equal(input.isRaw, false);
@@ -49,8 +49,8 @@ test("terminal text cannot inject control codes, bidi overrides or unprefixed mu
 test("timestamps and identities have separate colors, while peer text stays plain and escaped", () => {
   const message = { sender: { id: "agent-abcdefghijklmnop", name: "alice", publicKey: "" }, text: "hi\x1b[31m\u202e\nnext", createdAt: 0 };
   const plain = chatMessage(message); const colored = chatMessage(message, true);
-  assert.match(colored, /^\x1b\[90m[^\x1b]+\x1b\[0m \x1b\[1;\d+malice\x1b\[0m: /);
-  assert.ok(plain.startsWith(`${new Date(message.createdAt).toLocaleTimeString()} alice: `), "timestamps have no surrounding brackets");
+  assert.match(colored, /^\x1b\[90m[^\x1b]+\x1b\[0m \x1b\[1;\d+malice#abcdefghijkl\x1b\[0m: /);
+  assert.ok(plain.startsWith(`${new Date(message.createdAt).toLocaleTimeString()} alice#abcdefghijkl: `), "timestamps have no surrounding brackets");
   assert.equal(stripVTControlCharacters(colored), plain);
   assert.ok(!colored.includes("\x1b[31m")); assert.ok(colored.includes("hi\\u001b[31m\\u202e\n  | next\n"));
   const nameStyle = (value: string) => /\x1b\[1;\d+m/.exec(value)?.[0];
@@ -74,7 +74,7 @@ test("colored terminal redraw preserves the draft and never permits peer escape 
     const answer = ui.question("room> "); input.write("unfinished draft");
     ui.message({ sender: { id: "peer", name: "alice", publicKey: "" }, text: "hello\x1b]52;c;secret\x07", createdAt: 0 });
     input.write("\r"); assert.equal(await answer, "unfinished draft");
-    assert.ok(stripVTControlCharacters(printed).includes("alice: hello\\u001b]52;c;secret\\u0007\n\n"));
+    assert.ok(stripVTControlCharacters(printed).includes("alice#peer: hello\\u001b]52;c;secret\\u0007\n\n"));
     assert.ok(!printed.includes("\x1b]52;"));
   } finally { ui.close(); input.destroy(); output.destroy(); }
 });
@@ -119,7 +119,7 @@ test("human terminal browses rooms, sees history/live pushes, sends signed messa
     }
     assert.deepEqual(received.slice(0, 1), ["human reply"]);
     assert.match(text, /Participants \(2\)/); assert.match(text, /does not exist/); assert.match(text, /Use \/history \[1-50\]/);
-    assert.match(text, /human: \/literal slash/); assert.match(text, /Joined human-room/);
+    assert.match(text, /human#[A-Za-z0-9_-]{12}: \/literal slash/); assert.match(text, /Joined human-room/);
     assert.ok(prompts.some(prompt => prompt === "project> "));
     await human.close(); assert.deepEqual((await agent.listRooms()).map(item => item.name), ["project"]);
   } finally { await human.close(); await agent.close(); await server.close(); }
@@ -174,8 +174,8 @@ test("packaged CLI with no arguments selects a saved login, joins, receives, sen
     await untilOutput("1. cli-room"); await untilOutput("Join room (number/name)"); child.stdin!.write("1\n");
     await untilOutput("--- Live ---"); assert.ok(output.includes("prior context"));
     await agent.send("pushed while waiting"); await untilOutput("pushed while waiting");
-    const received = new Promise<void>(resolve => agent.onMessage(message => { if (message.text === "from the terminal") resolve(); }));
-    child.stdin!.write("from the terminal\n"); await received; await untilOutput("human-console: from the terminal");
+    let senderId = ""; const received = new Promise<void>(resolve => agent.onMessage(message => { if (message.text === "from the terminal") { senderId = message.sender.id; resolve(); } }));
+    child.stdin!.write("from the terminal\n"); await received; await untilOutput(`human-console#${senderId.slice(6, 18)}: from the terminal`);
     child.stdin!.write("/quit\n");
     const [code] = await exited; assert.equal(code, 0, errors);
     assert.ok(output.includes("\x1b[90m")); assert.match(output, /\x1b\[1;\d+m/);

@@ -37,7 +37,13 @@ export class CodexMembership {
             const same = saved && saved.name === name && saved.server === profile.server && saved.fingerprint === parsePassword(profile.password).fingerprint;
             const adapter = await (options.adapter?.(key) ?? CodexRpc.connect().then(rpc => new CodexAdapter(rpc, key)));
             try {
-                return new RoomSession(profile, adapter, name, new AgentKeys(name, same ? saved.privateKey : undefined));
+                const session = new RoomSession(profile, adapter, name, new AgentKeys(name, same ? saved.privateKey : undefined));
+                const changed = () => { void this.serial(key, () => this.saveNames(key)).catch(error => options.report?.(`Sideband room metadata: ${error.message}`)); };
+                session.client.onPresence(event => { if (event.kind === "renamed")
+                    changed(); });
+                session.client.onEvent(event => { if (event === "identity.changed")
+                    changed(); });
+                return session;
             }
             catch (error) {
                 await adapter.close();
@@ -106,6 +112,18 @@ export class CodexMembership {
             this.db.remove("lease", key); });
         this.owned.delete(key);
     }
+    async saveNames(key) {
+        const connection = this.tools.connection(key);
+        if (!connection || this.closing)
+            return;
+        const client = connection.session.client;
+        await this.db.change(() => {
+            const saved = this.db.get("membership", key);
+            if (saved)
+                this.db.put("membership", key, { ...saved, name: client.identity.name, ...(client.room ? { room: client.room.name, roomId: client.room.id } : {}) });
+        });
+        this.reportPresence();
+    }
     async restore(key) {
         const saved = this.db.get("membership", key);
         if (!saved?.room || this.tools.connection(key))
@@ -113,9 +131,11 @@ export class CodexMembership {
         const profile = await this.profiles.load(saved.profile);
         if (profile.server !== saved.server || parsePassword(profile.password).fingerprint !== saved.fingerprint)
             throw new Error("Saved Sideband server identity changed. Join explicitly to choose the new server.");
-        const result = await this.tools.call(key, "sideband_join_room", { profile: saved.profile, name: saved.name, room: saved.room });
+        const result = await this.tools.call(key, "sideband_rooms", { profile: saved.profile, name: saved.name });
         if (result.isError)
             throw new Error(result.content[0]?.text ?? "Room recovery failed.");
+        await this.tools.connection(key).session.client.joinRoom(saved.roomId ?? saved.room, saved.room);
+        await this.saveNames(key);
     }
     call(key, name, input) {
         return this.serial(key, async () => {
@@ -133,6 +153,7 @@ export class CodexMembership {
                             const saved = this.db.get("membership", key);
                             if (saved) {
                                 delete saved.room;
+                                delete saved.roomId;
                                 this.db.put("membership", key, saved);
                             }
                         }
@@ -146,7 +167,7 @@ export class CodexMembership {
                     const profile = await this.profiles.load(connected.profile), client = connected.session.client;
                     await this.heartbeat(key);
                     await this.db.change(() => this.db.put("membership", key, { name: client.identity.name, profile: connected.profile, server: profile.server, fingerprint: parsePassword(profile.password).fingerprint,
-                        privateKey: client.keys.exportPrivateKey(), ...(client.room ? { room: client.room.name } : {}) }));
+                        privateKey: client.keys.exportPrivateKey(), ...(client.room ? { room: client.room.name, roomId: client.room.id } : {}) }));
                 }
                 if (!result.isError && name === "sideband_deactivate")
                     await this.release(key);
@@ -231,7 +252,7 @@ export class CodexMembership {
     }
     reportPresence() {
         if (!this.closing)
-            this.options.presence?.([...this.loaded].map(id => ({ id, cwd: this.workspaces.get(id), name: this.tools.connection(id)?.session.client.identity.name })));
+            this.options.presence?.([...this.loaded].map(id => ({ id, cwd: this.workspaces.get(id), name: this.tools.connection(id)?.session.client.identity.name, identityId: this.tools.connection(id)?.session.client.identity.id })));
     }
     refreshMetadata() {
         const monitor = this.monitor;

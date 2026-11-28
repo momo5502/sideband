@@ -9,8 +9,8 @@ import { CodexAdapter, type DeliveryAdapter } from "./adapters/codex.js";
 import { CodexRpc } from "./rpc.js";
 import type { RpcConnection } from "./rpc.js";
 
-type Membership = { name: string; profile: string; server: string; fingerprint: string; privateKey: string; room?: string };
-type Options = { loaded?(): Promise<string[]>; adapter?(thread: string): Promise<DeliveryAdapter>; report?(message: string): void; presence?(threads: { id: string; cwd?: string; name?: string }[]): void };
+type Membership = { name: string; profile: string; server: string; fingerprint: string; privateKey: string; room?: string; roomId?: string };
+type Options = { loaded?(): Promise<string[]>; adapter?(thread: string): Promise<DeliveryAdapter>; report?(message: string): void; presence?(threads: { id: string; cwd?: string; name?: string; identityId?: string }[]): void };
 
 /** Durable opt-in per exact host-provided thread ID. No workspace fallback or thread/resume. */
 export class CodexMembership {
@@ -35,7 +35,13 @@ export class CodexMembership {
       const saved = db.get<Membership>("membership", key);
       const same = saved && saved.name === name && saved.server === profile.server && saved.fingerprint === parsePassword(profile.password).fingerprint;
       const adapter = await (options.adapter?.(key) ?? CodexRpc.connect().then(rpc => new CodexAdapter(rpc, key)));
-      try { return new RoomSession(profile, adapter, name, new AgentKeys(name, same ? saved.privateKey : undefined)); }
+      try {
+        const session = new RoomSession(profile, adapter, name, new AgentKeys(name, same ? saved.privateKey : undefined));
+        const changed = () => { void this.serial(key, () => this.saveNames(key)).catch(error => options.report?.(`Sideband room metadata: ${error.message}`)); };
+        session.client.onPresence(event => { if (event.kind === "renamed") changed(); });
+        session.client.onEvent(event => { if (event === "identity.changed") changed(); });
+        return session;
+      }
       catch (error) { await adapter.close(); throw error; }
     }, profiles);
   }
@@ -75,12 +81,22 @@ export class CodexMembership {
   private async release(key: string): Promise<void> {
     await this.tools.disconnect(key); await this.db.change(() => { if (this.db.get<Lease>("lease", key)?.owner === this.owner) this.db.remove("lease", key); }); this.owned.delete(key);
   }
+  private async saveNames(key: string): Promise<void> {
+    const connection = this.tools.connection(key); if (!connection || this.closing) return;
+    const client = connection.session.client;
+    await this.db.change(() => {
+      const saved = this.db.get<Membership>("membership", key);
+      if (saved) this.db.put("membership", key, { ...saved, name: client.identity.name, ...(client.room ? { room: client.room.name, roomId: client.room.id } : {}) });
+    }); this.reportPresence();
+  }
   private async restore(key: string): Promise<void> {
     const saved = this.db.get<Membership>("membership", key); if (!saved?.room || this.tools.connection(key)) return;
     const profile = await this.profiles.load(saved.profile);
     if (profile.server !== saved.server || parsePassword(profile.password).fingerprint !== saved.fingerprint) throw new Error("Saved Sideband server identity changed. Join explicitly to choose the new server.");
-    const result = await this.tools.call(key, "sideband_join_room", { profile: saved.profile, name: saved.name, room: saved.room });
+    const result = await this.tools.call(key, "sideband_rooms", { profile: saved.profile, name: saved.name });
     if (result.isError) throw new Error(result.content[0]?.text ?? "Room recovery failed.");
+    await this.tools.connection(key)!.session.client.joinRoom(saved.roomId ?? saved.room, saved.room);
+    await this.saveNames(key);
   }
   call(key: string, name: string, input: unknown): Promise<ToolResult> {
     return this.serial(key, async () => {
@@ -92,7 +108,7 @@ export class CodexMembership {
           await this.claim(key);
           await this.db.change(() => {
             if (name === "sideband_deactivate") this.db.remove("membership", key);
-            else { const saved = this.db.get<Membership>("membership", key); if (saved) { delete saved.room; this.db.put("membership", key, saved); } }
+            else { const saved = this.db.get<Membership>("membership", key); if (saved) { delete saved.room; delete saved.roomId; this.db.put("membership", key, saved); } }
           });
         } else if (!["sideband_join_room", "sideband_profiles", "sideband_setup"].includes(name)) await this.restore(key);
         const result = await this.tools.call(key, name, args);
@@ -101,7 +117,7 @@ export class CodexMembership {
           const profile = await this.profiles.load(connected.profile), client = connected.session.client;
           await this.heartbeat(key);
           await this.db.change(() => this.db.put("membership", key, { name: client.identity.name, profile: connected.profile, server: profile.server, fingerprint: parsePassword(profile.password).fingerprint,
-            privateKey: client.keys.exportPrivateKey(), ...(client.room ? { room: client.room.name } : {}) }));
+            privateKey: client.keys.exportPrivateKey(), ...(client.room ? { room: client.room.name, roomId: client.room.id } : {}) }));
         }
         if (!result.isError && name === "sideband_deactivate") await this.release(key);
         return result;
@@ -149,7 +165,7 @@ export class CodexMembership {
     })().finally(() => { this.sweep = undefined; }); return this.sweep;
   }
   private reportPresence(): void {
-    if (!this.closing) this.options.presence?.([...this.loaded].map(id => ({ id, cwd: this.workspaces.get(id), name: this.tools.connection(id)?.session.client.identity.name })));
+    if (!this.closing) this.options.presence?.([...this.loaded].map(id => ({ id, cwd: this.workspaces.get(id), name: this.tools.connection(id)?.session.client.identity.name, identityId: this.tools.connection(id)?.session.client.identity.id })));
   }
   private refreshMetadata(): void {
     const monitor = this.monitor;

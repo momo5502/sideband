@@ -6,7 +6,7 @@ import WebSocket from "ws";
 import { RoomServer } from "../src/room-server.js";
 import { RoomClient } from "../src/room-client.js";
 import { BrowserRoomClient } from "../src/browser-protocol.js";
-import { BrowserWorkspace } from "../src/browser-workspace.js";
+import { mentionsUsername, BrowserWorkspace } from "../src/browser-workspace.js";
 import type { ControlCommand, ManagedAgent } from "../src/orchestration-protocol.js";
 import { until } from "./browser-fixture.js";
 import { RuntimeUpdater } from "../src/updater.js";
@@ -41,7 +41,7 @@ test("browser update reload preserves identity, room membership and drafts acros
     for (const socket of page.sockets) socket.terminate();
     await until(() => page.store.snapshot().serverUpdate?.build === updater.build.commit);
     const recreated = page.store.snapshot().joined[0]!;
-    assert.notEqual(recreated.id, firstRoom.id);
+    assert.equal(recreated.id, firstRoom.id);
     assert.equal(page.store.drafts.get(`room:${recreated.id}`), "Unsent\n**room draft**");
     const composer = page.dom.window.document.createElement("form"), input = page.dom.window.document.createElement("textarea");
     composer.className = "composer"; composer.append(input); page.dom.window.document.body.append(composer); input.focus();
@@ -58,7 +58,7 @@ test("browser update reload preserves identity, room membership and drafts acros
     const fresh = workspace(server, { build: updater.build.commit, saved }); pages.push(fresh); fresh.store.start();
     await until(() => fresh.store.snapshot().view.kind === "room");
     const room = fresh.store.snapshot().joined[0]!;
-    assert.equal(room.name, "work"); assert.notEqual(room.id, recreated.id);
+    assert.equal(room.name, "work"); assert.equal(room.id, recreated.id);
     assert.equal(fresh.store.drafts.get(`room:${room.id}`), "Unsent\n**room draft**"); assert.equal(fresh.store.drafts.get(`agent:${agentId}`), "Private draft");
     assert.equal(JSON.parse(fresh.dom.window.sessionStorage.getItem(identityStorage)!).key, identity);
     assert.equal(fresh.store.snapshot().serverUpdate, undefined);
@@ -155,4 +155,12 @@ test("a stale in-flight control list cannot hide a just-launched agent or leave 
     await page.store.action(agent!.id, "dispose");
     assert.equal(page.store.snapshot().control.agents.length, 0); assert.equal(page.store.snapshot().view.kind, "home"); assert.deepEqual(errors, []);
   } finally { release?.(); page.close(); await runner.close(); await worker.close(); await server.close(); }
+});
+
+test("duplicate-name mentions reach all matches while ID-qualified mentions select one", () => {
+  assert.equal(mentionsUsername("@admin hello", "admin", "agent-first"), true);
+  assert.equal(mentionsUsername("@ADMIN hello", "admin", "agent-second"), true);
+  assert.equal(mentionsUsername("@admin#first hello", "admin", "agent-first"), true);
+  assert.equal(mentionsUsername("@admin#first hello", "admin", "agent-second"), false);
+  assert.equal(mentionsUsername("@administrator hello", "admin", "agent-first"), false);
 });

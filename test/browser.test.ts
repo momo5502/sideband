@@ -103,14 +103,14 @@ for (const tls of [false, true]) test(`browser multi-room subscriptions over ${t
   } finally { web.disconnect(); resumed?.disconnect(); await a.close(); await b.close(); await outside.close(); await server.close(); }
 });
 
-test("browser login rejects wrong passwords, certificate identity and duplicate names", async () => {
+test("browser login accepts duplicate labels while rejecting wrong passwords and certificate identity", async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
   const good = browser(server, false); const duplicate = browser(server, false);
   const [, pin] = server.password.split(".");
   const wrongSecret = browser(server, false, `sb1.${pin}.${"x".repeat(43)}`, "wrong-secret");
   const wrongPin = browser(server, false, `sb1.${"x".repeat(43)}.${server.password.split(".")[2]}`, "wrong-pin");
   try {
-    await good.connect(); await assert.rejects(duplicate.connect(), /already registered/);
+    await good.connect(); await duplicate.connect(); assert.equal(good.identity.name, duplicate.identity.name); assert.notEqual(good.identity.id, duplicate.identity.id);
     await assert.rejects(wrongSecret.connect(), /Password or identity proof/); await assert.rejects(wrongPin.connect(), /different server certificate/);
     assert.throws(() => browser(server, false, server.password, "invalid name"), /Names use/);
   } finally { for (const client of [good, duplicate, wrongSecret, wrongPin]) client.disconnect(); await server.close(); }

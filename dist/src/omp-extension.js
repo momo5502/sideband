@@ -115,6 +115,20 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
             throw new Error("This session is changing or closed. Try again once it is ready.");
         if (request.action === "logs")
             return output.snapshot(request.after);
+        if (request.action === "rename") {
+            const name = agentName(request.text);
+            if (!name)
+                throw new Error("Choose an agent name.");
+            const previous = active.tools.status(active.id).identity?.name ?? labels.get(labelSession(reportedSession ?? "")) ?? (managed?.pi ? "PI" : "oh-my-pi");
+            const connection = active.tools.connection(active.id);
+            if (connection)
+                await connection.session.client.rename(name);
+            report(active.context, name);
+            if (!connection)
+                output.append("state", `${previous} is now ${name}`);
+            await presence?.idle();
+            return { name };
+        }
         if (reloadPending)
             throw new Error("PI is waiting to reload after this turn. Send instructions once it is ready.");
         const instructions = request.text;
@@ -138,13 +152,22 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
     } : undefined, managed?.pi && api.requestReload ? { reload: requestReload, canReload: () => api.canReload?.() === true, version: SIDEBAND_VERSION } : undefined) : undefined;
     if (presence)
         owners[presenceOwner] = claim;
+    const labelKey = Symbol.for("sideband.plugin.labels"), labelHost = globalThis;
+    const labels = labelHost[labelKey] ??= new Map();
+    const labelSession = (session) => `${profiles.directory}\0${managed?.pi ? "pi" : "omp"}\0${session}`;
     const report = (ctx, name) => {
         const session = ctx.sessionManager.getSessionFile?.() ?? ctx.sessionManager.getSessionId();
         if (session !== reportedSession) {
             output = new OutputBuffer();
             reportedSession = session;
         }
-        presence?.replace([{ session, workspace: ctx.cwd, name }]);
+        if (name) {
+            labels.set(labelSession(session), name);
+            if (labels.size > 128)
+                labels.delete(labels.keys().next().value);
+        }
+        const identity = active?.tools.status(active.id);
+        presence?.replace([{ session, workspace: ctx.cwd, name: name ?? labels.get(labelSession(session)), identityId: identity?.identity?.id }]);
     };
     let active;
     let epoch = 0;
@@ -202,7 +225,18 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
                 await previous?.tools.close();
                 assertCurrent();
                 const next = { id, context: ctx, tools: undefined };
-                next.tools = new RoomTools(async (key, profile, name) => new RoomSession(profile, new OmpAdapter(api, () => active === next && !stopped && sessionId(next.context) === key), name), profiles);
+                next.tools = new RoomTools(async (key, profile, name) => {
+                    const session = new RoomSession(profile, new OmpAdapter(api, () => active === next && !stopped && sessionId(next.context) === key), name);
+                    session.client.onEvent(event => {
+                        if (event === "identity.changed" && active === next) {
+                            const name = session.client.identity.name;
+                            const previous = labels.get(labelSession(reportedSession ?? "")) ?? (managed?.pi ? "PI" : "oh-my-pi");
+                            report(next.context, name);
+                            output.append("state", `${previous} is now ${name}`);
+                        }
+                    });
+                    return session;
+                }, profiles);
                 active = next;
             }
             active.context = ctx;
@@ -351,7 +385,7 @@ export default function sideband(api, profiles = new RoomProfiles(), managed) {
                     if (command === "join" && !argument)
                         throw new Error("Use /sideband join ROOM.");
                     const status = owner.tools.status(id);
-                    const name = status.identity?.name ?? await input("Choose your Sideband username");
+                    const name = status.identity?.name ?? labels.get(labelSession(reportedSession ?? "")) ?? await input("Choose your Sideband username");
                     if (name === undefined || !current())
                         return;
                     if (!agentName(name))

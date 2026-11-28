@@ -5,9 +5,10 @@ export const MAX_TEXT_BYTES = 8192;
 export type AgentIdentity = { id: string; name?: string; publicKey: string };
 export type Room = { id: string; name: string; members: number };
 export type SignedMessage = { id: string; roomId: string; sender: AgentIdentity; text: string; signature: string; createdAt: number };
-export type PresenceKind = "joined" | "left" | "disconnected" | "reconnected";
+export type PresenceKind = "joined" | "left" | "disconnected" | "reconnected" | "renamed";
 /** Server-observed membership, not a participant-authored or signed message. */
-export type PresenceEvent = { id: string; roomId: string; kind: PresenceKind; participant: AgentIdentity; createdAt: number };
+export type Rename = { kind: "room" | "agent"; id: string; oldName: string; newName: string };
+export type PresenceEvent = { id: string; roomId: string; kind: PresenceKind; participant: AgentIdentity; createdAt: number; rename?: Rename };
 export type Login = { identity: AgentIdentity; room: Room | null; rooms?: Room[]; resumed: boolean };
 export type ConnectionProfile = { server: string; password: string };
 export class RoomError extends Error {
@@ -43,7 +44,8 @@ export function identityFor(encoded: string, name?: string): AgentIdentity {
   return { id: `agent-${createHash("sha256").update(canonical).digest("base64url")}`, ...(name ? { name } : {}), publicKey: encoded };
 }
 export class AgentKeys {
-  readonly identity: AgentIdentity;
+  identity: AgentIdentity;
+  rename(name?: string): void { this.identity = { ...this.identity, name: agentName(name) }; }
   private readonly privateKey: KeyObject;
   constructor(name?: string, savedPrivateKey?: string) {
     const keys = savedPrivateKey ? (() => { const privateKey = createPrivateKey({ key: Buffer.from(savedPrivateKey, "base64url"), type: "pkcs8", format: "der" }); if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("Invalid saved agent identity."); return { privateKey, publicKey: createPublicKey(privateKey) }; })() : generateKeyPairSync("ed25519");
@@ -76,9 +78,14 @@ export function verifyMessage(value: unknown): value is SignedMessage {
 }
 export function validPresence(value: unknown): value is PresenceEvent {
   try {
-    const event = fields(value, ["id", "roomId", "kind", "participant", "createdAt"]);
+    const event = fields(value, ["id", "roomId", "kind", "participant", "createdAt", "rename"]);
     text(event.id, "event ID", 64); text(event.roomId, "room ID", 64);
-    if (!["joined", "left", "disconnected", "reconnected"].includes(event.kind as string) || !Number.isFinite(event.createdAt)) return false;
+    if (!["joined", "left", "disconnected", "reconnected", "renamed"].includes(event.kind as string) || !Number.isFinite(event.createdAt)) return false;
+    if (event.kind === "renamed") {
+      const rename = fields(event.rename, ["kind", "id", "oldName", "newName"]);
+      if (!["room", "agent"].includes(rename.kind as string)) return false;
+      text(rename.id, "renamed ID", 100); text(rename.oldName, "old name", 100); text(rename.newName, "new name", 100);
+    } else if (event.rename !== undefined) return false;
     const participant = object(event.participant);
     return identityFor(text(participant.publicKey, "public key", 100), agentName(participant.name)).id === participant.id;
   } catch { return false; }

@@ -79,11 +79,22 @@ export class BrowserRoomClient {
                     if (this.joinedRooms.has(packet.data.roomId) && packet.data.sender.id !== this.identity.id)
                         this.onMessage(packet.data);
                 }
-                else if (this.authenticated && packet.event === "presence" && this.joinedRooms.has(packet.data.roomId) && packet.data.participant.id !== this.identity.id) {
+                else if (this.authenticated && packet.event === "presence" && this.joinedRooms.has(packet.data.roomId) && (packet.data.participant.id !== this.identity.id || packet.data.kind === "renamed")) {
+                    if (packet.data.rename?.kind === "room") {
+                        const room = this.joinedRooms.get(packet.data.roomId);
+                        this.joinedRooms.set(room.id, { ...room, name: packet.data.rename.newName });
+                        if (this.room?.id === room.id)
+                            this.room = this.joinedRooms.get(room.id);
+                    }
                     this.onPresence(packet.data);
                 }
                 else if (this.authenticated && typeof packet.event === "string" && packet.event.startsWith("control.")) {
                     this.onControl(packet.event, packet.data);
+                }
+                else if (this.authenticated && packet.event === "identity.changed") {
+                    if (packet.data.id !== this.identity.id || packet.data.publicKey !== this.identity.publicKey)
+                        throw new Error("Invalid renamed identity.");
+                    this.identity = { ...this.identity, name: packet.data.name };
                 }
                 else if (this.authenticated && packet.event === "rooms.changed") {
                     this.onRoomsChanged();
@@ -121,8 +132,9 @@ export class BrowserRoomClient {
                 throw new Error("Invalid server challenge.");
             const signature = base64(ed25519.sign(encode(JSON.stringify(["sideband.login", 1, hello.challenge, fingerprint, this.identity.id, this.identity.name ?? null])), this.key));
             const login = await this.request("authenticate", { secret, signature });
-            if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey || login.identity.name !== this.identity.name)
+            if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey)
                 throw new Error("Invalid server identity response.");
+            this.identity = { ...this.identity, name: login.identity.name };
             this.authenticated = true;
             this.room = login.room;
             this.joinedRooms.clear();

@@ -154,12 +154,23 @@ export class RoomClient {
                     for (const listener of this.listeners)
                         listener(message);
                 }
+                if (authenticated && packet.event === "identity.changed") {
+                    if (packet.data?.id !== this.identity.id || packet.data.publicKey !== this.identity.publicKey)
+                        throw new Error("Invalid identity rename.");
+                    this.keys.rename(packet.data.name);
+                    for (const listener of this.eventListeners)
+                        listener(packet.event, packet.data);
+                }
                 if (packet.event === "presence") {
                     if (!authenticated || !validPresence(packet.data))
                         throw new Error("Rejected an invalid presence event.");
                     const event = packet.data;
-                    if (event.roomId !== this.room?.id || event.participant.id === this.identity.id || !this.remember(`presence:${event.roomId}:${event.id}`))
+                    if (event.roomId !== this.room?.id || event.participant.id === this.identity.id && event.kind !== "renamed" || !this.remember(`presence:${event.roomId}:${event.id}`))
                         return;
+                    if (event.rename?.kind === "room" && this.room) {
+                        this.room = { ...this.room, name: event.rename.newName };
+                        this.desiredRoom = this.room;
+                    }
                     for (const listener of this.presenceListeners)
                         listener(event);
                 }
@@ -204,8 +215,9 @@ export class RoomClient {
                 throw new Error("Invalid identity challenge.");
             assertCurrent();
             const login = await this.request("authenticate", { secret, signature: this.keys.sign(loginProof(challenge, fingerprint, this.identity)) });
-            if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey || login.identity.name !== this.identity.name)
+            if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey)
                 throw new Error("Server returned an inconsistent agent identity.");
+            this.keys.rename(login.identity.name);
             assertCurrent();
             authenticated = true;
             this.room = login.room;
@@ -330,7 +342,21 @@ export class RoomClient {
             return this.request("join", { room });
         }
     }
-    async joinRoom(room) { this.requireOn(); const joined = await this.joinNamedRoom(room); this.room = this.desiredRoom = joined; this.leaveRequested = false; return joined; }
+    async joinRoom(room, fallbackName) {
+        this.requireOn();
+        let joined;
+        try {
+            joined = await this.joinNamedRoom(room);
+        }
+        catch (error) {
+            if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND" || !fallbackName || fallbackName === room)
+                throw error;
+            joined = await this.joinNamedRoom(fallbackName);
+        }
+        this.room = this.desiredRoom = joined;
+        this.leaveRequested = false;
+        return joined;
+    }
     async leaveRoom() {
         if (this.state !== "reconnecting")
             this.requireOn();
@@ -353,7 +379,22 @@ export class RoomClient {
         if (!this.room)
             throw new Error("Join a room first.");
         const message = { id: randomUUID(), roomId: this.room.id, sender: this.identity, text };
-        return this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof(message)) });
+        try {
+            return await this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof(message)) });
+        }
+        catch (error) {
+            // A rejected signature proves non-acceptance. Retry only a confirmed label race.
+            if (!(error instanceof RoomError) || error.code !== "INVALID_SIGNATURE" || message.sender.name === this.identity.name || this.room?.id !== message.roomId)
+                throw error;
+            return this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof({ ...message, sender: this.identity })) });
+        }
+    }
+    async rename(name) {
+        const identity = await this.request("identity_rename", { name });
+        if (identity.id !== this.identity.id || identity.publicKey !== this.identity.publicKey)
+            throw new Error("Invalid identity rename.");
+        this.keys.rename(identity.name);
+        return this.identity;
     }
     /** Used by transport tests and useful when diagnosing recovery; never polls the inbox. */
     dropConnection() { this.socket?.terminate(); }

@@ -41,13 +41,13 @@ test("expired membership rejoins the same room and identity, without polling, hi
     assert.equal((await f.peer.history()).length, 2, "restoring a room sends no chat announcements");
   } finally { await f.close(); }
 });
-test("an empty deleted room is recreated by name; a failed manual join does not change the remembered room", async () => {
+test("an empty room reactivates with its stable ID; a failed manual join preserves it", async () => {
   const f = await fixture();
   try {
     const old = await f.client.joinRoom("recreated"); await f.client.send("Old ephemeral history");
     await assert.rejects(f.client.joinRoom("bad\u0000room"), /Invalid room name/);
     f.client.dropConnection(); await until(async () => (await f.peer.listRooms()).length === 0);
-    await until(() => f.client.state === "on" && !!f.client.room && f.client.room.id !== old.id);
+    await until(() => f.client.state === "on" && !!f.client.room && f.client.room.id === old.id);
     assert.equal(f.client.room!.name, old.name); assert.deepEqual(await f.client.history(), []);
     assert.equal((await f.peer.listRooms()).length, 1);
     await f.peer.joinRoom(f.client.room!.id); await f.client.send("Explicit after recovery");
@@ -61,13 +61,13 @@ test("room restoration joins a replacement with the same name and handles concur
       const old = await f.client.joinRoom("shared-room"); const request = f.client.request.bind(f.client);
       let replacement: Room | undefined;
       if (race) f.client.request = async (method, params) => {
-        if (method === "join" && params?.room === old.name && !replacement) replacement = await f.peer.joinRoom(old.name);
+        if (method === "join" && params?.room === old.id && !replacement) replacement = await f.peer.joinRoom(old.name);
         return request(method, params) as never;
       };
       f.client.dropConnection(); await until(async () => (await f.peer.listRooms()).length === 0);
       if (!race) replacement = await f.peer.joinRoom(old.name);
       await until(() => f.client.state === "on" && !!replacement && f.client.room?.id === replacement.id);
-      assert.notEqual(f.client.room!.id, old.id); assert.equal((await f.peer.members()).length, 2);
+      assert.equal(f.client.room!.id, old.id); assert.equal((await f.peer.members()).length, 2);
       assert.equal((await f.peer.listRooms()).length, 1); assert.equal(f.client.lastError, undefined);
     } finally { await f.close(); }
   }
@@ -165,14 +165,14 @@ test("a stale open socket with no heartbeat is replaced automatically, as after 
     assert.equal(client.room?.id, room.id); assert.equal(client.identity.id, id);
   } finally { await client.close(); await server.close(); }
 });
-test("a conflicting name after expiry stops recovery without impersonating, renaming, or claiming another identity", async () => {
+test("a shared name after expiry permits recovery while preserving separate verified identities", async () => {
   const f = await fixture(); const holder = new RoomClient(f.profile, "returning-agent");
   try {
     await f.client.joinRoom("name-conflict"); f.client.dropConnection();
     await until(async () => (await f.peer.listRooms()).length === 0); await holder.connect();
-    await until(() => f.client.state === "disconnected");
-    assert.match(f.client.lastError!, /already registered/); assert.notEqual(f.client.identity.id, holder.identity.id);
-    assert.equal(f.client.room, null);
+    await until(() => f.client.state === "on" && !!f.client.room);
+    assert.equal(f.client.lastError, undefined); assert.notEqual(f.client.identity.id, holder.identity.id);
+    assert.equal(f.client.identity.name, holder.identity.name);
   } finally { await holder.close(); await f.close(); }
 });
 test("server downtime retries; persistent-credential restart recreates the room but certificate rotation fails closed", async () => {

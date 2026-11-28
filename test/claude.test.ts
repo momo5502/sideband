@@ -12,5 +12,5 @@ test("Claude native channel notification contains only the compact message envel
     attachments: [{ id: "attachment", name: "result.txt", url: "https://cdn.discordapp.com/result.txt", size: 10 }] });
   const notification = notifications[0] as { method: string; params: { content: string } };
   assert.equal(notification.method, "notifications/claude/channel");
-  assert.deepEqual(notification.params, { content: '<sideband sender="reviewer">\nInspect this\n</sideband>' });
+  assert.deepEqual(notification.params, { content: '<sideband sender="reviewer" sender_id="logical-id">\nInspect this\n</sideband>' });
 });

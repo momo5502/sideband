@@ -30,7 +30,7 @@ export class RoomRegistry {
   async connect(key: string, load: () => Promise<{ name: string; profile: ConnectionProfile }>, profile?: string, name?: string): Promise<RoomSession> {
     if (this.closing) throw new Error("Messaging is shutting down.");
     const requestedName = name === undefined ? undefined : agentName(name);
-    let entry = this.sessions.get(key);
+    let entry = this.sessions.get(key); const newlyConnected = !entry;
     if (!entry) {
       let pending = this.pending.get(key);
       if (!pending) {
@@ -52,7 +52,7 @@ export class RoomRegistry {
       finally { if (this.pending.get(key) === pending) this.pending.delete(key); }
     }
     if (profile !== undefined && profile !== entry.profile) throw new Error("Already connected to a different profile. Disconnect with sideband_deactivate before changing servers.");
-    if (name !== undefined && requestedName !== entry.session.client.identity.name) throw new Error("Already connected with a different name. Disconnect with sideband_deactivate before changing identity.");
+    if (!newlyConnected && name !== undefined && requestedName !== entry.session.client.identity.name) throw new Error("Already connected with a different name. Disconnect with sideband_deactivate before changing identity.");
     return entry.session;
   }
   async deactivate(key: string): Promise<void> {

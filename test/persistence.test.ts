@@ -89,13 +89,26 @@ test("server and worker restarts retain resumable agents, identity, files and ar
     runner = new AgentRunner({ profile, id, root, machineId, machineName: "fixture", spec: { name: "saved", harness: "omp", room: "project", prompt: "FIRST" }, omp: { command: process.execPath, args: [fixture] } });
     await runner.start(); await until(() => runner!.agent.state === "idle" && runner!.output.snapshot().events.some(event => event.text === "FIRST"));
     const identity = runner.client.identity.id, workspace = join(root, id, "workspace"); await writeFile(join(workspace, "keep.txt"), "preserved");
-    await action("stop"); await runner.close(); runner = undefined; await worker!.close(); worker = undefined;
+    const room = await web.subscribe("project");
+    await until(async () => (await list()).agents.find(agent => agent.id === id)?.canRename === true);
+    await action("rename", { name: "renamed" }); assert.equal(runner.client.identity.id, identity); assert.equal(runner.agent.name, "renamed");
+    await web.request("room_rename", { room: room.id, name: "project-renamed" });
+    await until(() => store!.get(id)?.agent.room === "project-renamed");
+    assert.equal(store.get(id)!.agent.roomId, room.id); assert.equal(runner.client.room?.name, "project-renamed");
+    await action("stop"); await runner.close(); runner = undefined;
+    await until(async () => (await list()).agents.find(agent => agent.id === id)?.online === false);
+    await action("rename", { name: "renamed-offline" }); assert.equal(store.get(id)!.agent.name, "renamed-offline");
+    await action("resume"); await until(async () => (await list()).agents.some(agent => agent.id === id && agent.online && agent.state === "idle"));
+    assert.equal((await list()).agents.find(agent => agent.id === id)!.name, "renamed-offline", "resume during reconnect grace uses the new label");
+    await action("archive"); await until(async () => !await store!.live(id));
+    await worker!.close(); worker = undefined;
     web.disconnect(); await server.close(); server = await RoomServer.start(options); web = browser(server); await web.connect();
     const offline = (await list()).agents.find(agent => agent.id === id)!;
+    assert.equal(offline.name, "renamed-offline"); assert.equal(offline.room, "project-renamed");
     assert.equal(offline.online, false); assert.equal(offline.state, "stopped"); assert.equal(offline.canResume, true);
     assert.equal((await list()).machines[0]!.online, false);
-    const impostor = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "saved");
-    try { await impostor.connect(); await assert.rejects(impostor.request("control.runner", { agent: offline }), /another verified identity/); } finally { await impostor.close(); }
+    const impostor = new RoomClient({ server: `127.0.0.1:${server.port}`, password: server.password }, "renamed-offline");
+    try { await impostor.connect(); await assert.rejects(impostor.request("control.runner", { agent: Object.fromEntries(Object.entries(offline).filter(([key]) => key !== "canRename")) }), /another verified identity/); } finally { await impostor.close(); }
     await startWorker(); assert.equal(worker!.machine.id, machineId);
     await action("resume"); await until(async () => (await list()).agents.some(agent => agent.id === id && agent.online && agent.state === "idle"));
     assert.equal((await list()).agents.find(agent => agent.id === id)!.identityId, identity);
@@ -111,7 +124,7 @@ test("server and worker restarts retain resumable agents, identity, files and ar
     await startWorker(); await until(() => store!.get(id)!.desired === "archived"); assert.equal((await list()).agents.find(agent => agent.id === id)!.archived, true);
     const staleArchived = { ...(await list()).agents.find(agent => agent.id === id)! };
     await action("resume"); await until(async () => (await list()).agents.some(agent => agent.id === id && agent.online && !agent.archived && agent.state === "idle"));
-    await worker!.client.request("control.inventory", { agents: [staleArchived] });
+    await worker!.client.request("control.inventory", { agents: [Object.fromEntries(Object.entries(staleArchived).filter(([key]) => key !== "canRename"))] });
     assert.equal((await list()).agents.find(agent => agent.id === id)!.archived, false, "a stale worker snapshot cannot archive a live resumed runner");
     assert.equal((await list()).agents.find(agent => agent.id === id)!.identityId, identity);
     await action("archive"); await until(async () => !await store!.live(id));

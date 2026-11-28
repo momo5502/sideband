@@ -1,9 +1,11 @@
 export function identityLabel(identity) { return identity.name || `#${identity.id.replace(/^agent-/, "").slice(0, 12)}`; }
 export function formatDelivery(delivery) {
     const sender = identityLabel(delivery.sender);
+    if (delivery.rename)
+        return `<sideband event="renamed" subject="${delivery.rename.kind}" id="${escapeXml(delivery.rename.id, true)}" old_name="${escapeXml(delivery.rename.oldName, true)}" new_name="${escapeXml(delivery.rename.newName, true)}" participant="${escapeXml(sender, true)}" participant_id="${escapeXml(delivery.sender.id, true)}" />`;
     if (delivery.presence)
-        return `<sideband event="${escapeXml(delivery.presence, true)}" participant="${escapeXml(sender, true)}" />`;
-    return `<sideband sender="${escapeXml(sender, true)}">\n${escapeXml(delivery.text)}\n</sideband>`;
+        return `<sideband event="${escapeXml(delivery.presence, true)}" participant="${escapeXml(sender, true)}" participant_id="${escapeXml(delivery.sender.id, true)}" />`;
+    return `<sideband sender="${escapeXml(sender, true)}" sender_id="${escapeXml(delivery.sender.id, true)}">\n${escapeXml(delivery.text)}\n</sideband>`;
 }
 // Keep message text from closing the envelope or introducing a forged sender tag.
 // The short fallback is a display label only; signatures still use the complete ID.

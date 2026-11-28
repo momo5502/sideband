@@ -47,6 +47,7 @@ export function identityFor(encoded, name) {
 }
 export class AgentKeys {
     identity;
+    rename(name) { this.identity = { ...this.identity, name: agentName(name) }; }
     privateKey;
     constructor(name, savedPrivateKey) {
         const keys = savedPrivateKey ? (() => { const privateKey = createPrivateKey({ key: Buffer.from(savedPrivateKey, "base64url"), type: "pkcs8", format: "der" }); if (privateKey.asymmetricKeyType !== "ed25519")
@@ -90,10 +91,20 @@ export function verifyMessage(value) {
 }
 export function validPresence(value) {
     try {
-        const event = fields(value, ["id", "roomId", "kind", "participant", "createdAt"]);
+        const event = fields(value, ["id", "roomId", "kind", "participant", "createdAt", "rename"]);
         text(event.id, "event ID", 64);
         text(event.roomId, "room ID", 64);
-        if (!["joined", "left", "disconnected", "reconnected"].includes(event.kind) || !Number.isFinite(event.createdAt))
+        if (!["joined", "left", "disconnected", "reconnected", "renamed"].includes(event.kind) || !Number.isFinite(event.createdAt))
+            return false;
+        if (event.kind === "renamed") {
+            const rename = fields(event.rename, ["kind", "id", "oldName", "newName"]);
+            if (!["room", "agent"].includes(rename.kind))
+                return false;
+            text(rename.id, "renamed ID", 100);
+            text(rename.oldName, "old name", 100);
+            text(rename.newName, "new name", 100);
+        }
+        else if (event.rename !== undefined)
             return false;
         const participant = object(event.participant);
         return identityFor(text(participant.publicKey, "public key", 100), agentName(participant.name)).id === participant.id;

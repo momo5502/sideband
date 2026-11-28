@@ -58,14 +58,7 @@ function FolderPicker({ machine, store, value, onChange }) {
 export function NewAgent({ state, store, close, initial }) {
     const [source, setSource] = useState(initial?.folder ? "folder" : "new"), [folder, setFolder] = useState(initial?.folder ?? "");
     const [repository, setRepository] = useState(initial?.repository ?? ""), [name, setName] = useState(() => {
-        if (!initial)
-            return "";
-        const names = new Set(state.control.agents.map(agent => agent.name.toLowerCase()));
-        const base = initial.name.slice(0, 55);
-        let result = base, index = 2;
-        while (names.has(result.toLowerCase()))
-            result = `${base}-${index++}`;
-        return result;
+        return initial?.name ?? "";
     }), [room, setRoom] = useState(initial?.room ?? state.joined.find(room => room.id === state.lastRoom)?.name ?? "");
     const harnessOrder = ["omp", "codex", "claude", "pi"];
     const [machine, setMachine] = useState(() => {
@@ -136,11 +129,7 @@ export function NewAgent({ state, store, close, initial }) {
     const suggestName = (value) => {
         if (editedName.current)
             return;
-        const base = value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55), used = new Set(state.control.agents.map(agent => agent.name.toLowerCase()));
-        let result = base, index = 2;
-        while (used.has(result.toLowerCase()))
-            result = `${base}-${index++}`;
-        setName(result);
+        setName(value.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 55));
     };
     return _jsx(Modal, { id: "new-agent-dialog", open: true, onOpenChange: open => { if (!open && !busy && !trustBusy)
             close(); }, title: "New agent", description: "Choose a machine, harness and workspace. Your agent stays available for new work.", children: _jsxs("form", { id: "agent-launch-form", onSubmit: event => {
@@ -235,6 +224,18 @@ export function AgentActionDialog({ mode, agent, state, store, close }) {
                     close();
                 })().catch(error => setError(error instanceof Error ? error.message : "Request failed.")).finally(() => setBusy(false));
             }, children: [mode === "room" && _jsx(Field, { label: "Room", htmlFor: "agent-room", children: _jsx(RoomPicker, { id: "agent-room", rooms: allRooms(state), value: room, onChange: setRoom }) }), _jsx(ErrorMessage, { text: error }), _jsxs("div", { className: "form-actions", children: [_jsx(Button, { variant: "ghost", onClick: close, disabled: busy, children: "Cancel" }), _jsxs(Button, { id: "agent-room-apply", type: "submit", variant: mode === "remove" ? "danger" : "primary", disabled: busy, children: [busy && _jsx(Spinner, {}), mode === "room" ? "Save room" : agent.persistent ? "Archive agent" : agent.online ? "Remove agent" : "Forget agent"] })] })] }) });
+}
+export function RenameDialog({ room, agent, store, close }) {
+    const [name, setName] = useState(room?.name ?? agent.name), [busy, setBusy] = useState(false), [error, setError] = useState("");
+    return _jsx(Modal, { id: "rename-dialog", open: true, onOpenChange: open => { if (!open && !busy)
+            close(); }, title: room ? "Rename room" : "Rename agent", description: "The ID, history and workspace stay the same. A rename event appears in the room.", children: _jsxs("form", { onSubmit: event => {
+                event.preventDefault();
+                if (busy || !name.trim())
+                    return;
+                setBusy(true);
+                setError("");
+                void (room ? store.renameRoom(room.id, name.trim()) : store.action(agent.id, "rename", { name: name.trim() })).then(close).catch(error => setError(error instanceof Error ? error.message : "Rename failed.")).finally(() => setBusy(false));
+            }, children: [_jsx(Field, { label: "New name", htmlFor: "rename-name", children: _jsx("input", { id: "rename-name", className: "input", autoFocus: true, required: true, maxLength: room ? 100 : 64, pattern: room ? undefined : "[a-zA-Z0-9][a-zA-Z0-9_-]*", value: name, onChange: event => setName(event.target.value) }) }), _jsx(ErrorMessage, { text: error }), _jsxs("div", { className: "form-actions", children: [_jsx(Button, { variant: "ghost", disabled: busy, onClick: close, children: "Cancel" }), _jsxs(Button, { id: "rename-apply", variant: "primary", type: "submit", disabled: busy || !name.trim(), children: [busy && _jsx(Spinner, {}), "Save name"] })] })] }) });
 }
 export function Login({ store, state }) {
     const [key, setKey] = useState(0), saved = store.savedLogin(), busy = state.connection === "connecting";

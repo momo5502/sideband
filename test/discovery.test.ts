@@ -153,7 +153,12 @@ test("external PI and OMP sessions accept web instructions and return live outpu
       await until(() => !!page!.doc.querySelector("#agent-list [data-agent-id]")); page.click("#agent-list [data-agent-id]");
       await until(() => !!page!.doc.querySelector<HTMLTextAreaElement>("#agent-prompt") && !page!.get<HTMLTextAreaElement>("#agent-prompt").disabled);
       const ready = () => !page!.get<HTMLButtonElement>("#agent-prompt-send").disabled;
-      assert.equal(page.doc.querySelector('[aria-label="Agent actions"]'), null);
+      assert.ok(page.doc.querySelector('[aria-label="Agent actions"]'));
+      page.click('[aria-label="Agent actions"]'); await until(() => !!page!.doc.querySelector('[role="menuitem"]')); page.click(page.button("Rename agent", "menuitem"));
+      await until(() => !!page!.doc.querySelector("#rename-name")); page.fill("#rename-name", `renamed-${harness}`); page.click("#rename-apply");
+      await until(() => page!.doc.querySelector("#agent-title")?.textContent === `renamed-${harness}` && !page!.doc.querySelector("#rename-dialog"));
+      assert.equal(instructions.length, 0, "renaming must not inject a model prompt");
+
       page.fill("#agent-prompt", "Hello from the web"); page.submit("#agent-instructions");
       await until(() => instructions.length === 1 && ready() && page!.get("#agent-output").textContent?.includes(`${harness} replied`) === true);
       assert.equal(instructions[0], "Hello from the web");

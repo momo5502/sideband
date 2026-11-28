@@ -67,7 +67,7 @@ test("OMP native tools connect on named join and receive signed push at step bou
     const room = await h.call("sideband_join_room", { room: "work", name: "worker", profile: null });
     await f.peer.joinRoom(room.id); await until(() => h.messages.length === 1);
     await f.peer.send("Hello from another harness"); await until(() => h.messages.length === 2);
-    assert.deepEqual(h.messages[1], { message: { customType: "sideband", content: '<sideband sender="peer">\nHello from another harness\n</sideband>', display: true, attribution: "agent" }, options: { deliverAs: "aside", triggerTurn: true } });
+    assert.deepEqual(h.messages[1], { message: { customType: "sideband", content: `<sideband sender="peer" sender_id="${f.peer.identity.id}">\nHello from another harness\n</sideband>`, display: true, attribution: "agent" }, options: { deliverAs: "aside", triggerTurn: true } });
     const received: string[] = []; f.peer.onMessage(message => received.push(message.text));
     await h.call("sideband_send", { text: "Explicit reply only" }); await until(() => received.length === 1);
     assert.deepEqual(received, ["Explicit reply only"]); assert.equal(h.messages.length, 2, "no self-echo");

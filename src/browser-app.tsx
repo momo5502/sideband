@@ -1,10 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
-import { ArrowLeft, Bot, CirclePause, CircleStop, DoorOpen, Hash, Info, LockKeyhole, Menu as MenuIcon, Play, Plus, Signal, Trash2, Users, X } from "lucide-react";
+import { ArrowLeft, Bot, CirclePause, CircleStop, DoorOpen, Hash, Info, LockKeyhole, Menu as MenuIcon, Play, Plus, Pencil, Signal, Trash2, Users, X } from "lucide-react";
 import { BrowserWorkspace } from "./browser-workspace.js";
 import { Button, Composer, Menu, MenuItem, Modal, Spinner } from "./browser-components.js";
 import { AgentDirectory, type AgentFilters, AgentDetails, AgentOutput, DiscoveredAgentView, allRooms, agentStatus, MemberList, repositoryName, RoomMessages, Sidebar, Status } from "./browser-views.js";
-import { AgentActionDialog, JoinRoom, Login, NewAgent, Settings } from "./browser-dialogs.js";
+import { AgentActionDialog, RenameDialog, JoinRoom, Login, NewAgent, Settings } from "./browser-dialogs.js";
 import type { ManagedAgent } from "./orchestration-protocol.js";
 
 function useMobile(query: string) {
@@ -14,7 +14,8 @@ function useMobile(query: string) {
 }
 export function App({ store }: { store: BrowserWorkspace }) {
   const state = useSyncExternalStore(store.subscribe, store.snapshot), mobile = useMobile("(max-width:700px)"), narrow = useMobile("(max-width:1100px)");
-  const [navigation, setNavigation] = useState(false), [dialog, setDialog] = useState<"new" | "join" | "settings" | null>(null), [details, setDetails] = useState(false), [actionDialog, setActionDialog] = useState<"room" | "remove" | null>(null), [actionBusy, setActionBusy] = useState(false), [actionError, setActionError] = useState("");
+  const [navigation, setNavigation] = useState(false), [dialog, setDialog] = useState<"new" | "join" | "settings" | null>(null), [details, setDetails] = useState(false), [actionDialog, setActionDialog] = useState<"room" | "remove" | "rename" | null>(null), [actionBusy, setActionBusy] = useState(false), [actionError, setActionError] = useState("");
+  const [roomRename, setRoomRename] = useState(false);
   const [agentFilters, setAgentFilters] = useState<AgentFilters>({ search: "", machine: "", kind: "all", archivedOpen: false });
   const [launchTemplate, setLaunchTemplate] = useState<ManagedAgent | undefined>();
   const view = state.view, room = view.kind === "room" ? allRooms(state).find(room => room.id === view.id) : undefined, agent = view.kind === "agent" ? state.control.agents.find(agent => agent.id === view.id) : undefined;
@@ -31,7 +32,7 @@ export function App({ store }: { store: BrowserWorkspace }) {
   }, [store, state.serverUpdate?.build, state.serverUpdate?.automatic, state.connection, state.loading, actionBusy]);
   const mentionCount = Object.values(state.mentions).reduce((sum, count) => sum + count, 0);
   useEffect(() => { document.title = `${mentionCount ? `(${mentionCount}) ` : ""}${room?.name ?? agent?.name ?? (view.kind === "agents" ? "Agents" : "Sideband")}${room || agent || view.kind === "agents" ? " — Sideband" : ""}`; }, [room?.name, agent?.name, view.kind, mentionCount]);
-  useEffect(() => { setActionError(""); setActionDialog(null); setDetails(false); }, [view.kind, "id" in view ? view.id : ""]);
+  useEffect(() => { setActionError(""); setActionDialog(null); setRoomRename(false); setDetails(false); }, [view.kind, "id" in view ? view.id : ""]);
   const openDialog = (value: "new" | "join" | "settings") => { setNavigation(false); setLaunchTemplate(undefined); setDialog(value); };
   const openAgent = (id: string) => { setDetails(false); void store.selectAgent(id).catch(() => {}); };
   if (state.connection === "off" || state.connection === "connecting") return <Login store={store} state={state} />;
@@ -48,12 +49,12 @@ export function App({ store }: { store: BrowserWorkspace }) {
       {view.kind === "agent" && <Button id="agents-back" variant="ghost" icon aria-label="All agents" title="All agents" onClick={() => store.showAgents()}><ArrowLeft size={18} /></Button>}{room ? <Hash size={21} className="pane-icon" /> : agent ? <Bot size={22} className="pane-icon" /> : view.kind === "agents" ? <Bot size={22} className="pane-icon" /> : <Signal size={21} className="pane-icon" />}
       <div className="min-w-0"><div className="pane-heading"><h1 id={room ? "room-title" : agent ? "agent-title" : view.kind === "agents" ? "agents-title" : "workspace-title"}>{room?.name ?? agent?.name ?? (view.kind === "agents" ? "Agents" : "Workspace")}</h1>{agent && <><Status state={agentStatus(agent)} label />{agent.external && <span className="badge">External</span>}</>}</div>
         <div className="pane-subtitle">{room ? `${state.members.length || room.members} participants · Shared room` : agent ? <>{agent.machineName} · {agent.external?.workspace ?? (agent.external ? "Started outside Sideband" : agent.folder ?? repositoryName(agent.repository))}{agent.ref ? ` @ ${agent.ref}` : ""}{agent.room && <button className="room-chip" onClick={() => { void store.openRoom(agent.room).catch(() => {}); }}><Hash size={10} /><span className="room-chip-label">{agent.room}</span></button>}</> : view.kind === "agents" ? `${state.control.agents.filter(agent => !agent.archived && agent.online).length} online · ${state.control.machines.filter(machine => machine.online).length} ${state.control.machines.filter(machine => machine.online).length === 1 ? "machine" : "machines"} connected` : "Your rooms and conversations"}</div></div></div>
-      <div className="header-actions">{room && <><Button aria-label="Room members" title="Room members" variant="ghost" onClick={() => { setDetails(!details); void store.refreshMembers(); }}><Users size={16} /><span>{state.members.length || room.members}</span></Button><Menu label="Room actions"><MenuItem onSelect={() => { void store.leaveRoom().catch(() => {}); }}><DoorOpen size={14} />Leave room</MenuItem></Menu></>}
+      <div className="header-actions">{room && <><Button aria-label="Room members" title="Room members" variant="ghost" onClick={() => { setDetails(!details); void store.refreshMembers(); }}><Users size={16} /><span>{state.members.length || room.members}</span></Button><Menu label="Room actions"><MenuItem defer disabled={state.connection !== "on"} onSelect={() => setRoomRename(true)}><Pencil size={14} />Rename room</MenuItem><MenuItem onSelect={() => { void store.leaveRoom().catch(() => {}); }}><DoorOpen size={14} />Leave room</MenuItem></Menu></>}
         {agent && <>{primary && <Button id={`agent-${primary.action}`} disabled={(!agent.online && !(primary.action === "resume" && recoverable)) || actionBusy || state.connection !== "on"} onClick={() => perform(primary.action)}>{actionBusy ? <Spinner size={14} /> : primary.icon}{primary.label}</Button>}
           {agent.state === "failed" && agent.canResume === false && <Button disabled={state.connection !== "on"} onClick={() => { setLaunchTemplate({ ...agent, ...store.launchSpecs.get(agent.id) }); setDialog("new"); }}><Plus size={14} />Launch again…</Button>}
-          <Button variant="ghost" icon aria-label="Agent details" onClick={() => setDetails(!details)}><Info size={17} /></Button>{!agent.external && <Menu label="Agent actions"><MenuItem defer disabled={!agent.online || state.connection !== "on"} onSelect={() => setActionDialog("room")}><Hash size={14} />Change room…</MenuItem>
+          <Button variant="ghost" icon aria-label="Agent details" onClick={() => setDetails(!details)}><Info size={17} /></Button>{(!agent.external || agent.canRename) && <Menu label="Agent actions"><MenuItem defer disabled={!agent.canRename || state.connection !== "on"} onSelect={() => setActionDialog("rename")}><Pencil size={14} />Rename agent</MenuItem>{!agent.external && <><MenuItem defer disabled={!agent.online || state.connection !== "on"} onSelect={() => setActionDialog("room")}><Hash size={14} />Change room…</MenuItem>
             {!["stopped", "failed"].includes(agent.state) && <MenuItem disabled={!agent.online || actionBusy} onSelect={() => perform("stop")}><CircleStop size={14} />Stop agent</MenuItem>}
-            <Dropdown.Separator className="dropdown-separator" /><MenuItem defer danger disabled={state.connection !== "on" || agent.archived} onSelect={() => setActionDialog("remove")}><Trash2 size={14} />{agent.persistent ? "Archive agent…" : agent.online ? "Remove agent…" : "Forget agent…"}</MenuItem></Menu>}</>}
+            <Dropdown.Separator className="dropdown-separator" /><MenuItem defer danger disabled={state.connection !== "on" || agent.archived} onSelect={() => setActionDialog("remove")}><Trash2 size={14} />{agent.persistent ? "Archive agent…" : agent.online ? "Remove agent…" : "Forget agent…"}</MenuItem></>}</Menu>}</>}
         {!room && !agent && (view.kind === "agents" ? <Button id="agents-create" onClick={() => openDialog("new")}><Plus size={14} />New agent</Button> : <Button onClick={() => openDialog("join")}><Hash size={14} /><span className="header-label">Join a room</span></Button>)}
       </div></header>
       {state.connection === "reconnecting" && <div className="connection-banner" role="status"><Spinner size={13} />Reconnecting… Your session and drafts are kept.</div>}
@@ -69,6 +70,8 @@ export function App({ store }: { store: BrowserWorkspace }) {
     </div>
     {details && narrow && <Modal id="details-dialog" open onOpenChange={setDetails} title={agent ? "Agent details" : "Room members"}>{agent ? <AgentDetails agent={agent} /> : <MemberList state={state} openAgent={openAgent} />}</Modal>}
     {dialog === "new" && <NewAgent state={state} store={store} initial={launchTemplate} close={() => setDialog(null)} />}{dialog === "join" && <JoinRoom state={state} store={store} close={() => setDialog(null)} />}{dialog === "settings" && <Settings state={state} store={store} close={() => setDialog(null)} />}
-    {agent && actionDialog && <AgentActionDialog mode={actionDialog} agent={agent} state={state} store={store} close={() => setActionDialog(null)} />}
+    {room && roomRename && <RenameDialog room={room} store={store} close={() => setRoomRename(false)} />}
+    {agent && actionDialog === "rename" && <RenameDialog agent={agent} store={store} close={() => setActionDialog(null)} />}
+    {agent && actionDialog && actionDialog !== "rename" && <AgentActionDialog mode={actionDialog} agent={agent} state={state} store={store} close={() => setActionDialog(null)} />}
   </section>;
 }

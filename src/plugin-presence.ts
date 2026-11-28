@@ -13,7 +13,7 @@ export const presenceDirectory = process.env.SIDEBAND_PRESENCE_DIR ?? join(state
 export const PRESENCE_TTL_MS = 90_000;
 const hostScope = createHash("sha256").update(JSON.stringify([hostname(), homedir()])).digest("hex");
 export const presenceKey = (harness: string, session: string) => createHash("sha256").update(`${hostScope}\0${harness}\0${session}`).digest("hex");
-export type LocalSession = { session: string; workspace?: string; name?: string; createdAt?: number };
+export type LocalSession = { session: string; workspace?: string; name?: string; createdAt?: number; identityId?: string };
 type Frame = { version: 1; pid: number; stamp: string; at: number; sessions: DiscoveredSession[]; control?: PluginEndpoint };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 let ownStamp: string | undefined;
@@ -40,7 +40,7 @@ export class PluginPresence {
     this.rows = sessions.slice(0, 128).map(session => {
       const workspace = session.workspace ? basename(session.workspace.replace(/\\/g, "/")).slice(0, 128) : undefined;
       const name = session.name?.replace(/[\x00-\x1f]/g, " ").slice(0, 128) || ({ omp: "oh-my-pi", pi: "PI", claude: "Claude", codex: "Codex" })[this.harness];
-      return { key: presenceKey(this.harness, session.session), harness: this.harness, name, pid: process.pid, createdAt: session.createdAt ?? this.born, ...(workspace ? { workspace } : {}) };
+      return { key: presenceKey(this.harness, session.session), harness: this.harness, name, pid: process.pid, createdAt: session.createdAt ?? this.born, ...(session.identityId ? { identityId: session.identityId } : {}), ...(workspace ? { workspace } : {}) };
     });
     if (!this.timer) { this.timer = setInterval(() => this.queue(), 15000); this.timer.unref(); }
     this.queue();
@@ -63,7 +63,7 @@ export class PluginPresence {
         }, request => {
           if (request.action === "reload" && !this.closed && this.sessions.has(request.key)) this.options?.reload();
         });
-        try { this.endpoint = { ...await this.control.start(), ...(this.options && this.harness === "pi" ? { reload: true, version: this.options.version } : {}) }; } catch { await this.control.close(); }
+        try { this.endpoint = { ...await this.control.start(), rename: true, ...(this.options && this.harness === "pi" ? { reload: true, version: this.options.version } : {}) }; } catch { await this.control.close(); }
       }
       while (this.dirty && !this.closed) {
         this.dirty = false;
@@ -122,8 +122,9 @@ export async function readPluginPresence(directory = presenceDirectory, verify?:
       const session = discoveredSession(row); if (session.pid !== frame.pid) continue;
       if (!result.has(session.key)) {
         const endpoint = pluginEndpoint(frame.control);
-        delete session.interactive;
+        delete session.interactive; delete session.canRename;
         if (endpoint && ["pi", "omp"].includes(session.harness)) session.interactive = true;
+        if (endpoint?.rename && session.interactive) session.canRename = true;
         result.set(session.key, session); if (endpoint && session.interactive) endpoints?.set(session.key, endpoint);
       }
       if (result.size >= 128) return [...result.values()];
@@ -134,6 +135,7 @@ export async function readPluginPresence(directory = presenceDirectory, verify?:
 
 export function discoveredSession(input: unknown): DiscoveredSession {
   const v = input as DiscoveredSession;
-  if (!v || typeof v !== "object" || Object.keys(v).some(key => !["key", "harness", "name", "pid", "createdAt", "workspace", "interactive"].includes(key)) || !/^[a-f0-9]{64}$/.test(v.key) || !["omp", "pi", "claude", "codex"].includes(v.harness) || typeof v.name !== "string" || !v.name || v.name.length > 128 || /[\x00-\x1f]/.test(v.name) || !Number.isSafeInteger(v.pid) || v.pid < 1 || !Number.isFinite(v.createdAt) || v.interactive !== undefined && typeof v.interactive !== "boolean" || v.workspace !== undefined && (typeof v.workspace !== "string" || v.workspace.length > 128 || /[\/\\\x00-\x1f]/.test(v.workspace))) throw new Error("Invalid discovered session.");
-  return { key: v.key, harness: v.harness, name: v.name, pid: v.pid, createdAt: v.createdAt, ...(v.workspace ? { workspace: v.workspace } : {}), ...(v.interactive ? { interactive: true } : {}) };
+  if (!v || typeof v !== "object" || Object.keys(v).some(key => !["key", "harness", "name", "pid", "createdAt", "workspace", "interactive", "canRename", "identityId"].includes(key)) || !/^[a-f0-9]{64}$/.test(v.key) || !["omp", "pi", "claude", "codex"].includes(v.harness) || typeof v.name !== "string" || !v.name || v.name.length > 128 || /[\x00-\x1f]/.test(v.name) || !Number.isSafeInteger(v.pid) || v.pid < 1 || !Number.isFinite(v.createdAt) || v.interactive !== undefined && typeof v.interactive !== "boolean" || v.workspace !== undefined && (typeof v.workspace !== "string" || v.workspace.length > 128 || /[\/\\\x00-\x1f]/.test(v.workspace))) throw new Error("Invalid discovered session.");
+  if (v.identityId !== undefined && (typeof v.identityId !== "string" || !/^agent-[A-Za-z0-9_-]{43}$/.test(v.identityId)) || v.canRename !== undefined && typeof v.canRename !== "boolean") throw new Error("Invalid discovered identity.");
+  return { key: v.key, harness: v.harness, name: v.name, pid: v.pid, createdAt: v.createdAt, ...(v.workspace ? { workspace: v.workspace } : {}), ...(v.interactive ? { interactive: true } : {}), ...(v.canRename ? { canRename: true } : {}), ...(v.identityId ? { identityId: v.identityId } : {}) };
 }

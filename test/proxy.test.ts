@@ -207,7 +207,7 @@ test("bundled MCP supports a trusted HTTPS proxy while untrusted proxy TLS is re
     let notification: unknown;
     mcp.setNotificationHandler(NotificationSchema.extend({ method: z.literal("notifications/claude/channel") }), value => { notification = value.params; });
     await sender.send("through secure proxy"); await until(() => notification !== undefined);
-    assert.deepEqual(notification, { content: '<sideband sender="sender">\nthrough secure proxy\n</sideband>' });
+    assert.deepEqual(notification, { content: `<sideband sender="sender" sender_id="${sender.identity.id}">\nthrough secure proxy\n</sideband>` });
     assert.equal(tunnel.requests.length, 1, "untrusted proxy TLS was rejected before CONNECT");
   } finally { await mcp.close(); await untrusted.close(); await sender.close(); await tunnel.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
 });

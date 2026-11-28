@@ -6,7 +6,7 @@ import { join, resolve, relative } from "node:path";
 import spawn from "cross-spawn";
 import { RoomClient } from "./room-client.js";
 import { formatDelivery } from "./protocol.js";
-import { AgentKeys, RoomError } from "./room-protocol.js";
+import { AgentKeys, agentName, RoomError } from "./room-protocol.js";
 import { ManagedOmp } from "./managed-omp.js";
 import { ManagedTerminal } from "./managed-terminal.js";
 import { OutputBuffer, launchSpec } from "./orchestration-protocol.js";
@@ -40,6 +40,7 @@ export class AgentRunner {
     preparing;
     published = "";
     legacyServer = false;
+    renameSupport = false;
     stopRequested = false;
     lease = randomUUID();
     claimed = false;
@@ -83,15 +84,24 @@ export class AgentRunner {
             this.sessionFile = restored.session;
             this.workspaceReady = restored.workspaceReady;
             this.desired = restored.desired;
-            this.desiredRoom = restored.agent.room;
+            this.desiredRoom = restored.agent.roomId ?? restored.agent.room;
         }
         this.agent.persistent = true;
         this.client = new RoomClient(config.profile, spec.name, { keys: new AgentKeys(spec.name, restored?.privateKey), onError: error => this.record("connection", error.message) });
         this.client.onConnected(async () => {
             this.legacyServer = false;
+            this.renameSupport = false;
+            this.agent.name = this.client.identity.name;
+            if (this.client.room) {
+                this.agent.room = this.desiredRoom = this.client.room.name;
+                this.agent.roomId = this.client.room.id;
+            }
             try {
                 try {
-                    await this.client.request("control.runner", { agent: this.agent });
+                    const response = await this.client.request("control.runner", { agent: this.wireAgent() });
+                    this.renameSupport = !!response.capabilities?.rename;
+                    if (this.renameSupport)
+                        void this.client.request("control.features", { rename: true }).catch(() => { });
                 }
                 catch (error) {
                     if (!(error instanceof RoomError) || error.code !== "INVALID_ARGUMENT")
@@ -112,12 +122,23 @@ export class AgentRunner {
                 throw error;
             }
         });
-        this.client.onEvent((event, data) => { if (event === "control.command")
-            this.command(data); });
+        this.client.onEvent((event, data) => {
+            if (event === "control.command")
+                this.command(data);
+            if (event === "identity.changed")
+                this.agent.name = this.client.identity.name;
+        });
         this.client.onMessage(message => this.deliver(formatDelivery({ messageId: message.id, channelId: message.roomId, sender: message.sender, senderAccountId: message.sender.id,
             text: message.text, createdAt: message.createdAt, attachments: [], verified: true }), message.roomId));
-        this.client.onPresence(event => this.deliver(formatDelivery({ messageId: event.id, channelId: event.roomId, sender: event.participant, senderAccountId: event.participant.id,
-            presence: event.kind, text: "", createdAt: event.createdAt, attachments: [] }), event.roomId));
+        this.client.onPresence(event => {
+            if (event.rename?.kind === "room") {
+                this.agent.room = this.desiredRoom = event.rename.newName;
+                this.agent.roomId = event.roomId;
+                void this.checkpoint().catch(error => this.record("error", errorText(error)));
+            }
+            this.deliver(formatDelivery({ messageId: event.id, channelId: event.roomId, sender: event.participant, senderAccountId: event.participant.id,
+                presence: event.kind, rename: event.rename, text: "", createdAt: event.createdAt, attachments: [] }), event.roomId);
+        });
     }
     record(kind, text) {
         if (!text)
@@ -133,9 +154,10 @@ export class AgentRunner {
         this.record("state", error ? `${state}: ${this.agent.error}` : state);
     }
     wireAgent() {
+        const { roomId, ...base } = this.agent;
         if (!this.legacyServer)
-            return this.agent;
-        const { persistent: _persistent, archived: _archived, identityId: _identity, ...agent } = this.agent;
+            return this.renameSupport ? this.agent : base;
+        const { persistent: _persistent, archived: _archived, identityId: _identity, ...agent } = base;
         return agent;
     }
     snapshot() {
@@ -394,7 +416,7 @@ export class AgentRunner {
     async changeRoom(room) {
         ++this.roomEpoch;
         if (room) {
-            const joined = await this.client.joinRoom(room);
+            const joined = await this.client.joinRoom(room, room === this.agent.roomId ? this.agent.room : undefined);
             this.desiredRoom = joined.name;
         }
         else {
@@ -403,6 +425,7 @@ export class AgentRunner {
             this.desiredRoom = "";
         }
         this.agent.room = this.desiredRoom;
+        this.agent.roomId = this.client.room?.id;
         this.record("state", this.desiredRoom ? `Joined room ${this.desiredRoom}` : "Left room");
         await this.checkpoint();
         await this.publishState();
@@ -411,6 +434,20 @@ export class AgentRunner {
         if (this.closed)
             throw new Error("Runner is closed.");
         switch (method) {
+            case "rename": {
+                if (!this.renameSupport)
+                    throw new Error("Update the server before renaming agents.");
+                const name = agentName(params.name);
+                if (!name)
+                    throw new Error("Choose an agent name.");
+                const oldName = this.agent.name;
+                await this.client.rename(name);
+                this.agent.name = name;
+                this.record("state", `${oldName} is now ${name}`);
+                await this.checkpoint();
+                await this.publishState();
+                return { renamed: true };
+            }
             case "prompt": {
                 if (!this.driver || !["idle", "busy"].includes(this.agent.state))
                     throw new Error("Resume the agent before sending instructions.");

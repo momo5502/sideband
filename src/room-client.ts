@@ -119,10 +119,16 @@ export class RoomClient {
           if (message.roomId !== this.room?.id || message.sender.id === this.identity.id || !this.remember(`${message.roomId}:${message.id}`)) return;
           for (const listener of this.listeners) listener(message);
         }
+        if (authenticated && packet.event === "identity.changed") {
+          if (packet.data?.id !== this.identity.id || packet.data.publicKey !== this.identity.publicKey) throw new Error("Invalid identity rename.");
+          this.keys.rename(packet.data.name);
+          for (const listener of this.eventListeners) listener(packet.event, packet.data);
+        }
         if (packet.event === "presence") {
           if (!authenticated || !validPresence(packet.data)) throw new Error("Rejected an invalid presence event.");
           const event: PresenceEvent = packet.data;
-          if (event.roomId !== this.room?.id || event.participant.id === this.identity.id || !this.remember(`presence:${event.roomId}:${event.id}`)) return;
+          if (event.roomId !== this.room?.id || event.participant.id === this.identity.id && event.kind !== "renamed" || !this.remember(`presence:${event.roomId}:${event.id}`)) return;
+          if (event.rename?.kind === "room" && this.room) { this.room = { ...this.room, name: event.rename.newName }; this.desiredRoom = this.room; }
           for (const listener of this.presenceListeners) listener(event);
         }
       } catch (error) { this.error(error); }
@@ -154,7 +160,8 @@ export class RoomClient {
       if (typeof challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new Error("Invalid identity challenge.");
       assertCurrent();
       const login = await this.request<Login>("authenticate", { secret, signature: this.keys.sign(loginProof(challenge, fingerprint, this.identity)) });
-      if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey || login.identity.name !== this.identity.name) throw new Error("Server returned an inconsistent agent identity.");
+      if (login.identity.id !== this.identity.id || login.identity.publicKey !== this.identity.publicKey) throw new Error("Server returned an inconsistent agent identity.");
+      this.keys.rename(login.identity.name);
       assertCurrent(); authenticated = true; this.room = login.room;
       if (!this.leaveRequested && !this.room && this.desiredRoom) {
         const restored = await this.restoreRoom(this.desiredRoom, assertCurrent);
@@ -234,7 +241,15 @@ export class RoomClient {
       assertCurrent(); return this.request<Room>("join", { room });
     }
   }
-  async joinRoom(room: string): Promise<Room> { this.requireOn(); const joined = await this.joinNamedRoom(room); this.room = this.desiredRoom = joined; this.leaveRequested = false; return joined; }
+  async joinRoom(room: string, fallbackName?: string): Promise<Room> {
+    this.requireOn(); let joined: Room;
+    try { joined = await this.joinNamedRoom(room); }
+    catch (error) {
+      if (!(error instanceof RoomError) || error.code !== "ROOM_NOT_FOUND" || !fallbackName || fallbackName === room) throw error;
+      joined = await this.joinNamedRoom(fallbackName);
+    }
+    this.room = this.desiredRoom = joined; this.leaveRequested = false; return joined;
+  }
   async leaveRoom(): Promise<void> {
     if (this.state !== "reconnecting") this.requireOn();
     this.leaveRequested = true; this.desiredRoom = null;
@@ -250,7 +265,17 @@ export class RoomClient {
   async send(text: string): Promise<{ messageId: string }> {
     this.requireOn(); if (!this.room) throw new Error("Join a room first.");
     const message = { id: randomUUID(), roomId: this.room.id, sender: this.identity, text };
-    return this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof(message)) });
+    try { return await this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof(message)) }); }
+    catch (error) {
+      // A rejected signature proves non-acceptance. Retry only a confirmed label race.
+      if (!(error instanceof RoomError) || error.code !== "INVALID_SIGNATURE" || message.sender.name === this.identity.name || this.room?.id !== message.roomId) throw error;
+      return this.request("send", { id: message.id, text, signature: this.keys.sign(messageProof({ ...message, sender: this.identity })) });
+    }
+  }
+  async rename(name: string): Promise<AgentIdentity> {
+    const identity = await this.request<AgentIdentity>("identity_rename", { name });
+    if (identity.id !== this.identity.id || identity.publicKey !== this.identity.publicKey) throw new Error("Invalid identity rename.");
+    this.keys.rename(identity.name); return this.identity;
   }
   /** Used by transport tests and useful when diagnosing recovery; never polls the inbox. */
   dropConnection(): void { this.socket?.terminate(); }

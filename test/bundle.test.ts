@@ -44,7 +44,7 @@ test("standalone plugin runs without node_modules and uses native Claude credent
       client.setNotificationHandler(NotificationSchema.extend({ method: z.literal("notifications/claude/channel") }), notification => resolve(notification.params));
     });
     await sender.send("Bundled client works");
-    assert.deepEqual(await arrived, { content: '<sideband sender="peer">\nBundled client works\n</sideband>' });
+    assert.deepEqual(await arrived, { content: `<sideband sender="peer" sender_id="${sender.identity.id}">\nBundled client works\n</sideband>` });
   } finally {
     if (timer) clearTimeout(timer);
     await client.close(); await sender.close(); await server.close(); await rm(directory, { recursive: true, force: true });

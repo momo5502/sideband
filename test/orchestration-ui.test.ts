@@ -27,7 +27,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} exist
     await until(() => !p.get<HTMLButtonElement>("#browse-folders").disabled); p.click("#browse-folders"); await until(() => p.doc.querySelector("#folder-current")?.textContent === "/remote");
     p.click('[data-folder="/remote/project"]'); await until(() => p.doc.querySelector("#folder-current")?.textContent === "/remote/project");
     p.click("#folder-use"); await until(() => p.get<HTMLInputElement>("#agent-folder").value === "/remote/project");
-    assert.equal(p.get<HTMLInputElement>("#agent-name").value, "project-2", "folder-based suggested names avoid existing agents");
+    assert.equal(p.get<HTMLInputElement>("#agent-name").value, "project", "folder-based names may match existing agents");
     assert.equal(p.get<HTMLSelectElement>("#launch-ref").disabled, true);
     p.fill("#agent-name", "existing"); p.submit("#agent-launch-form"); await until(() => commands.some(command => command.method === "launch"));
     const spec = commands.find(command => command.method === "launch")!.params.spec as Record<string, unknown>;
@@ -199,7 +199,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} works
     agent!.state = "failed"; agent!.error = "Clone failed"; await publish(); await until(() => !![...p.doc.querySelectorAll("button")].find(button => button.textContent === "Launch again…"));
     p.click(p.button("Launch again…")); await until(() => !!p.doc.querySelector("#new-agent-dialog"));
     assert.equal(p.get<HTMLSelectElement>("#agent-machine").value, migratedMachineId, "a pre-migration machine id selects the current machine by name");
-    assert.equal(p.get<HTMLInputElement>("#agent-repository").value, "https://example.org/_tools.git"); assert.equal(p.get<HTMLInputElement>("#agent-name").value, "tools-2"); assert.equal(p.get<HTMLTextAreaElement>("#launch-prompt").value, "Initial task"); p.click(p.button("Cancel"));
+    assert.equal(p.get<HTMLInputElement>("#agent-repository").value, "https://example.org/_tools.git"); assert.equal(p.get<HTMLInputElement>("#agent-name").value, "tools"); assert.equal(p.get<HTMLTextAreaElement>("#launch-prompt").value, "Initial task"); p.click(p.button("Cancel"));
     agent!.error = undefined;
     agent!.state = "idle"; agent!.canResume = true; await publish(); await until(() => !p.get<HTMLTextAreaElement>("#agent-prompt").disabled);
     p.fill("#agent-prompt", "Keep $(this) literal\nand preserve newlines"); p.key("#agent-prompt", "Enter");

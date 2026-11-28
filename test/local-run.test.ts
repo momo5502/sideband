@@ -31,7 +31,7 @@ test("local login is loopback-only, same-origin, single-use and removed from bro
     dom.window.fetch = (async (_url, options) => { historyCleared = dom.window.location.hash === ""; return fetch(`${origin}/local-login`, { ...options, headers: { ...options!.headers, Origin: origin } }); }) as typeof fetch;
     store = new BrowserWorkspace(dom.window as unknown as Window, (endpoint, password, name, key) => new BrowserRoomClient(endpoint, password, name, key, address => new WebSocket(address, { origin }) as unknown as globalThis.WebSocket));
     store.start(); await until(() => store!.snapshot().connection === "on"); assert.equal(historyCleared, true);
-    assert.equal(store.snapshot().identity?.name, undefined, "an already-open tab's name must not block automatic login in a fresh tab");
+    assert.equal(store.snapshot().identity?.name, "existing-tab", "multiple browser identities may share a display name");
     assert.equal((await exchange(token)).status, 403, "the browser consumed its ticket exactly once");
     assert.equal(store.snapshot().control.localOnly, true);
     const ticket = server.createLocalLogin().split("=")[1]!;

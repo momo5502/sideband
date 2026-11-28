@@ -1,7 +1,7 @@
 import { CONTROL_TIMEOUT_MS } from "./timeouts.js";
 import { randomUUID, createHash } from "node:crypto";
 import { WebSocket } from "ws";
-import { fields, text, RoomError } from "./room-protocol.js";
+import { agentName, fields, text, RoomError } from "./room-protocol.js";
 import { launchSpec, modelCatalog } from "./orchestration-protocol.js";
 import { parseBuild, parseUpdate } from "./update-types.js";
 import { UpdateFleet } from "./update-fleet.js";
@@ -12,6 +12,7 @@ const uuid = (value) => { const id = text(value, "ID", 64); if (!/^[a-f0-9-]{36}
 export class OrchestrationServer {
     send;
     store;
+    hooks;
     get runningAgentCount() { return [...this.agents.values()].filter(agent => agent.online && !["stopped", "failed"].includes(agent.state)).length; }
     peers = new Map();
     workers = new Map();
@@ -46,9 +47,10 @@ export class OrchestrationServer {
     browsers = new Map();
     pending = new Map();
     updates;
-    constructor(send, updater, store) {
+    constructor(send, updater, store, hooks) {
         this.send = send;
         this.store = store;
+        this.hooks = hooks;
         this.discoveryTimer = setInterval(() => { let changed = false; for (const [id, value] of this.discovered)
             if (Date.now() - value.at > 120000) {
                 this.discovered.delete(id);
@@ -93,8 +95,8 @@ export class OrchestrationServer {
         });
     }
     agent(input) {
-        const value = fields(input, ["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume", "persistent", "archived", "identityId"]);
-        const { id, machineId, machineName, state, createdAt, error, online, canResume, persistent, archived, identityId, ...spec } = value;
+        const value = fields(input, ["name", "harness", "repository", "folder", "ref", "model", "effort", "room", "prompt", "terminal", "id", "machineId", "machineName", "state", "online", "createdAt", "error", "canResume", "persistent", "archived", "identityId", "roomId"]);
+        const { id, machineId, machineName, state, createdAt, error, online, canResume, persistent, archived, identityId, roomId, ...spec } = value;
         for (const flag of [persistent, archived])
             if (flag !== undefined && typeof flag !== "boolean")
                 throw new Error("Invalid persistence flag.");
@@ -102,8 +104,11 @@ export class OrchestrationServer {
             throw new Error("Invalid resume capability.");
         if (!["preparing", "starting", "idle", "busy", "stopped", "failed"].includes(state) || !Number.isFinite(createdAt))
             throw new Error("Invalid agent state.");
+        const previous = this.agents.get(String(id)), priorRoom = previous?.roomId && this.hooks?.room(previous.roomId);
+        const reference = typeof roomId === "string" ? roomId : priorRoom && (previous?.room === spec.room || priorRoom.aliases?.some(name => name.toLowerCase() === String(spec.room).toLowerCase())) ? priorRoom.id : undefined;
+        const room = this.hooks?.room(reference, typeof spec.room === "string" ? spec.room : undefined);
         return { ...launchSpec(spec), id: uuid(id), machineId: uuid(machineId), machineName: text(machineName, "machine name", 100), state: state, createdAt: createdAt,
-            room: typeof spec.room === "string" ? spec.room : "", online: true, ...(persistent !== undefined ? { persistent: persistent } : {}), ...(archived !== undefined ? { archived: archived } : {}), ...(typeof identityId === "string" ? { identityId: text(identityId, "identity", 100) } : {}), ...(error ? { error: text(error, "error", 2048) } : {}), ...(canResume !== undefined ? { canResume: canResume } : {}) };
+            room: room?.name ?? (typeof spec.room === "string" ? spec.room : ""), ...(room ? { roomId: room.id } : {}), online: true, ...(persistent !== undefined ? { persistent: persistent } : {}), ...(archived !== undefined ? { archived: archived } : {}), ...(typeof identityId === "string" ? { identityId: text(identityId, "identity", 100) } : {}), ...(error ? { error: text(error, "error", 2048) } : {}), ...(canResume !== undefined ? { canResume: canResume } : {}) };
     }
     async request(socket, browser, method, params, identity) {
         if (method === "control.worker" || method === "control.runner") {
@@ -173,7 +178,7 @@ export class OrchestrationServer {
                     this.machines.set(agent.machineId, { id: agent.machineId, name: agent.machineName, platform: "unknown", harnesses: [], online: false });
             }
             this.changed();
-            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true, discovery: true, discoveryControl: true } } : {}) };
+            return { registered: true, ...(kind === "worker" ? { capabilities: { models: true, folders: true, pi: true, discovery: true, discoveryControl: true, rename: true } } : { capabilities: { rename: true } }) };
         }
         if (method === "control.discovered") {
             const peer = this.peers.get(socket);
@@ -188,7 +193,7 @@ export class OrchestrationServer {
                 const session = discoveredSession(input), digest = createHash("sha256").update(`external\0${session.key}`).digest("hex").slice(0, 32);
                 const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20)}`;
                 keys.set(id, session.key);
-                return { id, name: session.name, harness: session.harness,
+                return { id, name: session.identityId && this.hooks?.identity(session.identityId)?.name || session.name, harness: session.harness, ...(session.identityId ? { identityId: session.identityId } : {}), canRename: session.canRename === true || !!(session.identityId && this.hooks?.identity(session.identityId)),
                     machineId: peer.id, machineName: machine.name, state: "running", online: true, createdAt: session.createdAt, room: "", canResume: false, external: { pid: session.pid, ...(session.workspace ? { workspace: session.workspace } : {}), ...(session.interactive && ["pi", "omp"].includes(session.harness) ? { interactive: true } : {}) } };
             });
             const previous = this.discovered.get(peer.id);
@@ -199,17 +204,23 @@ export class OrchestrationServer {
         }
         if (method === "control.features") {
             const peer = this.peers.get(socket);
-            if (browser || peer?.kind !== "worker")
-                throw new Error("Only a registered worker can report its features.");
-            const args = fields(params, ["folders", "pi"]);
-            if (![args.folders, args.pi].some(value => value === true) || [args.folders, args.pi].some(value => value !== undefined && value !== true))
-                throw new Error("Invalid worker capability.");
-            const machine = this.machines.get(peer.id);
-            if (args.folders)
-                machine.folders = true;
-            if (args.pi && !machine.harnesses.includes("pi"))
-                machine.harnesses.push("pi");
-            await this.save("machine", peer.id, machine);
+            if (browser || !peer)
+                throw new Error("Only a registered native peer can report features.");
+            const args = fields(params, peer.kind === "runner" ? ["rename"] : ["folders", "pi", "rename"]);
+            if (!Object.values(args).length || Object.values(args).some(value => value !== true))
+                throw new Error("Invalid capability.");
+            if (args.rename)
+                peer.rename = true;
+            if (peer.kind === "worker") {
+                const machine = this.machines.get(peer.id);
+                if (args.folders)
+                    machine.folders = true;
+                if (args.rename)
+                    machine.rename = true;
+                if (args.pi && !machine.harnesses.includes("pi"))
+                    machine.harnesses.push("pi");
+                await this.save("machine", peer.id, machine);
+            }
             this.changed();
             return {};
         }
@@ -232,10 +243,13 @@ export class OrchestrationServer {
             const args = fields(params, ["agents"]);
             if (!Array.isArray(args.agents) || args.agents.length > 30)
                 throw new Error("Invalid saved-agent inventory.");
+            const roomUpdates = [];
             const archived = [], errors = [];
             for (const value of args.agents) {
                 try {
                     const agent = this.agent(value);
+                    if (agent.roomId && (value.room !== agent.room || value.roomId !== agent.roomId))
+                        roomUpdates.push({ id: agent.id, roomId: agent.roomId, room: agent.room });
                     if (agent.machineId !== peer.id || agent.persistent !== true)
                         throw new Error("Invalid saved-agent machine.");
                     if (this.agents.has(agent.id) && this.agents.get(agent.id).machineId !== peer.id)
@@ -273,7 +287,7 @@ export class OrchestrationServer {
             this.machines.get(peer.id).persistent = true;
             await this.save("machine", peer.id, this.machines.get(peer.id));
             this.changed();
-            return { archived, errors };
+            return { archived, errors, roomUpdates };
         }
         if (method === "control.worker_update") {
             const peer = this.peers.get(socket);
@@ -315,7 +329,7 @@ export class OrchestrationServer {
             });
             const previous = this.agents.get(peer.id);
             this.agents.set(peer.id, { ...agent, identityId: identity.id });
-            if (previous.state !== agent.state || previous.room !== agent.room || previous.error !== agent.error || previous.canResume !== agent.canResume) {
+            if (previous.name !== agent.name || previous.roomId !== agent.roomId || previous.state !== agent.state || previous.room !== agent.room || previous.error !== agent.error || previous.canResume !== agent.canResume) {
                 if (agent.persistent)
                     await this.save("agent", peer.id, this.agents.get(peer.id));
                 this.changed();
@@ -355,7 +369,7 @@ export class OrchestrationServer {
                 for (const agent of value.agents)
                     if (!this.agents.has(agent.id) && !external.has(agent.id))
                         external.set(agent.id, agent);
-            return { machines, agents: [...this.agents.values(), ...external.values()], ...(this.updates ? { updates: this.updates.state } : {}) };
+            return { machines, agents: [...this.agents.values()].map(agent => ({ ...agent, canRename: this.online(this.runners.get(agent.id)) ? !!this.runners.get(agent.id)?.rename : !!agent.persistent && this.online(this.workers.get(agent.machineId)) && !!this.machines.get(agent.machineId)?.rename })).concat([...external.values()]), ...(this.updates ? { updates: this.updates.state } : {}) };
         }
         if (method === "control.models.list") {
             const args = fields(params, ["machineId", "harness"]), machine = this.machines.get(uuid(args.machineId));
@@ -422,9 +436,9 @@ export class OrchestrationServer {
             return this.dispatch(this.runners.get(id), "logs", {});
         }
         if (method === "control.action") {
-            const args = fields(params, ["agentId", "action", "text", "room"]), id = uuid(args.agentId);
+            const args = fields(params, ["agentId", "action", "text", "room", "name"]), id = uuid(args.agentId);
             let action = text(args.action, "action", 32);
-            if (!["prompt", "interrupt", "stop", "resume", "room", "dispose", "archive"].includes(action))
+            if (!["prompt", "interrupt", "stop", "resume", "room", "dispose", "archive", "rename"].includes(action))
                 throw new Error("Unknown agent action.");
             if (action === "prompt")
                 text(args.text, "instructions", 16000);
@@ -434,12 +448,51 @@ export class OrchestrationServer {
             if (!agent) {
                 const external = this.external(id);
                 if (external) {
+                    if (action === "rename") {
+                        const name = agentName(args.name);
+                        if (!name)
+                            throw new Error("Choose an agent name.");
+                        if (!external.agent.canRename)
+                            throw new Error("Reload this session plugin, or join a room to rename its Sideband identity.");
+                        if (external.agent.identityId && this.hooks?.identity(external.agent.identityId))
+                            await this.hooks.renameIdentity(external.agent.identityId, name, identity);
+                        else
+                            await this.dispatch(this.workers.get(external.agent.machineId), "external", { key: external.key, action: "rename", text: name });
+                        for (const value of this.discovered.values())
+                            for (const row of value.agents)
+                                if (row.id === id)
+                                    row.name = name;
+                        this.changed();
+                        return { renamed: true, name };
+                    }
                     if (!external.agent.external?.interactive)
                         throw new Error("This externally started session is view-only. Use its harness terminal for control.");
                     if (action !== "prompt")
                         throw new Error("Use this externally started session's terminal for lifecycle controls.");
                     return this.dispatch(this.workers.get(external.agent.machineId), "external", { key: external.key, action: "prompt", text: args.text });
                 }
+            }
+            if (action === "rename") {
+                if (!agent)
+                    throw new Error("Unknown agent.");
+                const name = agentName(args.name);
+                if (!name)
+                    throw new Error("Choose an agent name.");
+                const oldName = agent.name, runner = this.runners.get(id), worker = this.workers.get(agent.machineId), live = this.online(runner);
+                if (live && !runner?.rename || !live && (!agent.persistent || !worker?.rename))
+                    throw new Error("Update the agent's runner or worker before renaming it. Archive and resume an older agent to upgrade its runner.");
+                await this.dispatch(live ? runner : worker, "rename", { ...(live ? {} : { id }), name });
+                const current = this.agents.get(id) ?? agent;
+                current.name = name;
+                this.agents.set(id, current);
+                if (current.persistent)
+                    await this.save("agent", id, current);
+                if (!live && current.identityId)
+                    await this.hooks?.rememberName(current.identityId, name);
+                if (!live && oldName !== name)
+                    this.hooks?.renamed({ kind: "agent", id: current.identityId ?? id, oldName, newName: name }, identity, current.roomId ?? current.room);
+                this.changed();
+                return { renamed: true, name };
             }
             if (action === "dispose" && agent?.persistent)
                 action = "archive";
@@ -498,6 +551,19 @@ export class OrchestrationServer {
             return result;
         }
         throw new Error("Unknown orchestration operation.");
+    }
+    async roomRenamed(roomId, oldName, name) {
+        const changed = [];
+        for (const agent of this.agents.values())
+            if (agent.roomId === roomId || !agent.roomId && agent.room.toLowerCase() === oldName.toLowerCase()) {
+                agent.room = name;
+                agent.roomId = roomId;
+                if (agent.persistent)
+                    changed.push({ ...agent });
+            }
+        await this.store?.change(() => { for (const agent of changed)
+            this.store.put("agent", agent.id, agent); });
+        this.changed();
     }
     external(id) {
         for (const value of this.discovered.values()) {

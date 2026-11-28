@@ -121,6 +121,12 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
   const presence = isMainThread && !owners[presenceOwner] ? new PluginPresence(managed?.pi ? "pi" : "omp", undefined, api.sendUserMessage ? async (_session, request) => {
     if (!active || stopped) throw new Error("This session is changing or closed. Try again once it is ready.");
     if (request.action === "logs") return output.snapshot(request.after);
+    if (request.action === "rename") {
+      const name = agentName(request.text); if (!name) throw new Error("Choose an agent name.");
+      const previous = (active.tools.status(active.id) as { identity?: { name?: string } }).identity?.name ?? labels.get(labelSession(reportedSession ?? "")) ?? (managed?.pi ? "PI" : "oh-my-pi");
+      const connection = active.tools.connection(active.id); if (connection) await connection.session.client.rename(name);
+      report(active.context, name); if (!connection) output.append("state", `${previous} is now ${name}`); await presence?.idle(); return { name };
+    }
     if (reloadPending) throw new Error("PI is waiting to reload after this turn. Send instructions once it is ready.");
     const instructions = request.text!;
     output.append("user", instructions);
@@ -137,10 +143,15 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
     return { accepted: true };
   } : undefined, managed?.pi && api.requestReload ? { reload: requestReload, canReload: () => api.canReload?.() === true, version: SIDEBAND_VERSION } : undefined) : undefined;
   if (presence) owners[presenceOwner] = claim;
+  const labelKey = Symbol.for("sideband.plugin.labels"), labelHost = globalThis as typeof globalThis & { [labelKey]?: Map<string, string> };
+  const labels = labelHost[labelKey] ??= new Map<string, string>();
+  const labelSession = (session: string) => `${profiles.directory}\0${managed?.pi ? "pi" : "omp"}\0${session}`;
   const report = (ctx: OmpContext, name?: string) => {
     const session = ctx.sessionManager.getSessionFile?.() ?? ctx.sessionManager.getSessionId();
     if (session !== reportedSession) { output = new OutputBuffer(); reportedSession = session; }
-    presence?.replace([{ session, workspace: ctx.cwd, name }]);
+    if (name) { labels.set(labelSession(session), name); if (labels.size > 128) labels.delete(labels.keys().next().value!); }
+    const identity = active?.tools.status(active.id) as { identity?: { id?: string } } | undefined;
+    presence?.replace([{ session, workspace: ctx.cwd, name: name ?? labels.get(labelSession(session)), identityId: identity?.identity?.id }]);
   };
   type Binding = { id: string; context: OmpContext; tools: RoomTools };
   let active: Binding | undefined;
@@ -185,8 +196,16 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
         const previous = active; active = undefined;
         await previous?.tools.close(); assertCurrent();
         const next: Binding = { id, context: ctx, tools: undefined as unknown as RoomTools };
-        next.tools = new RoomTools(async (key, profile, name) => new RoomSession(profile,
-          new OmpAdapter(api, () => active === next && !stopped && sessionId(next.context) === key), name), profiles);
+        next.tools = new RoomTools(async (key, profile, name) => {
+          const session = new RoomSession(profile, new OmpAdapter(api, () => active === next && !stopped && sessionId(next.context) === key), name);
+          session.client.onEvent(event => {
+            if (event === "identity.changed" && active === next) {
+              const name = session.client.identity.name!; const previous = labels.get(labelSession(reportedSession ?? "")) ?? (managed?.pi ? "PI" : "oh-my-pi");
+              report(next.context, name); output.append("state", `${previous} is now ${name}`);
+            }
+          });
+          return session;
+        }, profiles);
         active = next;
       }
       active.context = ctx;
@@ -294,7 +313,7 @@ export default function sideband(api: OmpApi, profiles = new RoomProfiles(), man
         if (command === "join" || command === "rooms") {
           if (command === "join" && !argument) throw new Error("Use /sideband join ROOM.");
           const status = owner.tools.status(id) as { identity?: { name?: string } };
-          const name = status.identity?.name ?? await input("Choose your Sideband username");
+          const name = status.identity?.name ?? labels.get(labelSession(reportedSession ?? "")) ?? await input("Choose your Sideband username");
           if (name === undefined || !current()) return;
           if (!agentName(name)) throw new Error("A username is required.");
           let profile: string | undefined;

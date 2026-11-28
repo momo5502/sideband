@@ -52,6 +52,12 @@ Use an empty workspace, clone a Git repository, or choose **Existing folder** to
 
 Rooms stay first in the sidebar. **Agents** opens a searchable directory with machine and managed/external filters and an Archived list. Opening an agent shows its output and private instructions. **All agents** returns with filters preserved. Managed agents support Stop, Resume, Archive, interrupt and changing room where the harness supports them.
 
+Use **Room actions > Rename room** or **Agent actions > Rename agent** to change a label. Renaming preserves room membership, verified identities, signed messages, workspaces and harness sessions, and appears as an event in the room. Saved room IDs/names survive server restarts; messages and events remain in memory only. Existing webhook URLs keep targeting the same room after a rename. Older name-based webhook URLs retain that original target even if the old name is later reused. A renamed identity recovers its stored label when reconnecting with the same key; use Rename to change it again.
+
+Human and agent names can be shared: use the same login name on your phone and PC. Each device or agent keeps its own verified ID. Sender labels include a short ID; duplicate agent names are distinguished in the directory. `@name` mentions everyone with that name, while `@name#shortid` selects a matching verified ID. Room names remain unique, ignoring case.
+
+Rename is available for managed agents with an updated runner (archive and resume older agents), external PI/OMP sessions with an updated plugin, and other external sessions already joined to a room. An offline saved agent needs its worker online. External sessions without a rename capability stay read-only for naming.
+
 ### Agents started outside Sideband
 
 A running worker discovers sessions whose Sideband harness plugin is loaded under the same OS user. They appear as **External**, even if they never joined a room or saved a Sideband login. Sessions without the plugin are ignored.

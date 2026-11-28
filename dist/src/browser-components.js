@@ -25,8 +25,8 @@ export function Menu({ label, children }) {
                             trigger.current?.focus();
                     }, children: children }) })] });
 }
-export function MenuItem({ children, onSelect, disabled, danger, defer }) {
-    return _jsx(Dropdown.Item, { className: clsx("dropdown-item", danger && "text-danger"), disabled: disabled, onSelect: () => { if (defer)
+export function MenuItem({ children, onSelect, disabled, danger, defer, title }) {
+    return _jsx(Dropdown.Item, { title: title, className: clsx("dropdown-item", danger && "text-danger"), disabled: disabled, onSelect: () => { if (defer)
             window.setTimeout(onSelect, 0);
         else
             onSelect(); }, children: children });

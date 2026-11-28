@@ -24,6 +24,25 @@ function browser(server: RoomServer, key?: Uint8Array) {
   return new BrowserRoomClient(origin.replace("http:", "ws:") + "/browser-ws", server.password, "human", key,
     url => new NodeWebSocket(url, { origin }) as unknown as WebSocket);
 }
+test("room rename keeps webhook targets stable across restart and rejects duplicate room labels", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sideband-hook-rename-"));
+  const options = { host: "127.0.0.1", port: 0, statusPort: 0, credentialsFile: join(directory, "server.json"), databaseFile: join(directory, "server.sqlite") };
+  let server = await RoomServer.start(options), web = browser(server);
+  try {
+    await web.connect(); const room = await web.subscribe("old-room");
+    const { path } = await web.request<{ path: string }>("webhook", { room: room.name, sender: "ci" });
+    const second = await web.subscribe("occupied");
+    await assert.rejects(web.request("room_rename", { room: room.id, name: "OCCUPIED" }), /already in use/);
+    await web.request("room_rename", { room: room.id, name: "new-room" });
+    assert.equal((await deliver(server, path)).code, 204);
+    assert.equal((await web.request<SignedMessage[]>("room_history", { room: room.id }))[0]!.roomId, room.id);
+    assert.deepEqual((await web.request<unknown[]>("room_history", { room: second.id })), []);
+    web.disconnect(); await server.close(); server = await RoomServer.start(options); web = browser(server); await web.connect();
+    const restored = await web.subscribe(room.id); assert.equal(restored.name, "new-room");
+    assert.equal((await deliver(server, path)).code, 204);
+    assert.equal((await web.history()).length, 1); assert.ok(verifyMessage((await web.history())[0]));
+  } finally { web.disconnect(); await server.close(); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
+});
 async function deliver(server: RoomServer, path: string, body: string | Buffer = '{"hello":"world"}', options: { tls?: boolean; method?: string; contentType?: string; chunked?: boolean; githubEvent?: string } = {}) {
   return new Promise<{ code: number; body: string; headers: import("node:http").IncomingHttpHeaders }>((resolve, reject) => {
     const req = (options.tls ? httpsRequest : httpRequest)({ hostname: "127.0.0.1", port: options.tls ? server.port : server.statusPort, path,
