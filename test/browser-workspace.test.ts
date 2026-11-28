@@ -80,6 +80,35 @@ test("leaving while the browser reconnects cancels room restoration", async () =
     assert.equal(page.store.snapshot().joined.length, 0); assert.equal(page.store.snapshot().view.kind, "home"); await until(async () => (await peer.members()).length === 1);
   } finally { page.close(); await peer.close(); await server.close(); }
 });
+
+test("the Agents page stops output watching, wins over a slow room join and survives reconnect", async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }), page = workspace(server);
+  const profile = { server: `127.0.0.1:${server.port}`, password: server.password }, worker = new RoomClient(profile), runner = new RoomClient(profile, "watched-agent");
+  const machineId = randomUUID(), agentId = randomUUID(), watches: string[] = [];
+  let release: (() => void) | undefined;
+  const internals = server as unknown as { request: (...args: any[]) => unknown }, original = internals.request.bind(server);
+  internals.request = (...args) => {
+    const result = original(...args);
+    if (args[2] === "control.watch") watches.push(args[3].agentId);
+    if (args[2] === "subscribe") return Promise.resolve(result).then(value => new Promise(resolve => { release = () => resolve(value); }));
+    return result;
+  };
+  runner.onEvent((event, command: ControlCommand) => { if (event === "control.command") void runner.request("control.reply", { id: command.id, result: { events: [], first: 1, next: 1 } }).catch(() => {}); });
+  try {
+    await worker.connect(); await runner.connect(); await worker.request("control.worker", { machine: { id: machineId, name: "machine", platform: "test", harnesses: ["omp"] } });
+    await runner.request("control.runner", { agent: { id: agentId, name: "watched-agent", harness: "omp", machineId, machineName: "machine", state: "idle", createdAt: Date.now(), room: "" } });
+    await page.store.login("human", server.password); await page.store.selectAgent(agentId); assert.equal(watches.at(-1), agentId);
+    page.store.drafts.set(`agent:${agentId}`, "Keep this draft");
+    const opening = page.store.openRoom("slow-room"); opening.catch(() => {}); await until(() => !!release);
+    page.store.showAgents(); assert.equal(page.store.snapshot().view.kind, "agents"); assert.equal(page.store.snapshot().loading, false);
+    await until(() => watches.at(-1) === ""); release!(); await opening;
+    assert.equal(page.store.snapshot().view.kind, "agents"); assert.equal(page.store.snapshot().joined[0]?.name, "slow-room");
+    // Only the first subscription was delayed; room restoration can now complete.
+    internals.request = original;
+    for (const socket of page.sockets) socket.terminate(); await until(() => page.store.snapshot().connection === "reconnecting"); await until(() => page.store.snapshot().connection === "on");
+    assert.equal(page.store.snapshot().view.kind, "agents"); assert.equal(page.store.drafts.get(`agent:${agentId}`), "Keep this draft");
+  } finally { release?.(); page.close(); await runner.close(); await worker.close(); await server.close(); }
+});
 test("room switching fences sends by the displayed room id and never sends an old draft to the newly subscribed room", async () => {
   const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 }); const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
   const a = new RoomClient(profile, "alice"), b = new RoomClient(profile, "bob"), page = workspace(server); const received: string[] = [];

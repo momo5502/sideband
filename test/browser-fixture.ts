@@ -59,8 +59,9 @@ export async function browserPage(server: RoomServer, options: { mobile?: boolea
   const navigation = async () => { if (options.mobile && !doc.querySelector("#room-menu")) { click("#menu-toggle"); await until(() => !!doc.querySelector("#room-menu")); } };
   const room = (id: string) => doc.querySelector<HTMLButtonElement>(`#room-list button[data-room-id="${id}"]`)!;
   const view = async (id: string, name: string) => { await navigation(); await until(() => !!room(id)); click(room(id)); await until(() => doc.querySelector("#room-title")?.textContent === name && !doc.querySelector("#navigation-dialog") && !(doc.querySelector("#send") as HTMLButtonElement)?.disabled); };
+  const agents = async () => { if (!doc.querySelector("#agents-page")) { await navigation(); click("#agents-open"); await until(() => !!doc.querySelector("#agents-page") && !doc.querySelector("#navigation-dialog")); } };
   const settings = async () => { await navigation(); click("#settings-open"); await until(() => !!doc.querySelector("#settings-dialog")); };
-  return { dom, doc, get, click, fill, submit, key, button, navigation, room, view, settings, errors, sockets, notifications,
+  return { dom, doc, get, click, fill, submit, key, button, navigation, room, view, agents, settings, errors, sockets, notifications,
     get requests() { return requests; }, get focuses() { return focuses; },
     async login(name = "human") { fill("#username", name); fill("#password", server.password); submit("#login-form"); await until(() => !!doc.querySelector("#app")); },
     save(): SavedBrowserState { return { login: dom.window.localStorage.getItem("sideband.login.v1"), identity: dom.window.sessionStorage.getItem("sideband.identity.v1"), rooms: dom.window.sessionStorage.getItem("sideband.rooms.v1") }; },

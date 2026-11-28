@@ -625,7 +625,9 @@ export class BrowserWorkspace {
         this.reloading = true;
         this.reloadPage();
     }
-    home() { this.update({ view: { kind: "home" }, error: "" }); this.watched = ""; ++this.watchGeneration; if (this.client)
+    home() { this.overview("home"); }
+    showAgents() { this.overview("agents"); }
+    overview(kind) { ++this.joinGeneration; this.update({ view: { kind }, error: "", loading: false }); this.watched = ""; ++this.watchGeneration; if (this.client)
         void this.client.request("control.watch", { agentId: "" }).catch(() => { }); }
     clearError() { this.update({ error: "" }); }
     requireClient() { if (!this.client || this.state.connection !== "on")

@@ -1,0 +1,58 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { RoomServer } from "../src/room-server.js";
+import { RoomClient } from "../src/room-client.js";
+import { browserPage, until } from "./browser-fixture.js";
+import { testTimeout } from "./waits.js";
+
+for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} room-first navigation keeps large agent lists on a searchable page and preserves drafts and filters`, { timeout: testTimeout(30000) }, async () => {
+  const server = await RoomServer.start({ host: "127.0.0.1", port: 0, statusPort: 0 });
+  const profile = { server: `127.0.0.1:${server.port}`, password: server.password };
+  const laptop = new RoomClient(profile), workstation = new RoomClient(profile), runner = new RoomClient(profile, "build-agent"), peer = new RoomClient(profile, "peer");
+  const laptopId = randomUUID(), workstationId = randomUUID(), agentId = randomUUID();
+  let page: Awaited<ReturnType<typeof browserPage>> | undefined;
+  const errors: unknown[] = [];
+  runner.onEvent((event, command) => { if (event === "control.command") void runner.request("control.reply", { id: command.id, result: { events: [{ seq: 1, at: Date.now(), kind: "assistant", text: "Latest output" }], first: 1, next: 2 } }).catch(error => errors.push(error)); });
+  try {
+    await laptop.connect(); await workstation.connect(); await runner.connect(); await peer.connect();
+    await laptop.request("control.worker", { machine: { id: laptopId, name: "Laptop", platform: "test", harnesses: ["omp"] } });
+    await workstation.request("control.worker", { machine: { id: workstationId, name: "Workstation", platform: "test", harnesses: ["pi"] } });
+    await laptop.request("control.inventory", { agents: [false, true].map(archived => ({ id: randomUUID(), name: archived ? "saved-archive" : "saved-session", harness: "omp", machineId: laptopId, machineName: "Laptop", state: "stopped", online: false, createdAt: Date.now(), room: "", persistent: true, archived, canResume: true })) });
+    await runner.request("control.runner", { agent: { id: agentId, name: "build-agent", harness: "omp", machineId: laptopId, machineName: "Laptop", state: "busy", createdAt: Date.now(), room: "" } });
+    await workstation.request("control.discovered", { sessions: Array.from({ length: 25 }, (_, i) => ({ key: (i + 1).toString(16).padStart(64, "0"), name: `PI review ${i}`, harness: "pi", pid: process.pid, workspace: "project", createdAt: Date.now() })) });
+    const room = await peer.joinRoom("main-room");
+    page = await browserPage(server, { mobile }); const p = page; await p.login(); await p.view(room.id, room.name); p.fill("#message", "Unsent room draft");
+    await p.navigation(); await until(() => p.get("#agents-open").textContent?.includes("27") === true);
+    assert.equal(p.get("#room-menu").querySelectorAll("[data-agent-id]").length, 0, "no agent names crowd room navigation");
+    assert.ok(p.get("#room-list").compareDocumentPosition(p.get("#agents-open")) & p.dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
+    assert.doesNotMatch(p.get("#room-menu").textContent!, /PI review|saved-session|build-agent/);
+    await p.agents(); assert.equal(p.doc.querySelector("#navigation-dialog"), null);
+    await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 27);
+    assert.equal(p.doc.title, "Agents \u2014 Sideband");
+    assert.equal(p.get<HTMLDetailsElement>("#archived-agents").open, false);
+    p.fill("#agents-search", "PI review 7"); await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 1);
+    assert.match(p.get("#agent-list").textContent!, /PI review 7/);
+    p.fill("#agents-search", ""); await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 27);
+    p.fill("#agents-machine", laptopId); await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 2);
+    p.click(p.button("External")); await until(() => !!p.doc.querySelector(".agents-empty")); assert.match(p.get(".agents-empty").textContent!, /No matching agents/);
+    p.click(p.button("Clear filters")); await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 27);
+    p.fill("#agents-machine", laptopId); await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 2);
+    p.click(p.button("Managed")); await until(() => p.button("Managed").getAttribute("aria-pressed") === "true");
+    p.fill("#agents-search", "build"); await until(() => p.doc.querySelectorAll("#agent-list [data-agent-id]").length === 1);
+    p.click(`#agent-list [data-agent-id="${agentId}"]`); await until(() => !!p.doc.querySelector("#agent-prompt") && p.get("#agent-output").textContent?.includes("Latest output") === true);
+    p.fill("#agent-prompt", "Private draft"); p.click("#agents-back"); await until(() => !!p.doc.querySelector("#agents-page"));
+    assert.equal(p.get<HTMLInputElement>("#agents-search").value, "build"); assert.equal(p.get<HTMLSelectElement>("#agents-machine").value, laptopId);
+    assert.equal(p.button("Managed").getAttribute("aria-pressed"), "true");
+    p.click(`#agent-list [data-agent-id="${agentId}"]`); await until(() => !!p.doc.querySelector("#agent-prompt"));
+    assert.equal(p.get<HTMLTextAreaElement>("#agent-prompt").value, "Private draft");
+    await p.view(room.id, room.name); assert.equal(p.get<HTMLTextAreaElement>("#message").value, "Unsent room draft");
+    await peer.send("Room stays live"); await until(() => p.get("#messages").textContent?.includes("Room stays live") === true);
+    await p.agents(); p.fill("#agents-search", ""); await until(() => !!p.doc.querySelector("#archived-agents"));
+    p.click("#archived-agents summary"); await until(() => p.get<HTMLDetailsElement>("#archived-agents").open);
+    p.click("#archived-agents [data-agent-id]"); await until(() => p.doc.querySelector("#agent-title")?.textContent === "saved-archive");
+    p.click("#agents-back"); await until(() => !!p.doc.querySelector("#archived-agents"));
+    assert.equal(p.get<HTMLDetailsElement>("#archived-agents").open, true, "returning from a saved session keeps Archived expanded");
+    assert.deepEqual(errors, []); assert.deepEqual(p.errors, []);
+  } finally { await page?.close(); await Promise.all([laptop.close(), workstation.close(), runner.close(), peer.close()]); await server.close(); }
+});

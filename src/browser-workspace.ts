@@ -4,7 +4,7 @@ import type { AgentIdentity, Room, SignedMessage, PresenceEvent } from "./room-p
 import type { ControlSnapshot, OutputEvent, OutputSnapshot, LaunchSpec, ManagedAgent } from "./orchestration-protocol.js";
 
 export type ChatItem = SignedMessage | PresenceEvent;
-export type View = { kind: "home" } | { kind: "room" | "agent"; id: string };
+export type View = { kind: "home" | "agents" } | { kind: "room" | "agent"; id: string };
 export type WorkspaceState = {
   connection: "off" | "connecting" | "on" | "reconnecting";
   identity?: AgentIdentity; error: string; view: View; lastRoom?: string;
@@ -420,7 +420,9 @@ export class BrowserWorkspace {
     this.storage("sessionStorage", reloadStorage, update.build); this.reloading = true;
     this.reloadPage();
   }
-  home() { this.update({ view: { kind: "home" }, error: "" }); this.watched = ""; ++this.watchGeneration; if (this.client) void this.client.request("control.watch", { agentId: "" }).catch(() => {}); }
+  home() { this.overview("home"); }
+  showAgents() { this.overview("agents"); }
+  private overview(kind: "home" | "agents") { ++this.joinGeneration; this.update({ view: { kind }, error: "", loading: false }); this.watched = ""; ++this.watchGeneration; if (this.client) void this.client.request("control.watch", { agentId: "" }).catch(() => {}); }
   clearError() { this.update({ error: "" }); }
   private requireClient(): BrowserRoomClient { if (!this.client || this.state.connection !== "on") throw new Error("Reconnecting. Your draft is kept; send it once connected."); return this.client; }
   logout() {

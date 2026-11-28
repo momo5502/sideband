@@ -96,7 +96,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} saved
   });
   try {
     await worker.connect(); await worker.request("control.worker", { machine: { id: machineId, name: "machine", platform: "test", harnesses: ["omp"] } }); await worker.request("control.inventory", { agents: [agent] });
-    page = await browserPage(server, { mobile }); const p = page; await p.login(); await p.navigation();
+    page = await browserPage(server, { mobile }); const p = page; await p.login(); await p.agents();
     await until(() => !!p.doc.querySelector("#archived-agents")); assert.equal(p.doc.querySelectorAll("#agent-list [data-agent-id]").length, 0);
     p.click("#archived-agents summary"); p.click(`#archived-agents [data-agent-id="${agent.id}"]`);
     await until(() => !!p.doc.querySelector("#agent-resume") && !p.doc.querySelector("#navigation-dialog")); assert.equal(p.get<HTMLButtonElement>("#agent-resume").disabled, false);
@@ -105,7 +105,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} saved
     p.click("#agent-resume"); await until(() => !!p.doc.querySelector("#agent-prompt") && !p.get<HTMLTextAreaElement>("#agent-prompt").disabled);
     p.click('button[aria-label="Agent actions"]'); await until(() => !!p.doc.querySelector('[role="menuitem"]')); p.click(p.button("Archive agent\u2026", "menuitem"));
     await until(() => !!p.doc.querySelector("#agent-action-dialog")); assert.match(p.get("#agent-action-dialog").textContent!, /resume it later/); p.submit("#agent-room-form");
-    await until(() => !p.doc.querySelector("#agent-action-dialog") && p.doc.querySelector("#workspace-title")?.textContent === "Workspace"); await p.navigation();
+    await until(() => !p.doc.querySelector("#agent-action-dialog") && p.doc.querySelector("#workspace-title")?.textContent === "Workspace"); await p.agents();
     await until(() => !!p.doc.querySelector("#archived-agents")); assert.equal(p.doc.querySelectorAll("#agent-list [data-agent-id]").length, 0);
     assert.deepEqual(errors, []); assert.deepEqual(p.errors, []);
   } finally { await page?.close(); await runner.close(); await worker.close(); await server.close(); }
@@ -214,7 +214,7 @@ for (const mobile of [false, true]) test(`${mobile ? "mobile" : "desktop"} works
     p.click('button[aria-label="Agent actions"]'); await until(() => !!p.doc.querySelector('[role="menuitem"]')); p.click(p.button("Stop agent", "menuitem"));
     await until(() => !!p.doc.querySelector("#agent-resume") && !p.get<HTMLButtonElement>("#agent-resume").disabled); p.click("#agent-resume"); await until(() => !p.get<HTMLTextAreaElement>("#agent-prompt").disabled);
     await runner.close(); await until(() => p.doc.querySelector('.badge-state[data-state="offline"]') !== null);
-    await p.navigation(); p.click(p.get(`#agent-list button[data-agent-id="${agent!.id}"]`)); await until(() => p.get("#agent-output").textContent!.includes("Agent offline"));
+    await p.agents(); p.click(p.get(`#agent-list button[data-agent-id="${agent!.id}"]`)); await until(() => p.doc.querySelector("#agent-output")?.textContent?.includes("Agent offline") === true);
     assert.equal(p.doc.querySelector('.pane-error[role="alert"]'), null, "offline agents don't attempt a failing log watch");
     p.click('button[aria-label="Agent actions"]'); await until(() => !!p.doc.querySelector('[role="menuitem"]')); p.click(p.button("Forget agent…", "menuitem")); await until(() => !!p.doc.querySelector("#agent-action-dialog"));
     assert.match(p.get("#agent-action-dialog").textContent!, /Files stay on the machine/); p.submit("#agent-room-form");

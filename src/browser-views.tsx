@@ -20,21 +20,12 @@ const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digi
 export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { store: BrowserWorkspace; state: WorkspaceState; close(): void; onNew(): void; onJoin(): void; onSettings(): void }) {
   const [search, setSearch] = useState("");
   const build = state.control.updates?.current;
-  const query = search.trim().toLowerCase(), matching = state.control.agents.filter(agent => `${agent.name} ${agent.machineName} ${agent.harness} ${agent.external?.workspace ?? ""}`.toLowerCase().includes(query)), agents = matching.filter(agent => !agent.archived), archived = matching.filter(agent => agent.archived);
+  const query = search.trim().toLowerCase(), agents = state.control.agents.filter(agent => !agent.archived), failed = agents.filter(agent => agent.state === "failed" && !agent.external).length;
   const rooms = allRooms(state).filter(room => room.name.toLowerCase().includes(query)).sort((a, b) => Number(state.joined.some(room => room.id === b.id)) - Number(state.joined.some(room => room.id === a.id)) || a.name.localeCompare(b.name));
   return <aside id="room-menu" className="sidebar" aria-label="Workspace navigation">
     <div className="sidebar-brand"><button className="flex items-center gap-2.5" aria-label="Sideband home" onClick={() => { store.home(); close(); }}><Brand /></button><Button id="menu-close" className="mobile-only ml-auto" variant="ghost" icon aria-label="Close navigation" onClick={close}><X size={18} /></Button></div>
-    <label className="sidebar-search"><Search size={14} /><input aria-label="Find rooms or agents" placeholder="Find rooms or agents" value={search} onChange={event => setSearch(event.target.value)} /></label>
+    <label className="sidebar-search"><Search size={14} /><input aria-label="Find rooms" placeholder="Find rooms" value={search} onChange={event => setSearch(event.target.value)} /></label>
     <nav className="sidebar-content">
-      <section className="nav-section" aria-label="Agents"><div className="nav-heading"><span>Agents <span className="ml-1 text-zinc-600">{state.control.agents.filter(agent => !agent.archived).length || ""}</span></span><Button id="new-agent" variant="ghost" icon aria-label="New agent" title="New agent" onClick={onNew}><Plus size={15} /></Button></div>
-        <div id="agent-list" className="nav-list">{agents.map(agent => <button key={agent.id} type="button" data-agent-id={agent.id} className="nav-row" aria-current={state.view.kind === "agent" && state.view.id === agent.id ? "true" : undefined}
-          aria-label={`${agent.name}, ${agentStatus(agent)}, ${agent.machineName}`} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}>
-          <span className="nav-icon"><Bot size={18} /><Status state={agentStatus(agent)} /></span><span className="row-copy"><span className="row-name">{agent.name}{agent.external && <small className="ml-2 text-zinc-500">External</small>}</span><span className="row-description">{agent.machineName}{agent.external?.workspace ? ` / ${agent.external.workspace}` : ""}</span></span>
-          {agent.state === "failed" && <span className="badge text-danger">!</span>}</button>)}</div>
-        {!agents.length && <p className="nav-empty">{query ? "No matching agents." : "No agents yet."}</p>}
-        <Button variant="ghost" className="nav-add" onClick={onNew}><Plus size={13} />New agent</Button>
-      </section>
-      {archived.length > 0 && <details className="nav-section" id="archived-agents"><summary className="nav-heading">Archived ({archived.length})</summary><div className="nav-list">{archived.map(agent => <button key={agent.id} type="button" className="nav-row" data-agent-id={agent.id} onClick={() => { void store.selectAgent(agent.id).catch(() => {}); close(); }}><Bot size={17} /><span className="row-copy"><span className="row-name">{agent.name}{agent.external && <small className="ml-2 text-zinc-500">External</small>}</span><span className="row-description">{agent.machineName}{agent.external?.workspace ? ` / ${agent.external.workspace}` : ""}</span></span></button>)}</div></details>}
       <section className="nav-section" aria-label="Rooms"><div className="nav-heading"><span>Rooms</span><Button variant="ghost" icon aria-label="Join or create a room" title="Join or create a room" onClick={onJoin}><Plus size={15} /></Button></div>
         <div id="room-list" className="nav-list">{rooms.map(room => {
           const joined = state.joined.some(candidate => candidate.id === room.id), mentions = state.mentions[room.id] ?? 0, unread = state.unread[room.id] ?? 0;
@@ -48,12 +39,43 @@ export function Sidebar({ store, state, close, onNew, onJoin, onSettings }: { st
         {!rooms.length && <p className="nav-empty">{query ? "No matching rooms." : "Join a room to talk with people and agents."}</p>}
         <Button variant="ghost" className="nav-add" onClick={onJoin}><Plus size={13} />Join or create room</Button>
       </section>
+      <section className="agents-navigation" aria-label="Agents">
+        <button id="agents-open" type="button" className="nav-row" aria-current={state.view.kind === "agents" || state.view.kind === "agent" ? "true" : undefined} title={failed ? `${failed} agents failed` : "Browse all agents"} onClick={() => { store.showAgents(); close(); }}>
+          <span className="nav-icon"><Bot size={18} />{failed > 0 && <Status state="failed" />}</span><span className="row-copy"><span className="row-name">Agents</span></span><span className="agent-count">{agents.length}</span>
+        </button>
+        <Button id="new-agent" variant="ghost" icon aria-label="New agent" title="New agent" onClick={onNew}><Plus size={16} /></Button>
+      </section>
     </nav>
     <div className="sidebar-footer"><div className="user-row">{state.identity && <Avatar identity={state.identity} small />}<div className="user-copy"><strong>{state.identity ? identityLabel(state.identity) : "Connecting"}</strong>
       <span id="connection" className="connection-label"><Status state={state.connection} />{state.connection === "on" ? "Connected" : "Reconnecting…"}</span></div>
       <Button id="settings-open" variant="ghost" icon aria-label="Settings" title="Settings" onClick={onSettings}><Settings2 size={17} /></Button></div>
       {build && <p id="server-version" className="px-1.5 pt-2 text-[10px] text-zinc-500" title={build.commit ? `Server commit ${build.commit}` : "Commit available after a managed update."}>Server v{build.version}{build.commit && ` · ${build.commit.slice(0, 8)}`}</p>}</div>
   </aside>;
+}
+
+export type AgentFilters = { search: string; machine: string; kind: "all" | "managed" | "external"; archivedOpen: boolean };
+export function AgentDirectory({ store, state, filters, setFilters }: { store: BrowserWorkspace; state: WorkspaceState; filters: AgentFilters; setFilters(value: AgentFilters): void }) {
+  const { search, machine, kind } = filters, query = search.trim().toLowerCase();
+  const matches = state.control.agents.filter(agent => (!machine || agent.machineId === machine) && (kind === "all" || (kind === "external") === !!agent.external) &&
+    `${agent.name} ${agent.machineName} ${agent.harness} ${agent.folder ?? agent.external?.workspace ?? repositoryName(agent.repository)} ${agent.room ?? ""} ${agentStatus(agent)}`.toLowerCase().includes(query));
+  const sorted = (agents: ManagedAgent[]) => agents.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }) || a.id.localeCompare(b.id));
+  const agents = sorted(matches.filter(agent => !agent.archived)), archived = sorted(matches.filter(agent => agent.archived));
+  const machines = [...new Map([...state.control.machines.map(value => [value.id, value.name] as const), ...state.control.agents.map(value => [value.machineId, value.machineName] as const)]).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const rows = (values: ManagedAgent[]) => values.map(agent => <button key={agent.id} type="button" data-agent-id={agent.id} className="agent-card" onClick={() => { void store.selectAgent(agent.id).catch(() => {}); }} aria-label={`${agent.name}, ${agentStatus(agent)}, ${agent.machineName}`}>
+    <span className="agent-card-icon"><Bot size={20} /></span><span className="agent-card-copy"><span className="agent-card-title"><strong>{agent.name}</strong><span className="badge">{agent.harness === "omp" ? "OMP" : agent.harness === "pi" ? "PI" : agent.harness === "codex" ? "Codex" : "Claude"}</span>{agent.external && <span className="agent-origin">External</span>}</span>
+      <span className="agent-card-meta">{agent.machineName}<span aria-hidden="true"> · </span>{agent.folder ?? agent.external?.workspace ?? repositoryName(agent.repository)}{agent.room && <span> · #{agent.room}</span>}</span></span>
+    <Status state={agentStatus(agent)} label /><ChevronRight size={16} className="agent-card-arrow" />
+  </button>);
+  return <section id="agents-page" className="agents-page" aria-label="All agents">
+    <div className="agents-toolbar"><label className="agents-search"><Search size={16} /><input id="agents-search" aria-label="Search agents" placeholder="Search agents, machines or harnesses" value={search} onChange={event => setFilters({ ...filters, search: event.target.value })} /></label>
+      <select id="agents-machine" className="select" aria-label="Filter agents by machine" value={machine} onChange={event => setFilters({ ...filters, machine: event.target.value })}><option value="">All machines</option>{machines.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
+    </div>
+    <div className="agents-list-heading"><div className="agents-type-filter" role="group" aria-label="Agent types">{(["all", "managed", "external"] as const).map(value => <Button key={value} variant="ghost" aria-pressed={kind === value} onClick={() => setFilters({ ...filters, kind: value })}>{value === "all" ? "All agents" : value === "managed" ? "Managed" : "External"}</Button>)}</div><span className="agents-result-count">{agents.length} agent{agents.length === 1 ? "" : "s"}</span></div>
+    {state.controlError && <div className="inline-error" role="alert">{state.controlError}<Button variant="ghost" disabled={state.connection !== "on"} onClick={() => { void store.refreshControl(); }}>Retry</Button></div>}
+    <div id="agent-list" className="agents-list">{rows(agents)}</div>
+    {!agents.length && <div className="agents-empty"><Bot size={26} /><h2>{query || machine || kind !== "all" ? "No matching agents" : "No active agents"}</h2><p>{query || machine || kind !== "all" ? "Try a different search or filter." : archived.length ? "Your saved sessions are in Archived below." : "Start an agent on a connected machine. Sessions with the Sideband plugin also appear here."}</p>{(query || machine || kind !== "all") && <Button onClick={() => setFilters({ ...filters, search: "", machine: "", kind: "all" })}>Clear filters</Button>}</div>}
+    {archived.length > 0 && <details id="archived-agents" className="agents-archived" open={filters.archivedOpen}><summary onClick={event => { event.preventDefault(); setFilters({ ...filters, archivedOpen: !filters.archivedOpen }); }}>Archived <span>{archived.length}</span></summary><div className="agents-list">{rows(archived)}</div></details>}
+  </section>;
 }
 
 export function RoomMessages({ state, room }: { state: WorkspaceState; room: Room }) {

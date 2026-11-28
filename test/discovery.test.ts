@@ -50,7 +50,7 @@ test("discovered agents are authenticated, transient, deduplicated across worker
     }
     await assert.rejects(first.request("control.discovered", { sessions: [{ ...row, workspace: "/private/path" }] }), /Invalid discovered/);
     await web.connect(); await assert.rejects(web.request("control.discovered", { sessions: [row] }), /registered worker/);
-    page = await browserPage(server); await page.login();
+    page = await browserPage(server); await page.login(); await page.agents();
     await until(() => page!.doc.querySelectorAll("#agent-list [data-agent-id]").length === 1);
     const button = page.get<HTMLButtonElement>("#agent-list [data-agent-id]"), id = button.dataset.agentId!; assert.match(button.textContent!, /External/);
     page.click(button); await until(() => !!page!.doc.querySelector("#external-agent"));
@@ -59,7 +59,7 @@ test("discovered agents are authenticated, transient, deduplicated across worker
       await assert.rejects(web.request("control.action", { agentId: id, action, ...(action === "prompt" ? { text: "must not deliver" } : {}), ...(action === "room" ? { room: "must not join" } : {}) }), /view-only/);
     }
     assert.deepEqual((await web.request<any>("control.watch", { agentId: id })).events, []);
-    await first.request("control.discovered", { sessions: [] }); await until(() => page!.get("#agent-list").textContent?.includes("second") === true);
+    await page.agents(); await first.request("control.discovered", { sessions: [] }); await until(() => page!.get("#agent-list").textContent?.includes("second") === true);
     assert.equal(page.get<HTMLButtonElement>("#agent-list [data-agent-id]").dataset.agentId, id, "session IDs do not depend on which local worker reported them");
     await second.close(); await until(() => page!.doc.querySelectorAll("#agent-list [data-agent-id]").length === 0);
     assert.deepEqual(await peer.listRooms(), [], "discovery never joins a room");
@@ -149,7 +149,7 @@ test("external PI and OMP sessions accept web instructions and return live outpu
     let page: Awaited<ReturnType<typeof browserPage>> | undefined;
     try {
       await emit("session_start"); await until(async () => (await readPluginPresence()).some(row => row.key === presenceKey(harness, `external-${harness}`) && row.interactive));
-      await worker.start(); page = await browserPage(server); await page.login();
+      await worker.start(); page = await browserPage(server); await page.login(); await page.agents();
       await until(() => !!page!.doc.querySelector("#agent-list [data-agent-id]")); page.click("#agent-list [data-agent-id]");
       await until(() => !!page!.doc.querySelector<HTMLTextAreaElement>("#agent-prompt") && !page!.get<HTMLTextAreaElement>("#agent-prompt").disabled);
       const ready = () => !page!.get<HTMLButtonElement>("#agent-prompt-send").disabled;
